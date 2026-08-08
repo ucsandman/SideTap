@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phone-harness viewer</title>
+<style>
+  :root { --bg:#101418; --panel:#1a2129; --text:#e8edf2; --dim:#8a97a5; --ok:#3fb950; --bad:#f85149; --accent:#4493f8; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 "Segoe UI",system-ui,sans-serif; display:flex; min-height:100vh; }
+  #phone-pane { flex:0 0 auto; padding:20px; display:flex; flex-direction:column; align-items:center; gap:12px; }
+  #screen-wrap { position:relative; border:6px solid #2b333d; border-radius:28px; overflow:hidden; background:#000; }
+  #screen { display:block; width:320px; height:692px; max-height:80vh; object-fit:contain; background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; }
+  #screen.dead { opacity:.25; }
+  #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
+  #buttons { display:flex; gap:8px; }
+  button { background:var(--panel); color:var(--text); border:1px solid #313b46; border-radius:8px; padding:8px 16px; font-size:14px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  #side { flex:1; padding:24px; max-width:520px; }
+  h1 { font-size:18px; margin-bottom:4px; }
+  .dim { color:var(--dim); font-size:13px; }
+  #doctor { margin-top:20px; }
+  .check { display:flex; gap:10px; padding:8px 10px; border-radius:8px; background:var(--panel); margin-bottom:6px; align-items:baseline; }
+  .check .mark { font-weight:700; }
+  .check.ok .mark { color:var(--ok); }
+  .check.bad .mark { color:var(--bad); }
+  .check .fix { color:var(--dim); font-size:12.5px; }
+  #hint { margin-top:16px; }
+  code { background:var(--panel); padding:2px 6px; border-radius:5px; font-size:12.5px; }
+</style>
+</head>
+<body>
+  <div id="phone-pane">
+    <div id="screen-wrap">
+      <img id="screen" alt="phone screen" src="/api/screenshot">
+      <div id="tap-dot"></div>
+    </div>
+    <div id="buttons">
+      <button id="btn-home">⌂ Home</button>
+      <button id="btn-shot">📷 Save screenshot</button>
+      <button id="btn-refresh">↻ Refresh checks</button>
+    </div>
+    <div class="dim" id="click-hint">Click the screen to tap the phone.</div>
+  </div>
+  <div id="side">
+    <h1>phone-harness</h1>
+    <div class="dim">Your iPhone, driven from Windows over USB.</div>
+    <div id="doctor"><div class="dim">Running checks…</div></div>
+    <div id="hint" class="dim">
+      Agents drive it from a terminal:<br>
+      <code>phone-harness &lt;&lt;'PY' … PY</code> — helpers like <code>tap_text("General")</code> are pre-imported.
+    </div>
+  </div>
+<script>
+const screen = document.getElementById('screen');
+const dot = document.getElementById('tap-dot');
+let points = null;   // {width, height} of phone screen in points
+let live = false;    // true when the MJPEG stream is running
+
+async function getJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(url + ' -> ' + r.status);
+  return r.json();
+}
+
+async function loadStatus() {
+  try {
+    const s = await getJSON('/api/status');
+    points = s.window;
+    screen.classList.remove('dead');
+    if (!live) {  // switch to the low-latency MJPEG stream
+      live = true;
+      screen.onload = null;
+      screen.onerror = () => { live = false; poll(); };  // stream down -> poll stills
+      screen.src = s.mjpeg_url;
+    }
+  } catch (e) {
+    points = null; live = false;
+    screen.classList.add('dead');
+  }
+}
+
+// fallback: refresh the still image, one request at a time (never overlapping)
+function poll() {
+  if (live) return;
+  screen.onload = screen.onerror = () => setTimeout(poll, 1500);
+  screen.src = '/api/screenshot?t=' + Date.now();
+}
+
+// start network loops only after the page has fully loaded
+window.addEventListener('load', () => {
+  loadStatus(); loadDoctor();
+  setTimeout(poll, 1500);
+  setInterval(loadStatus, 5000);
+});
+
+screen.addEventListener('click', async (ev) => {
+  if (!points) return;
+  const r = screen.getBoundingClientRect();
+  const x = (ev.clientX - r.left) / r.width * points.width;
+  const y = (ev.clientY - r.top) / r.height * points.height;
+  dot.style.left = (ev.clientX - r.left) + 'px';
+  dot.style.top = (ev.clientY - r.top) + 'px';
+  dot.style.opacity = 1; setTimeout(() => dot.style.opacity = 0, 400);
+  await fetch('/api/tap', {method:'POST', headers:{'Content-Type':'application/json'},
+                           body: JSON.stringify({x, y})});
+});
+
+document.getElementById('btn-home').onclick = () => fetch('/api/home', {method:'POST'});
+document.getElementById('btn-shot').onclick = () => {
+  const a = document.createElement('a');
+  a.href = '/api/screenshot?t=' + Date.now(); a.download = 'phone.png'; a.click();
+};
+
+async function loadDoctor() {
+  const el = document.getElementById('doctor');
+  el.innerHTML = '<div class="dim">Running checks…</div>';
+  try {
+    const results = await getJSON('/api/doctor');
+    el.innerHTML = results.map(r => `
+      <div class="check ${r.ok ? 'ok' : 'bad'}">
+        <span class="mark">${r.ok ? 'PASS' : 'FAIL'}</span>
+        <span><b>${r.name}</b> — ${r.detail}
+          ${r.ok || !r.fix ? '' : `<div class="fix">fix: ${r.fix}</div>`}</span>
+      </div>`).join('');
+  } catch (e) { el.innerHTML = '<div class="check bad"><span class="mark">FAIL</span><span>viewer server unreachable</span></div>'; }
+}
+document.getElementById('btn-refresh').onclick = loadDoctor;
+</script>
+</body>
+</html>

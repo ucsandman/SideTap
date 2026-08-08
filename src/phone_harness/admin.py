@@ -1,0 +1,183 @@
+"""Doctor diagnostics and up/down orchestration."""
+
+from __future__ import annotations
+
+import time
+
+from . import config, device
+from .wda_client import WDAClient
+
+
+def _check_go_ios():
+    path = device.ios_path()
+    if path:
+        return True, f"go-ios found: {path}", ""
+    return (
+        False,
+        "go-ios (`ios`) not on PATH",
+        "Install Node.js, then: npm install -g go-ios",
+    )
+
+
+def _check_device():
+    try:
+        udids = device.list_devices()
+    except Exception as exc:
+        return (
+            False,
+            f"`ios list` failed: {exc}",
+            "Reconnect the iPhone over USB and tap Trust.",
+        )
+    if udids:
+        return True, f"iPhone connected: {udids[0]}", ""
+    return (
+        False,
+        "No iPhone found over USB",
+        (
+            "Plug in the cable, unlock the phone, tap Trust. "
+            "Install the 'Apple Devices' app from Microsoft Store for the USB driver. "
+            "Also enable Developer Mode: Settings > Privacy & Security > Developer Mode."
+        ),
+    )
+
+
+def _check_tunnel():
+    if device.tunnel_running():
+        return True, "iOS 17+ tunnel is up", ""
+    return False, "Tunnel not running", "Run: phone-harness up   (starts it for you)"
+
+
+def _check_wda_installed():
+    try:
+        if not device.list_devices():
+            return (
+                False,
+                "cannot check: no iPhone connected",
+                "Connect the phone first.",
+            )
+    except Exception as exc:
+        return (
+            False,
+            f"cannot check: {exc}",
+            "Install go-ios and connect the phone first.",
+        )
+    bundle = device.detect_wda_bundle()
+    if bundle:
+        return True, f"WebDriverAgent installed: {bundle}", ""
+    return (
+        False,
+        "WebDriverAgent app not found on the phone",
+        (
+            "Sideload it with Sideloadly + your free Apple ID. See docs/setup-windows.md step 3. "
+            "If it IS installed under a custom name, set WDA_BUNDLE_ID in .env."
+        ),
+    )
+
+
+def _check_wda_responding():
+    client = WDAClient(timeout=5)
+    if client.is_up():
+        return True, f"WDA answering at {config.WDA_URL}", ""
+    return (
+        False,
+        f"WDA not answering at {config.WDA_URL}",
+        (
+            "Run: phone-harness up. If it fails right after a working week, the free-ID "
+            "signature likely expired (7 days) - re-sign WDA in Sideloadly."
+        ),
+    )
+
+
+CHECKS = [
+    ("go-ios installed", _check_go_ios),
+    ("iPhone on USB", _check_device),
+    ("tunnel", _check_tunnel),
+    ("WDA installed", _check_wda_installed),
+    ("WDA responding", _check_wda_responding),
+]
+
+
+def doctor_results() -> list[dict]:
+    """Run all checks. Later checks still run so the user sees the full picture."""
+    results = []
+    for name, fn in CHECKS:
+        try:
+            ok, detail, fix = fn()
+        except Exception as exc:  # a check must never crash the doctor
+            ok, detail, fix = False, f"check crashed: {exc}", ""
+        results.append({"name": name, "ok": ok, "detail": detail, "fix": fix})
+    return results
+
+
+def doctor() -> int:
+    results = doctor_results()
+    for r in results:
+        mark = "PASS" if r["ok"] else "FAIL"
+        print(f"[{mark}] {r['name']}: {r['detail']}")
+        if not r["ok"] and r["fix"]:
+            print(f"       fix: {r['fix']}")
+    if all(r["ok"] for r in results):
+        print("\nAll green. The agent can drive the phone.")
+        return 0
+    print("\nFix the first FAIL above, then run `phone-harness doctor` again.")
+    return 1
+
+
+def up(wait_seconds: float = 60.0) -> int:
+    """Bring the whole chain up. Idempotent: skips whatever already runs."""
+    client = WDAClient(timeout=3)
+    if client.is_up():
+        print("Already up: WDA is answering.")
+        return 0
+
+    ok, detail, fix = _check_go_ios()
+    if not ok:
+        print(f"FAIL: {detail}\n  fix: {fix}")
+        return 1
+    ok, detail, fix = _check_device()
+    if not ok:
+        print(f"FAIL: {detail}\n  fix: {fix}")
+        return 1
+    print(f"OK: {detail}")
+
+    if not device.tunnel_running():
+        print("Starting tunnel (userspace)...")
+        device.start_tunnel()
+        print("OK: tunnel started")
+    else:
+        print("OK: tunnel already running")
+
+    bundle = device.detect_wda_bundle()
+    if not bundle:
+        _, detail, fix = _check_wda_installed()
+        print(f"FAIL: {detail}\n  fix: {fix}")
+        return 1
+    print(f"Starting WebDriverAgent ({bundle})...")
+    device.start_wda(bundle)
+    device.start_forwards()
+
+    print("Waiting for WDA to answer", end="", flush=True)
+    deadline = time.time() + wait_seconds
+    client = WDAClient(timeout=3)
+    while time.time() < deadline:
+        if client.is_up():
+            print("\nUp. WDA answering at", config.WDA_URL)
+            try:
+                client.configure_mjpeg()
+            except Exception:
+                pass  # viewer falls back to polling screenshots
+            return 0
+        print(".", end="", flush=True)
+        time.sleep(2)
+    print("\nFAIL: WDA never answered. runwda log tail:")
+    print(device.log_tail("runwda", 10))
+    print(
+        "Common cause on a free Apple ID: the 7-day signature expired — re-sign in Sideloadly."
+    )
+    return 1
+
+
+def down() -> int:
+    stopped = device.stop_all()
+    print("Stopped: " + (", ".join(stopped) if stopped else "nothing was running"))
+    return 0

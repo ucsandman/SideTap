@@ -1,0 +1,10 @@
+.env
+.state/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+node_modules/
+screenshots/
+.dashclaw-local/
+.offlocal/

@@ -4,11 +4,20 @@ Do these steps once. After this, `python launch.py` is all you need.
 
 ## Step 1 — iPhone: enable Developer Mode
 
-1. Settings → Privacy & Security → Developer Mode → On.
-2. The phone restarts. Confirm "Turn On".
+The Developer Mode menu is **hidden by default**. Apple only shows it after the
+phone sees developer tooling. To reveal it: connect the phone over USB and run
 
-(If you do not see Developer Mode: plug the phone into the PC first with the
-Apple Devices app installed, then check again.)
+```bat
+ios devmode reveal
+```
+
+(needs go-ios from Step 2; do Step 2 first if `ios` is not installed yet).
+Then on the iPhone:
+
+1. Settings → Privacy & Security → scroll down → Developer Mode → On.
+2. The phone restarts. Confirm "Turn On" and enter your passcode.
+
+If the menu still does not appear, force-close Settings and open it again.
 
 ## Step 2 — Windows: drivers and go-ios
 

@@ -7,6 +7,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
+![phone-claude driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
+
 Every iPhone automation route assumes you own a Mac. This one does not. phone-claude drives a real iPhone over USB using [go-ios](https://github.com/danielpaulus/go-ios) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
 
 It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-harness), which relies on macOS iPhone Mirroring. Bonus over the original: WebDriverAgent exposes the real UI element tree, so the agent reads exact buttons and labels instead of OCR guesses.

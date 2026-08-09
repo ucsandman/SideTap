@@ -16,3 +16,7 @@ selfIdentity.plist
 *.p12
 sideloadlydaemon.log
 .handoff-notes-*.md
+docs/media/*.mp4
+docs/media/*.srt
+docs/media/*.vtt
+docs/media/og.gif

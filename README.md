@@ -21,6 +21,25 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 [Agent]    phone-harness <<'PY' ... PY   (helpers pre-imported)
 ```
 
+## Set it up with an agent
+
+Skip the manual setup: paste this into Claude Code (or Codex) on your Windows PC and let it drive, asking you only for the steps that need your hands.
+
+```text
+Set up sidetap (github.com/ucsandman/sidetap) on this Windows machine so LLM agents can drive my iPhone over USB.
+
+1. Clone https://github.com/ucsandman/sidetap and run: pip install -r requirements.txt
+2. Install go-ios globally: npm install -g go-ios
+3. Read docs/setup-windows.md, then walk me through the parts only I can do: installing the Apple Devices app from the Microsoft Store, enabling Developer Mode on my iPhone, trusting this PC from the phone, and sideloading wda/WebDriverAgent.ipa with Sideloadly using my Apple ID.
+4. After WebDriverAgent is installed, run from the repo root: phone-harness fix-input (I will click Start in Sideloadly when you tell me to).
+5. Run phone-harness doctor after every step. Every FAIL names its own fix. Loop until all checks pass. Never guess at connection problems.
+6. When doctor is green, run: python launch.py and confirm the live viewer shows my phone screen at http://127.0.0.1:8770.
+7. If I use Claude Code, register the phone as native tools: claude mcp add --scope user sidetap --env PYTHONPATH=<absolute path to the clone>/src -- python -m phone_harness mcp (skip this step otherwise).
+8. Remind me at the end: free Apple ID signatures expire every 7 days. When touch input dies, phone-harness fix-input brings it back.
+
+Ask me before anything that touches my Apple ID, my phone's settings, or sends anything from my phone.
+```
+
 ## Features
 
 - **Real UI tree, not screenshots.** `tap_text("General")` finds the actual element and taps its center. Coordinates are points, exact.

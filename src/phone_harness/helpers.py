@@ -568,16 +568,27 @@ def _scrub_secret(message: str, secret: str | None) -> str:
     return message.replace(secret, "•••") if secret else message
 
 
+_UNLOCK_TIMEOUT = 45.0  # first gesture after a deep sleep: 20.5s measured live
+
+
 def unlock(c: WDAClient | None = None) -> None:
     """Make the phone usable: wake it and, if the passcode pad comes up, type
     PHONE_PASSCODE from .env (opt-in). Scrubs the passcode from any error.
 
     Decides from what is actually on screen — NEVER from /wda/locked, which
     can report unlocked while the pad is on screen (seen live 2026-08-09).
-    Pass `c` to reuse an existing client: WDA holds ONE session, so a second
-    client would steal it mid-sequence (the viewer passes its own).
+    Pass `c` to reuse an existing client; with the shared session model a
+    patient clone adopts the same session instead of stealing it.
     """
     c = c or client()
+    # The first gesture after the phone has slept a while can block WDA for
+    # 10-20s (measured 20.5s live 2026-08-09). A short-timeout client (the
+    # viewer's is 10s) aborts a swipe that is still going to land, so the
+    # sequence runs on a patient clone sharing the same session.
+    if isinstance(c, WDAClient) and c.timeout < _UNLOCK_TIMEOUT:
+        patient = WDAClient(base_url=c.base_url, timeout=_UNLOCK_TIMEOUT)
+        patient.session_id = c.session_id
+        c = patient
     if c.active_app().get("bundleId") != "com.apple.springboard":
         return  # an app is frontmost: unlocked and in use — touch nothing
     w, h = c.window_size()  # before the wake, so it can't eat awake-time
@@ -592,9 +603,28 @@ def unlock(c: WDAClient | None = None) -> None:
         c.swipe(w / 2, h * 0.98, w / 2, h * 0.30, 0.25)
         time.sleep(1.0)
 
+    def pad_appears(seconds: float) -> bool:
+        # Poll, don't peek once: the pad animates in, and a slow swipe can
+        # land well after the call returns. Attempt-counted (not wall-clock)
+        # so tests with a no-op sleep stay instant.
+        attempts = max(1, int(seconds / 0.4))
+        for i in range(attempts):
+            if _passcode_pad_visible(c.source()):
+                return True
+            if i < attempts - 1:
+                time.sleep(0.4)
+        return False
+
     wake_and_swipe()
-    if not _passcode_pad_visible(c.source()):
-        return  # no pad appeared: the phone was just asleep, now awake+usable
+    if not pad_appears(3.0):
+        if len(c.screenshot()) >= 150_000:
+            return  # lit and no pad: was just asleep, now awake+usable
+        # Dark again: a slow swipe landed after the lock screen re-slept and
+        # burned on a black screen. One more charge, then give up — endless
+        # gesturing at an already-unlocked phone helps nobody.
+        wake_and_swipe()
+        if not pad_appears(3.0):
+            return
     if not config.PHONE_PASSCODE:
         raise WDAError(
             "Phone is locked. Set PHONE_PASSCODE in .env or unlock it by hand."

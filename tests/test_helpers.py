@@ -313,6 +313,33 @@ def test_unlock_resummons_pad_when_screen_slept(fast):
     assert stub.typed == ["246810"]
 
 
+def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
+    """Seen live 2026-08-09: the first gesture after a deep sleep blocked WDA
+    20.5s, so the swipe landed after the lock screen re-slept — dark screen,
+    no pad, unlock gave up ('the button only wakes my phone'). unlock() must
+    spend one more wake+swipe when the screen is dark again after the first."""
+
+    class SleepyPhone(StubPhone):
+        def swipe(self, *args):
+            super().swipe(*args)
+            if self.swipes == 2:  # the second swipe lands on a lit screen
+                self.tree = _buttons_tree(list("1234567890"))
+                self.frame = b"\0" * 200_000
+
+    stub = fast(SleepyPhone(SAMPLE_TREE, frame=b"tiny"))
+    helpers.unlock()
+    assert stub.swipes == 2
+    assert stub.typed == ["246810"]
+
+
+def test_unlock_gives_up_after_two_dark_swipes(fast):
+    """Never loop gestures forever at a phone that will not show a pad."""
+    stub = fast(StubPhone(SAMPLE_TREE, frame=b"tiny"))
+    helpers.unlock()
+    assert stub.swipes == 2
+    assert stub.typed == []
+
+
 def test_unlock_uses_the_client_it_is_given(fast):
     """The viewer passes its own client (WDA holds one session; a second
     client steals it mid-sequence). unlock(c) must not touch the singleton."""
@@ -382,10 +409,11 @@ def test_type_text_invalidates_tree_cache(monkeypatch):
 def test_unlock_invalidates_tree_cache(fast):
     stub = fast(StubPhone(SAMPLE_TREE))
     helpers._invalidate_tree()  # cache is module state; start the test clean
-    helpers.ui_tree()  # 1: cache the pre-unlock screen
-    helpers.unlock()  # 2: unlock's own pad check; screen changed
-    helpers.ui_tree()  # must refetch (3), not reuse the pre-unlock tree
-    assert stub.source_calls == 3
+    helpers.ui_tree()  # cache the pre-unlock screen
+    helpers.unlock()  # polls source() itself; screen changed
+    before = stub.source_calls
+    helpers.ui_tree()  # must refetch, not reuse the pre-unlock tree
+    assert stub.source_calls == before + 1
 
 
 def test_tree_cache_expires_by_ttl(monkeypatch):

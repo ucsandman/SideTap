@@ -5,14 +5,14 @@ Windows rebuild of ShawnPana/phone-harness (which is macOS-only).
 
 ## Architecture
 
-- `src/phone_harness/wda_client.py` — thin HTTP client for WebDriverAgent (:8100). requests only.
+- `src/phone_harness/wda_client.py` — thin HTTP client for WebDriverAgent (:8100). requests only. Kill switch: a `.state/STOP` file blocks every action POST at the `_request` chokepoint (perception GETs keep working).
 - `src/phone_harness/device.py` — go-ios wrapper; detached tunnel/runwda/forward processes, pids+logs in `.state/`.
-- `src/phone_harness/admin.py` — `doctor` (ordered checks, each names its fix, incl. LAN exposure), `up`, `down`.
+- `src/phone_harness/admin.py` — `doctor` (ordered checks, each names its fix, incl. LAN exposure and the 7-day signature countdown), `up`, `down`.
 - `scripts/lock_ports.ps1` — self-elevating firewall rule blocking LAN access to :8100/:9100 (WDA has no auth). Fired by the viewer's Lock ports button or run by hand.
 - `src/phone_harness/signing.py` — `fix-input`: builds a p12 from Sideloadly's cert, captures the profile Sideloadly mints (Temp watcher), re-signs WDA incl. the nested `.xctest` via `ios sign app`. All local; no Apple auth.
-- `src/phone_harness/helpers.py` — agent API (`tap`, `tap_text`, `ocr`, `open_app`, …). `ocr()` reads the UI tree.
+- `src/phone_harness/helpers.py` — agent API (`tap`, `tap_text`, `ocr`, `open_app`, …). `ocr()` reads the UI tree; the tree is cached ~2s and every action invalidates it (WDA `/elements` queries were measured SLOWER than `/source` on device — don't reintroduce them). `unlock()` types the passcode only when the passcode pad is visible.
 - `src/phone_harness/run.py` — CLI; no-arg mode executes stdin with helpers in scope; autoloads `agent-workspace/agent_helpers.py`.
-- `src/phone_harness/viewer.py` + `viewer.html` — human surface: live MJPEG screen (:9100), click-to-tap, drag-to-swipe, keyboard typing, doctor panel, Recent sends audit list (:8770, VIEWER_PORT to override; 8765 belongs to the Practical Systems API). All `/api/*` calls are origin-guarded against cross-site/DNS-rebinding.
+- `src/phone_harness/viewer.py` + `viewer.html` — human surface: live MJPEG screen (:9100), click-to-tap, drag-to-swipe, keyboard typing, doctor panel, Recent sends audit list, red STOP/RESUME kill switch (:8770, VIEWER_PORT to override; 8765 belongs to the Practical Systems API). All `/api/*` calls are origin-guarded against cross-site/DNS-rebinding.
 
 ## Commands
 

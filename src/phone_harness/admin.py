@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 from . import capture, config, device
 from .wda_client import WDAClient
@@ -102,6 +103,43 @@ def _check_wda_responding():
     )
 
 
+def _check_signature():
+    """Free-Apple-ID signatures die after 7 days; count down before input drops."""
+    from . import signing
+
+    path = signing.PROFILE_PATH
+    if not path.exists():
+        return True, "no captured profile to check (fix-input records one)", ""
+    try:
+        info = signing.parse_profile(path.read_bytes())
+    except signing.SigningError as exc:
+        return (
+            False,
+            f"cannot read {path.name}: {exc}",
+            "Re-run: phone-harness fix-input",
+        )
+    exp = info.get("expires")
+    if not isinstance(exp, datetime):
+        return True, "profile has no expiry date", ""
+    exp_utc = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+    left = exp_utc - datetime.now(timezone.utc)
+    fix = "Run phone-harness fix-input (free-ID signatures last 7 days)."
+    if left.total_seconds() <= 0:
+        return False, f"input signature expired {exp_utc:%Y-%m-%d %H:%M} UTC", fix
+    if left < timedelta(hours=48):
+        hours = int(left.total_seconds() // 3600)
+        return (
+            False,
+            f"input signature expires in {hours}h ({exp_utc:%Y-%m-%d %H:%M} UTC)",
+            fix,
+        )
+    return (
+        True,
+        f"input signature good for {left.days} more day(s) (until {exp_utc:%Y-%m-%d})",
+        "",
+    )
+
+
 def _check_ports_local():
     """WDA (:8100) and MJPEG (:9100) must not be reachable from the LAN.
 
@@ -132,6 +170,7 @@ CHECKS = [
     ("perception (view/OCR)", _check_perception),
     ("WDA installed (input)", _check_wda_installed),
     ("WDA responding (input)", _check_wda_responding),
+    ("input signature (7-day)", _check_signature),
     ("LAN exposure", _check_ports_local),
 ]
 

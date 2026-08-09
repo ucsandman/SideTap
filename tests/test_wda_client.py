@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+from phone_harness import config  # noqa: E402
 from phone_harness.wda_client import WDAClient, WDAError  # noqa: E402
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\nfakedata"
@@ -22,6 +23,7 @@ class FakeWDA(BaseHTTPRequestHandler):
     requests_seen = []
     kill_next_session = False
     session_counter = 0
+    last_settings = None
 
     def log_message(self, *args):  # noqa: vulture
         pass
@@ -61,6 +63,9 @@ class FakeWDA(BaseHTTPRequestHandler):
                 return
             self._reply(None)
         elif self.path.endswith("/wda/apps/launch"):
+            self._reply(None)
+        elif self.path.endswith("/appium/settings"):
+            FakeWDA.last_settings = self.payload.get("settings")
             self._reply(None)
         elif self.path == "/wda/homescreen":
             self._reply(None)
@@ -126,3 +131,45 @@ def test_unreachable_server_raises_clear_error():
 def test_type_text_sends_characters(wda):
     wda.type_text("hi")
     assert any(p.endswith("/wda/keys") for m, p in FakeWDA.requests_seen if m == "POST")
+
+
+def test_configure_mjpeg_defaults_from_config(wda):
+    # Measured on device: WDA tops out ~34fps; 50% scale halves frame weight
+    # with no fps cost. Defaults live in config so .env can override.
+    wda.configure_mjpeg()
+    assert FakeWDA.last_settings == {
+        "mjpegServerFramerate": config.MJPEG_FPS,
+        "mjpegServerScreenshotQuality": config.MJPEG_QUALITY,
+        "mjpegScalingFactor": config.MJPEG_SCALE,
+    }
+    assert config.MJPEG_FPS == 60
+    assert config.MJPEG_QUALITY == 70
+    assert config.MJPEG_SCALE == 50
+
+
+def test_stop_file_blocks_actions(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    (tmp_path / "STOP").touch()
+    with pytest.raises(WDAError, match="STOP"):
+        wda.tap(10, 20)
+    with pytest.raises(WDAError, match="STOP"):
+        wda.type_text("hi")
+
+
+def test_stop_file_still_allows_perception(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    (tmp_path / "STOP").touch()
+    # GETs (and the session-creating POST they need) must keep working so the
+    # viewer can still show the screen while stopped.
+    assert wda.status()["ready"] is True
+    assert wda.window_size() == (390.0, 844.0)
+
+
+def test_removing_stop_file_restores_actions(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    stop = tmp_path / "STOP"
+    stop.touch()
+    with pytest.raises(WDAError, match="STOP"):
+        wda.tap(1, 1)
+    stop.unlink()
+    wda.tap(1, 1)  # must not raise

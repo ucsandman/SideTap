@@ -79,6 +79,12 @@ Add your own helpers in `agent-workspace/agent_helpers.py` — auto-loaded into 
 - `send_message` refuses to send if the contact name is ambiguous or the thread that
   opens doesn't match, and logs every send to `.state/actions.log` (shown as **Recent
   sends** in the viewer).
+- **Kill switch.** The red **STOP** button in the viewer (or creating a `.state/STOP`
+  file) blocks every phone action at the WDA-client chokepoint until you click
+  **RESUME**. The live view keeps working, so you can watch while it is stopped.
+  It bounds a runaway agent — it does not defend against prompt injection.
+- `unlock()` refuses to type `PHONE_PASSCODE` unless the passcode pad is actually on
+  screen, and scrubs the passcode from error messages.
 
 ## Tests
 
@@ -89,7 +95,9 @@ python -m pytest tests -q
 
 ## Known limits
 
-- Free Apple ID signing expires every 7 days → one re-sign click in Sideloadly (doctor tells you).
+- Free Apple ID signing expires every 7 days → run `phone-harness fix-input` again.
+  The doctor's **input signature (7-day)** check counts down and turns FAIL within
+  48 h of expiry.
 - No Face ID, camera, or DRM video flows. One phone per session.
 - Phone must be unlocked (or set `PHONE_PASSCODE` in `.env` and call `unlock()`).
 - iOS 17+ tunnel needs wintun.dll once (admin) if userspace mode fails.

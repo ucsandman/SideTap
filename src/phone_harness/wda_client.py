@@ -19,6 +19,15 @@ class WDAError(RuntimeError):
     """A WebDriverAgent call failed. The message says what and why."""
 
 
+def stop_file():
+    """Path of the kill-switch file. Read dynamically so tests can relocate it."""
+    return config.STATE_DIR / "STOP"
+
+
+def stop_engaged() -> bool:
+    return stop_file().exists()
+
+
 class WDAClient:
     def __init__(self, base_url: str = config.WDA_URL, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
@@ -28,6 +37,14 @@ class WDAClient:
     # ---- plumbing ----------------------------------------------------------
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> Any:
+        # Kill switch: every phone-changing call funnels through here as a POST.
+        # GETs (perception) and session creation stay allowed so the viewer can
+        # still show the screen while stopped.
+        if method == "POST" and path != "/session" and stop_engaged():
+            raise WDAError(
+                "STOP is engaged (.state/STOP exists). Click RESUME in the "
+                "viewer, or delete the file, to allow actions again."
+            )
         url = self.base_url + path
         try:
             resp = requests.request(method, url, json=payload, timeout=self.timeout)
@@ -184,7 +201,12 @@ class WDAClient:
     def app_launch(self, bundle_id: str) -> None:
         self._session_request("POST", "/wda/apps/launch", {"bundleId": bundle_id})
 
-    def configure_mjpeg(self, framerate: int = 10, quality: int = 50) -> None:
+    def configure_mjpeg(
+        self,
+        framerate: int = config.MJPEG_FPS,
+        quality: int = config.MJPEG_QUALITY,
+        scale: int = config.MJPEG_SCALE,
+    ) -> None:
         self._session_request(
             "POST",
             "/appium/settings",
@@ -192,6 +214,7 @@ class WDAClient:
                 "settings": {
                     "mjpegServerFramerate": framerate,
                     "mjpegServerScreenshotQuality": quality,
+                    "mjpegScalingFactor": scale,
                 }
             },
         )

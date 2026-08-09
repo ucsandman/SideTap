@@ -28,6 +28,9 @@
   #hint { margin-top:16px; }
   code { background:var(--panel); padding:2px 6px; border-radius:5px; font-size:12.5px; }
   #btn-fix { border-color:var(--accent); background:#1c2b3f; }
+  #btn-stop { border-color:var(--bad); color:var(--bad); font-weight:700; }
+  #btn-stop.engaged { background:var(--bad); color:#fff; }
+  #screen-wrap.stopped { border-color:var(--bad); }
   #fix-panel { margin-top:18px; padding:14px 16px; border:1px solid var(--accent); border-radius:10px; background:var(--panel); }
   #fix-body { margin-top:6px; }
   #fix-steps { margin-top:10px; }
@@ -50,6 +53,7 @@
       <div id="tap-dot"></div>
     </div>
     <div id="buttons">
+      <button id="btn-stop">■ STOP</button>
       <button id="btn-home">⌂ Home</button>
       <button id="btn-shot">📷 Save screenshot</button>
       <button id="btn-refresh">↻ Refresh checks</button>
@@ -154,11 +158,25 @@ async function loadSent() {
 
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
-  loadStatus(); loadDoctor(); loadSent();
+  loadStatus(); loadDoctor(); loadSent(); loadStop();
   poll();
   setInterval(loadStatus, 5000);
   setInterval(loadSent, 5000);
+  setInterval(loadStop, 5000);
 });
+
+// ---- kill switch: blocks all agent actions until resumed -------------------
+let stopped = false;
+function renderStop() {
+  const b = document.getElementById('btn-stop');
+  b.classList.toggle('engaged', stopped);
+  b.textContent = stopped ? '▶ RESUME' : '■ STOP';
+  document.getElementById('screen-wrap').classList.toggle('stopped', stopped);
+}
+async function loadStop() {
+  try { stopped = (await getJSON('/api/stop')).stopped; renderStop(); }
+  catch (e) { /* viewer state poll is best-effort */ }
+}
 
 function showDot(px, py, ok) {
   dot.style.left = px + 'px';
@@ -232,6 +250,11 @@ window.addEventListener('keydown', (ev) => {
 });
 
 const JSON_HDR = {'Content-Type':'application/json'};
+document.getElementById('btn-stop').onclick = async () => {
+  const j = await getJSON('/api/stop', {method:'POST', headers:JSON_HDR,
+                                        body: JSON.stringify({stop: !stopped})});
+  stopped = j.stopped; renderStop();
+};
 document.getElementById('btn-home').onclick = () =>
   fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
 document.getElementById('btn-shot').onclick = () => {

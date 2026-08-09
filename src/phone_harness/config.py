@@ -13,7 +13,6 @@ WDA_PORT = 8100
 MJPEG_PORT = 9100
 
 WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
-MJPEG_URL = f"http://127.0.0.1:{MJPEG_PORT}"
 
 
 def _load_env(path: Path = ENV_FILE) -> dict[str, str]:
@@ -39,9 +38,16 @@ def get(key: str, default: str | None = None) -> str | None:
 
 
 # Optional overrides
-WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # else auto-detected from installed apps
+# Read by device.detect_wda_bundle; else auto-detected from installed apps.
+WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # noqa: vulture
 PHONE_PASSCODE = get("PHONE_PASSCODE")  # opt-in: lets helpers.unlock() type it
 
 # Default moved off 8765: Practical Systems' pipeline API owns that port on
 # this workstation, and both stacks must run at the same time.
 VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")
+
+# Live-view stream tuning (measured on device: WDA captures ~34fps max; 50%
+# scale halves frame weight with no fps cost, and the viewer shows ~1100px max).
+MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")
+MJPEG_QUALITY = int(get("MJPEG_QUALITY", "70") or "70")
+MJPEG_SCALE = int(get("MJPEG_SCALE", "50") or "50")

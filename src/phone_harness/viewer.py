@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import admin, capture, config
-from .wda_client import WDAClient, WDAError
+from .wda_client import WDAClient, WDAError, stop_engaged, stop_file
 
 _HTML = Path(__file__).with_name("viewer.html")
 
@@ -62,7 +62,7 @@ def _png_size(png: bytes) -> tuple[int, int]:
     return 0, 0
 
 
-# Tune WDA's MJPEG stream once per viewer run (defaults are 10fps/quality 25).
+# Tune WDA's MJPEG stream once per viewer run (WDA's own defaults are choppy).
 _MJPEG_TUNED = False
 
 
@@ -71,7 +71,7 @@ def _tune_mjpeg(client: WDAClient) -> None:
     if _MJPEG_TUNED:
         return
     try:
-        client.configure_mjpeg(framerate=15, quality=60)
+        client.configure_mjpeg()  # config.MJPEG_FPS/_QUALITY/_SCALE
         _MJPEG_TUNED = True
     except WDAError:
         pass  # stream still works on defaults
@@ -196,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(dict(_FIX_JOB))
             elif path == "/api/actions":
                 self._json(_recent_actions())
+            elif path == "/api/stop":
+                self._json({"stopped": stop_engaged()})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:
@@ -236,6 +238,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_start_fix_input())
             elif path == "/api/lock-ports":
                 self._json(_lock_ports())
+            elif path == "/api/stop":
+                config.STATE_DIR.mkdir(exist_ok=True)
+                if payload.get("stop"):
+                    stop_file().touch()
+                else:
+                    stop_file().unlink(missing_ok=True)
+                self._json({"stopped": stop_engaged()})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:

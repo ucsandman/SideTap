@@ -74,3 +74,23 @@ def test_post_same_origin_json_ok(base_url):
     r = requests.post(base_url + "/api/home", json={}, timeout=5)
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+
+
+def test_stop_toggle_creates_and_removes_file(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    r = requests.post(base_url + "/api/stop", json={"stop": True}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"stopped": True}
+    assert (tmp_path / "STOP").exists()
+    r = requests.post(base_url + "/api/stop", json={"stop": False}, timeout=5)
+    assert r.json() == {"stopped": False}
+    assert not (tmp_path / "STOP").exists()
+
+
+def test_stop_state_readable(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    r = requests.get(base_url + "/api/stop", timeout=5)
+    assert r.json() == {"stopped": False}
+    (tmp_path / "STOP").touch()
+    r = requests.get(base_url + "/api/stop", timeout=5)
+    assert r.json() == {"stopped": True}

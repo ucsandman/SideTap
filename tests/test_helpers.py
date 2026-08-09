@@ -1,16 +1,21 @@
-"""Pure-function tests: tree walking and .env parsing."""
+"""Pure-function tests: tree walking and .env parsing. No phone needed."""
 
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+from phone_harness import config, helpers  # noqa: E402
 from phone_harness.config import _load_env  # noqa: E402
 from phone_harness.helpers import (  # noqa: E402
     _ambiguous_hits,
+    _passcode_pad_visible,
     _thread_title,
     collect_texts,
 )
+from phone_harness.wda_client import WDAError  # noqa: E402
 
 SAMPLE_TREE = {
     "type": "Application",
@@ -119,6 +124,163 @@ def test_thread_title_reads_contact_photo_button():
 def test_thread_title_none_when_no_header_button():
     # A group thread / unknown layout has no "Contact photo for X" button.
     assert _thread_title(SAMPLE_TREE) is None
+
+
+def _buttons_tree(labels):
+    return {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+        "children": [
+            {
+                "type": "Button",
+                "label": label,
+                "isVisible": "1",
+                "rect": {"x": 10, "y": 100 + i * 90, "width": 100, "height": 80},
+            }
+            for i, label in enumerate(labels)
+        ],
+    }
+
+
+def test_passcode_pad_visible_with_digit_buttons():
+    assert _passcode_pad_visible(_buttons_tree(list("1234567890")))
+
+
+def test_passcode_pad_visible_with_passcode_text():
+    tree = _buttons_tree(["Emergency"])
+    tree["children"].append(
+        {
+            "type": "StaticText",
+            "label": "Enter Passcode",
+            "isVisible": "1",
+            "rect": {"x": 100, "y": 200, "width": 200, "height": 30},
+        }
+    )
+    assert _passcode_pad_visible(tree)
+
+
+def test_passcode_pad_not_visible_on_ordinary_screen():
+    assert not _passcode_pad_visible(SAMPLE_TREE)
+
+
+class StubPhone:
+    """Stands in for WDAClient in unlock() tests. Locked until typed at."""
+
+    def __init__(self, tree, type_error=None):
+        self.tree = tree
+        self.typed = []
+        self.type_error = type_error
+        self._locked = True
+
+    def unlock(self):
+        pass
+
+    def is_locked(self):
+        return self._locked
+
+    def window_size(self):
+        return (390.0, 844.0)
+
+    def swipe(self, *_args):
+        pass
+
+    def source(self):
+        return self.tree
+
+    def type_text(self, text):
+        if self.type_error:
+            raise self.type_error
+        self.typed.append(text)
+        self._locked = False
+
+
+@pytest.fixture()
+def fast(monkeypatch):
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(config, "PHONE_PASSCODE", "246810")
+
+    def use(stub):
+        monkeypatch.setattr(helpers, "_client", stub)
+        return stub
+
+    return use
+
+
+def test_unlock_refuses_to_type_passcode_blind(fast):
+    stub = fast(StubPhone(SAMPLE_TREE))  # no passcode pad on screen
+    with pytest.raises(WDAError, match="pad"):
+        helpers.unlock()
+    assert stub.typed == []  # the passcode must never have been sent
+
+
+def test_unlock_types_when_pad_is_visible(fast):
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.typed == ["246810"]
+
+
+def test_unlock_scrubs_passcode_from_errors(fast):
+    err = WDAError("POST /wda/keys: could not type '246810'")
+    fast(StubPhone(_buttons_tree(list("1234567890")), type_error=err))
+    with pytest.raises(WDAError) as exc_info:
+        helpers.unlock()
+    assert "246810" not in str(exc_info.value)
+
+
+class CountingClient:
+    """WDAClient stand-in that counts /source fetches for the cache tests."""
+
+    def __init__(self, tree=SAMPLE_TREE):
+        self.tree = tree
+        self.source_calls = 0
+
+    def source(self):
+        self.source_calls += 1
+        return self.tree
+
+    def tap(self, x, y):
+        pass
+
+    def type_text(self, text):
+        pass
+
+
+def _fresh_counting_client(monkeypatch):
+    helpers._invalidate_tree()  # cache is module state; start every test clean
+    stub = CountingClient()
+    monkeypatch.setattr(helpers, "_client", stub)
+    return stub
+
+
+def test_ui_tree_cached_for_consecutive_reads(monkeypatch):
+    stub = _fresh_counting_client(monkeypatch)
+    assert helpers.find_text("general")  # fetches
+    assert helpers.find_text("bluetooth")  # cache hit, no second fetch
+    assert stub.source_calls == 1
+
+
+def test_actions_invalidate_tree_cache(monkeypatch):
+    stub = _fresh_counting_client(monkeypatch)
+    helpers.ui_tree()
+    helpers.tap(10, 20)  # the screen may now differ; cache must not be reused
+    helpers.ui_tree()
+    assert stub.source_calls == 2
+
+
+def test_type_text_invalidates_tree_cache(monkeypatch):
+    stub = _fresh_counting_client(monkeypatch)
+    helpers.ui_tree()
+    helpers.type_text("hi")
+    helpers.ui_tree()
+    assert stub.source_calls == 2
+
+
+def test_tree_cache_expires_by_ttl(monkeypatch):
+    stub = _fresh_counting_client(monkeypatch)
+    helpers.ui_tree()
+    monkeypatch.setattr(helpers.time, "monotonic", lambda: helpers.time.time() + 3600)
+    helpers.ui_tree()  # the screen can change on its own; a stale tree is unsafe
+    assert stub.source_calls == 2
 
 
 def test_load_env(tmp_path):

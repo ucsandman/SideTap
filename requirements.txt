@@ -1,5 +1,6 @@
 requests>=2.31
 # MCP SDK: powers `phone-harness mcp` (native phone tools in any MCP client).
 # The one dependency beyond requests — standard, narrow-purpose, no framework.
-mcp>=1.9
+# <2: mcp 2.0 dropped mcp.server.fastmcp (the server API this repo uses).
+mcp>=1.9,<2
 

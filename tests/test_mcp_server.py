@@ -8,7 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-pytest.importorskip("mcp")
+# Skip on missing OR incompatible mcp (2.0 dropped mcp.server.fastmcp).
+pytest.importorskip("mcp.server.fastmcp")
 
 from phone_harness import mcp_server  # noqa: E402
 

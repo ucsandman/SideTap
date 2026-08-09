@@ -38,7 +38,7 @@
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
   /* Rows below the phone stretch to the phone's width instead of widening the pane. */
-  #controls, #click-hint, #lan-banner { width:0; min-width:100%; }
+  #controls, #click-hint, #lan-banner, #sig-banner { width:0; min-width:100%; }
   #controls { display:flex; flex-direction:column; gap:var(--s1); }
   #buttons { display:flex; flex-wrap:wrap; justify-content:center; gap:var(--s1); }
   #click-hint { text-align:center; }
@@ -52,6 +52,19 @@
   #lan-banner span { flex:1; }
   #lan-banner button { border-color:rgba(248,81,73,.6); color:var(--bad); flex:0 0 auto; }
   #lan-banner button:hover { background:rgba(248,81,73,.12); border-color:var(--bad); }
+
+  /* ---- signature-expiry banner (7-day free-ID countdown, amber) ------- */
+  #sig-banner {
+    display:flex; align-items:center; gap:var(--s2); padding:9px 12px;
+    border:1px solid var(--warn); border-radius:var(--r2);
+    background:rgba(210,153,34,.12); color:#ffd98e; font-size:12.5px; font-weight:600;
+  }
+  #sig-banner span { flex:1; }
+  #sig-banner button { border-color:rgba(210,153,34,.6); color:var(--warn); flex:0 0 auto; }
+  #sig-banner button:hover { background:rgba(210,153,34,.12); border-color:var(--warn); }
+
+  /* ---- copy button on doctor fix lines -------------------------------- */
+  .copy-btn { padding:2px 8px; font-size:11px; margin-left:6px; vertical-align:baseline; }
 
   /* ---- paste box ------------------------------------------------------ */
   #paste-row { display:flex; gap:var(--s1); align-items:stretch; }
@@ -147,6 +160,10 @@
     <div id="lan-banner" hidden>
       <span>⚠ Phone control ports are open to your network — WDA has no auth.</span>
       <button id="btn-lan-lock">Lock ports</button>
+    </div>
+    <div id="sig-banner" hidden>
+      <span id="sig-banner-text">Input signature expires soon.</span>
+      <button id="btn-sig-fix">Fix input</button>
     </div>
     <div id="screen-wrap">
       <img id="screen" alt="phone screen" src="/api/screenshot">
@@ -416,22 +433,44 @@ document.getElementById('btn-shot').onclick = () => {
   a.href = '/api/screenshot?t=' + Date.now(); a.download = 'phone.png'; a.click();
 };
 
+// Pull the runnable command out of a doctor fix line, if it names one.
+function fixCommand(fix) {
+  const s = String(fix || '');
+  const tick = s.match(/`([^`]+)`/);
+  if (tick) return tick[1];
+  const run = s.match(/[Rr]un:?\s+([^()]+?)(?:\s{3,}|\(|$)/);
+  if (run) return run[1].trim().replace(/[.,]$/, '');
+  const known = s.match(/(phone-harness [a-z-]+|npm install -g [\w-]+|scripts[\\/]lock_ports\.ps1)/);
+  return known ? known[1] : null;
+}
+
 async function loadDoctor() {
   const el = document.getElementById('doctor');
   const LABEL = '<div class="sec">Checks</div>';
   el.innerHTML = LABEL + '<div class="dim">Running checks…</div>';
   try {
     const results = await getJSON('/api/doctor');
-    el.innerHTML = LABEL + results.map(r => `
+    const cmds = results.map(r => (r.ok ? null : fixCommand(r.fix)));
+    el.innerHTML = LABEL + results.map((r, i) => `
       <div class="check ${r.ok ? 'ok' : 'bad'}">
         <span class="mark">${r.ok ? 'PASS' : 'FAIL'}</span>
         <span class="body">
           <span class="name">${r.name}</span>
           <span class="detail">${r.detail}</span>
-          ${r.ok || !r.fix ? '' : `<span class="fix">fix: ${r.fix}</span>`}</span>
+          ${r.ok || !r.fix ? '' : `<span class="fix">fix: ${r.fix}${cmds[i] ? `<button class="copy-btn" data-i="${i}">⧉ copy</button>` : ''}</span>`}</span>
       </div>`).join('');
+    el.querySelectorAll('.copy-btn').forEach(b => b.onclick = async () => {
+      await navigator.clipboard.writeText(cmds[b.dataset.i]);
+      b.textContent = '✓ copied';
+      setTimeout(() => { b.textContent = '⧉ copy'; }, 1500);
+    });
     const lanBad = results.some(r => r.name === 'LAN exposure' && !r.ok);
     document.getElementById('btn-lock').hidden = !lanBad;
+    // The 7-day countdown must not hide inside this panel: banner it.
+    const sig = results.find(r => r.name === 'input signature (7-day)');
+    const sigBad = !!sig && !sig.ok;
+    document.getElementById('sig-banner').hidden = !sigBad;
+    if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
   } catch (e) { el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>'; }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
@@ -515,16 +554,19 @@ async function pollFix() {
   if (job.running) { setTimeout(pollFix, 1000); return; }
   fixRunning = false;
   document.getElementById('btn-fix').disabled = false;
+  document.getElementById('btn-sig-fix').disabled = false;
   loadDoctor(); loadStatus();
 }
-document.getElementById('btn-fix').onclick = async () => {
+async function startFixInput() {
   fixRunning = true;
-  const btn = document.getElementById('btn-fix');
-  btn.disabled = true;
+  document.getElementById('btn-fix').disabled = true;
+  document.getElementById('btn-sig-fix').disabled = true;
   document.getElementById('fix-panel').hidden = false;
   await fetch('/api/fix-input', {method:'POST', headers:JSON_HDR, body:'{}'});
   pollFix();
-};
+}
+document.getElementById('btn-fix').onclick = startFixInput;
+document.getElementById('btn-sig-fix').onclick = startFixInput;
 </script>
 </body>
 </html>

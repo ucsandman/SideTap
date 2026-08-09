@@ -48,6 +48,36 @@ for _fn in _TOOLS:
     server.tool()(_fn)
 
 
+# Batchable tools by name: everything above plus the unlock wrapper's target.
+# screenshot stays out (bytes return; MCP images don't nest inside JSON).
+_ACT_TOOLS = {fn.__name__: fn for fn in _TOOLS}
+_ACT_TOOLS["unlock"] = helpers.unlock
+
+
+@server.tool()
+def act(steps: list[dict]) -> list[dict]:
+    """Run several sidetap tools in one round trip, e.g. a tap-type-send
+    sequence or three scrolls. Each step is {"tool": name, "args": {...}}
+    using the other tools' names and arguments (screenshot excluded).
+    Stops at the first failure; returns one {"tool", "ok", "result"|"error"}
+    entry per step attempted. The screen changes between steps, so batch
+    only what you don't need to look at in between."""
+    out: list[dict] = []
+    for step in steps:
+        name = (step or {}).get("tool")
+        fn = _ACT_TOOLS.get(name)
+        if fn is None:
+            out.append({"tool": name, "ok": False, "error": f"unknown tool: {name!r}"})
+            break
+        try:
+            result = fn(**(step.get("args") or {}))
+        except Exception as exc:
+            out.append({"tool": name, "ok": False, "error": str(exc)})
+            break
+        out.append({"tool": name, "ok": True, "result": result})
+    return out
+
+
 @server.tool()
 def screenshot() -> Image:
     """Current phone screen as a PNG image."""

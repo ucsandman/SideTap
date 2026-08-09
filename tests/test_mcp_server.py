@@ -47,3 +47,47 @@ def test_wrapped_tools_hide_internal_params():
     tools = {t.name: t for t in _tools()}
     # unlock(c=...) takes an internal WDA client; the MCP surface must not.
     assert tools["unlock"].inputSchema.get("properties", {}) == {}
+
+
+# act(): several helper calls in one MCP round trip (launch-thread feedback:
+# eight taps should be one call, not eight schema-heavy round trips).
+
+
+def test_act_runs_steps_in_order(monkeypatch):
+    calls = []
+    monkeypatch.setitem(mcp_server._ACT_TOOLS, "tap", lambda x, y: calls.append(("tap", x, y)))
+    monkeypatch.setitem(mcp_server._ACT_TOOLS, "type_text", lambda text: calls.append(("type", text)))
+    out = mcp_server.act(
+        [{"tool": "tap", "args": {"x": 1, "y": 2}}, {"tool": "type_text", "args": {"text": "hi"}}]
+    )
+    assert calls == [("tap", 1, 2), ("type", "hi")]
+    assert [s["ok"] for s in out] == [True, True]
+
+
+def test_act_stops_at_first_failure(monkeypatch):
+    calls = []
+
+    def boom():
+        raise RuntimeError("nope")
+
+    monkeypatch.setitem(mcp_server._ACT_TOOLS, "press_home", boom)
+    monkeypatch.setitem(mcp_server._ACT_TOOLS, "tap", lambda x, y: calls.append("tap"))
+    out = mcp_server.act(
+        [{"tool": "press_home", "args": {}}, {"tool": "tap", "args": {"x": 1, "y": 2}}]
+    )
+    assert not calls  # the tap after the failure never ran
+    assert out[-1]["ok"] is False
+    assert "nope" in out[-1]["error"]
+
+
+def test_act_rejects_unknown_tool():
+    out = mcp_server.act([{"tool": "screenshot", "args": {}}])
+    assert out[-1]["ok"] is False  # bytes-returning tools are not batchable
+    out = mcp_server.act([{"tool": "rm_rf", "args": {}}])
+    assert out[-1]["ok"] is False
+
+
+def test_act_is_registered_with_schema():
+    tools = {t.name: t for t in _tools()}
+    assert "steps" in tools["act"].inputSchema["properties"]
+    assert "one round trip" in tools["act"].description

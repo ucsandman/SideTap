@@ -36,8 +36,13 @@
     position:relative; border:8px solid #232b34; border-radius:44px; overflow:hidden; background:#000;
     box-shadow:0 0 0 1px #39434f, 0 26px 60px rgba(0,0,0,.55);
     transition:border-color var(--t), box-shadow var(--t);
+    /* Never let the column flex shrink this: overflow:hidden would silently
+       crop the bottom of the phone (the dock vanished under the bezel). If the
+       pane runs out of room it scrolls instead. */
+    flex-shrink:0;
   }
-  #screen { display:block; height:min(100vh - 214px, 1180px); width:auto; background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
+  /* 260px = controls + hint + gaps + pane padding on a desktop layout. */
+  #screen { display:block; height:min(100vh - 260px, 1180px); width:auto; background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
   /* Rows below the phone stretch to the phone's width instead of widening the pane. */

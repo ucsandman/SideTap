@@ -240,6 +240,15 @@ let inputEnabled = false;
 let streaming = false;
 let bootSeen = null;  // viewer process id; a change means stale JS — reload
 
+// Button feedback ("Locked.", "Unlocked.") lives in the same hint line the
+// status poll rewrites every 5s; hold fresh feedback so the poll can't wipe
+// it before the human reads it.
+let hintHoldUntil = 0;
+function showHint(text) {
+  document.getElementById('click-hint').textContent = text;
+  hintHoldUntil = Date.now() + 6000;
+}
+
 // WDA's MJPEG server pushes ~15fps video; polling go-ios PNGs is the fallback.
 function startStream(port) {
   if (streaming) return;
@@ -262,10 +271,11 @@ async function loadStatus() {
     inputEnabled = !!s.input;
     if (s.mjpeg) startStream(s.mjpeg);
     screen.classList.remove('dead');
-    const hint = document.getElementById('click-hint');
-    hint.textContent = inputEnabled
-      ? 'Click to tap · drag to swipe · type to send keys.'
-      : 'Live view is on. Touch input needs the signed driver (see checks →).';
+    if (Date.now() >= hintHoldUntil) {
+      document.getElementById('click-hint').textContent = inputEnabled
+        ? 'Click to tap · drag to swipe · type to send keys.'
+        : 'Live view is on. Touch input needs the signed driver (see checks →).';
+    }
     // Show the fix affordance only while input is off and no job is running.
     if (!fixRunning) {
       document.getElementById('btn-fix').hidden = inputEnabled;
@@ -462,26 +472,24 @@ document.getElementById('btn-home').onclick = () =>
   fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
 document.getElementById('btn-unlock').onclick = async () => {
   const btn = document.getElementById('btn-unlock');
-  const hint = document.getElementById('click-hint');
   btn.disabled = true; btn.textContent = 'Unlocking…';
   try {
     const r = await fetch('/api/unlock', {method:'POST', headers:JSON_HDR, body:'{}'});
     const j = await r.json();
-    hint.textContent = j.ok ? 'Unlocked.' : (j.error || 'Unlock failed');
-  } catch (e) { hint.textContent = 'Unlock failed'; }
+    showHint(j.ok ? 'Unlocked.' : (j.error || 'Unlock failed'));
+  } catch (e) { showHint('Unlock failed'); }
   btn.disabled = false; btn.textContent = 'Unlock';
 };
 document.getElementById('btn-lock').onclick = async () => {
   const btn = document.getElementById('btn-lock');
-  const hint = document.getElementById('click-hint');
   btn.disabled = true; btn.textContent = 'Locking…';
   try {
     const r = await fetch('/api/lock', {method:'POST', headers:JSON_HDR, body:'{}'});
     const j = await r.json();
     // Right after an unlock, iOS's grace period can time this out while the
     // screen still turns off — surface the error but don't dramatize it.
-    hint.textContent = j.ok ? 'Locked.' : (j.error || 'Lock failed');
-  } catch (e) { hint.textContent = 'Lock failed'; }
+    showHint(j.ok ? 'Locked.' : (j.error || 'Lock failed'));
+  } catch (e) { showHint('Lock failed'); }
   btn.disabled = false; btn.textContent = 'Lock';
 };
 document.getElementById('btn-shot').onclick = () => {
@@ -532,22 +540,20 @@ async function loadDoctor() {
 document.getElementById('btn-refresh').onclick = loadDoctor;
 document.getElementById('btn-up').onclick = async () => {
   const btn = document.getElementById('btn-up');
-  const hint = document.getElementById('click-hint');
   btn.disabled = true; btn.textContent = 'Restarting… (up to a minute)';
   try {
     const r = await fetch('/api/up', {method:'POST', headers:JSON_HDR, body:'{}'});
     const j = await r.json();
-    hint.textContent = j.ok ? 'Link is up.' : 'Restart failed — see checks.';
-  } catch (e) { hint.textContent = 'Restart failed — see checks.'; }
+    showHint(j.ok ? 'Link is up.' : 'Restart failed — see checks.');
+  } catch (e) { showHint('Restart failed — see checks.'); }
   btn.disabled = false; btn.textContent = 'Restart link';
   loadDoctor();
 };
 async function lockPorts(btn) {
   btn.disabled = true;
-  const hint = document.getElementById('click-hint');
   const r = await fetch('/api/lock-ports', {method:'POST', headers:JSON_HDR, body:'{}'});
   const j = await r.json();
-  hint.textContent = j.message || (j.ok ? 'Locking ports…' : 'Lock failed');
+  showHint(j.message || (j.ok ? 'Locking ports…' : 'Lock failed'));
   setTimeout(() => { btn.disabled = false; loadDoctor(); }, 3000);
 }
 document.getElementById('btn-lock-ports').onclick = (ev) => lockPorts(ev.currentTarget);
@@ -577,7 +583,7 @@ document.getElementById('btn-paste-send').onclick = async () => {
     const r = await fetch('/api/type', {method:'POST', headers:JSON_HDR,
                                         body: JSON.stringify({text})});
     if (r.ok) box.value = '';
-    else document.getElementById('click-hint').textContent = 'Send failed — is a text field focused?';
+    else showHint('Send failed — is a text field focused?');
   } finally { btn.disabled = false; }
 };
 

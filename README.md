@@ -53,9 +53,12 @@ Ask me before anything that touches my Apple ID, my phone's settings, or sends a
 
 ## Quick start
 
+Needs Windows 10/11, Python 3.10+, Node.js (go-ios installs through npm), and an iPhone on iOS 17+.
+
 ```bat
 git clone https://github.com/ucsandman/sidetap
 cd sidetap
+npm install -g go-ios     :: the USB bridge (this is why Node.js is needed)
 pip install -r requirements.txt
 python launch.py          :: opens the live viewer; the link comes up in the background
 ```

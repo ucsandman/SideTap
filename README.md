@@ -69,6 +69,7 @@ phone-harness doctor      :: diagnose the whole chain, each FAIL names its fix
 phone-harness up          :: start tunnel + WebDriverAgent + port forwards
 phone-harness view        :: live viewer (click = tap, drag = swipe, keys = type)
 phone-harness fix-input   :: re-sign the input driver (free Apple ID, 7-day cycle)
+phone-harness notify-expiry --install  :: daily desktop toast before the signature lapses
 phone-harness down        :: stop background processes
 ```
 

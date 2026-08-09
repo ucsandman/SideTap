@@ -13,6 +13,9 @@ Usage:
                                 #     --env PYTHONPATH=<repo>/src -- python -m phone_harness mcp
   phone-harness fix-input [profile.mobileprovision]
                                 # sign WDA so touch input works (free Apple ID)
+  phone-harness notify-expiry [--install | --uninstall]
+                                # toast when the 7-day signature is <36h from
+                                # expiry; --install adds a daily 10:00 check
 """
 
 from __future__ import annotations
@@ -91,6 +94,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(("OK: " if result["ok"] else "FAILED: ") + result["message"])
         return 0 if result["ok"] else 1
+    if cmd == "notify-expiry":
+        from . import admin
+
+        if "--install" in args[1:]:
+            return admin.reminder_install()
+        if "--uninstall" in args[1:]:
+            return admin.reminder_uninstall()
+        return admin.notify_expiry()
     if cmd in ("help", "--help", "-h"):
         print(__doc__)
         return 0

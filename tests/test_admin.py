@@ -55,6 +55,54 @@ def test_signature_check_in_doctor_checks():
     assert any(fn is admin._check_signature for _name, fn in admin.CHECKS)
 
 
+def test_notify_expiry_silent_when_fresh(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc) + timedelta(days=6)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    toasts = []
+    monkeypatch.setattr(admin, "_toast", lambda t, b: toasts.append((t, b)) or True)
+    assert admin.notify_expiry() == 0
+    assert not toasts
+
+
+def test_notify_expiry_toasts_when_expiring(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc) + timedelta(hours=20)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    toasts = []
+    monkeypatch.setattr(admin, "_toast", lambda t, b: toasts.append((t, b)) or True)
+    assert admin.notify_expiry() == 0
+    assert len(toasts) == 1
+    assert "fix-input" in toasts[0][1]  # the toast tells you what to run
+
+
+def test_notify_expiry_quiet_without_profile(monkeypatch, tmp_path):
+    _use_profile(monkeypatch, tmp_path)  # file absent: not set up, don't nag
+    toasts = []
+    monkeypatch.setattr(admin, "_toast", lambda t, b: toasts.append((t, b)) or True)
+    assert admin.notify_expiry() == 0
+    assert not toasts
+
+
+def test_reminder_command_uses_cmd_wrapper():
+    # The scheduled task runs from System32 with a bare env; the .cmd wrapper
+    # sets PYTHONPATH itself, so the task needs no environment of its own.
+    cmd = admin._reminder_command()
+    assert cmd.endswith('phone-harness.cmd" notify-expiry')
+    assert cmd.startswith('"')
+
+
+def test_reminder_check_never_fails_doctor(monkeypatch):
+    # The reminder is opt-in: doctor stays all-green either way, the detail
+    # carries the install hint instead.
+    monkeypatch.setattr(admin, "_reminder_installed", lambda: False)
+    ok, detail, _fix = admin._check_reminder()
+    assert ok
+    assert "--install" in detail
+    monkeypatch.setattr(admin, "_reminder_installed", lambda: True)
+    ok, detail, _fix = admin._check_reminder()
+    assert ok
+    assert "scheduled" in detail
+
+
 def test_stop_check_flags_engaged(monkeypatch, tmp_path):
     monkeypatch.setattr(admin.config, "STATE_DIR", tmp_path)
     (tmp_path / "STOP").touch()

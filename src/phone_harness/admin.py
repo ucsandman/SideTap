@@ -1,10 +1,13 @@
-"""Doctor diagnostics and up/down orchestration."""
+"""Doctor diagnostics, up/down orchestration, and the expiry reminder."""
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from xml.sax.saxutils import escape
 
 from . import capture, config, device
 from .wda_client import WDAClient, stop_file
@@ -176,6 +179,147 @@ def _check_ports_local():
     )
 
 
+# ---- signature-expiry reminder ---------------------------------------------
+# The 7-day free-Apple-ID signature can only be renewed with one click in
+# Sideloadly (Apple auth mints the new profile — nothing local can). What CAN
+# be automated is never being surprised: a daily toast when <36h remain.
+
+_REMINDER_TASK = "phone-harness signature reminder"
+_REMIND_HOURS = 36.0
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def _hours_left() -> float | None:
+    """Hours until the captured profile expires; None if unknown/not set up."""
+    from . import signing
+
+    if not signing.PROFILE_PATH.exists():
+        return None
+    try:
+        exp = signing.parse_profile(signing.PROFILE_PATH.read_bytes()).get("expires")
+    except signing.SigningError:
+        return None
+    if not isinstance(exp, datetime):
+        return None
+    exp = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+    return (exp - datetime.now(timezone.utc)).total_seconds() / 3600
+
+
+def _toast(title: str, body: str) -> bool:
+    """Windows toast via WinRT (no modules needed). False if it could not show."""
+    xml = (
+        '<toast scenario="reminder"><visual><binding template="ToastGeneric">'
+        f"<text>{escape(title)}</text><text>{escape(body)}</text>"
+        "</binding></visual></toast>"
+    )
+    aumid = (
+        "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}"
+        "\\WindowsPowerShell\\v1.0\\powershell.exe"
+    )
+    ps = (
+        # Each WinRT type must be loaded explicitly before use (PS 5.1).
+        "[Windows.UI.Notifications.ToastNotificationManager, "
+        "Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; "
+        "[Windows.UI.Notifications.ToastNotification, "
+        "Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; "
+        "[Windows.Data.Xml.Dom.XmlDocument, "
+        "Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null; "
+        "$x = New-Object Windows.Data.Xml.Dom.XmlDocument; "
+        f"$x.LoadXml('{xml}'); "
+        "$t = New-Object Windows.UI.Notifications.ToastNotification $x; "
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+        f"'{aumid}').Show($t)"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            timeout=30,
+            creationflags=_NO_WINDOW,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def notify_expiry() -> int:
+    """Toast if the signature has <36h left. Silent (exit 0) otherwise."""
+    hours = _hours_left()
+    if hours is None:
+        print("no captured profile; nothing to remind about")
+        return 0
+    if hours > _REMIND_HOURS:
+        print(f"signature good for {hours / 24:.1f} more days; no reminder needed")
+        return 0
+    when = "has EXPIRED" if hours <= 0 else f"expires in {hours:.0f}h"
+    shown = _toast(
+        f"sidetap: WDA signature {when}",
+        "Run `phone-harness fix-input` and click Start in Sideloadly.",
+    )
+    print(f"signature {when} — toast {'shown' if shown else 'FAILED to show'}")
+    return 0 if shown else 1
+
+
+def _reminder_command() -> str:
+    # The scheduled task starts in System32 with a bare env; the .cmd wrapper
+    # sets PYTHONPATH itself, so the task needs no environment of its own.
+    return f'"{config.REPO_ROOT / "phone-harness.cmd"}" notify-expiry'
+
+
+def _reminder_installed() -> bool:
+    try:
+        return (
+            subprocess.run(
+                ["schtasks", "/Query", "/TN", _REMINDER_TASK],
+                capture_output=True,
+                timeout=15,
+                creationflags=_NO_WINDOW,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def reminder_install() -> int:
+    proc = subprocess.run(
+        ["schtasks", "/Create", "/F", "/SC", "DAILY", "/ST", "10:00",
+         "/TN", _REMINDER_TASK, "/TR", _reminder_command()],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        creationflags=_NO_WINDOW,
+    )  # fmt: skip
+    if proc.returncode == 0:
+        print(f"Daily 10:00 reminder installed (task: {_REMINDER_TASK!r}).")
+        return 0
+    print(f"schtasks failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    return 1
+
+
+def reminder_uninstall() -> int:
+    proc = subprocess.run(
+        ["schtasks", "/Delete", "/F", "/TN", _REMINDER_TASK],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        creationflags=_NO_WINDOW,
+    )
+    print("Reminder removed." if proc.returncode == 0 else proc.stderr.strip())
+    return 0 if proc.returncode == 0 else 1
+
+
+def _check_reminder():
+    """Opt-in, so never a FAIL: the detail carries the install hint instead."""
+    if _reminder_installed():
+        return True, "daily expiry toast scheduled (10:00)", ""
+    return (
+        True,
+        "no daily expiry toast — install: phone-harness notify-expiry --install",
+        "",
+    )
+
+
 CHECKS = [
     ("kill switch (STOP)", _check_stop_engaged),
     ("go-ios installed", _check_go_ios),
@@ -185,6 +329,7 @@ CHECKS = [
     ("WDA installed (input)", _check_wda_installed),
     ("WDA responding (input)", _check_wda_responding),
     ("input signature (7-day)", _check_signature),
+    ("expiry reminder", _check_reminder),
     ("LAN exposure", _check_ports_local),
 ]
 

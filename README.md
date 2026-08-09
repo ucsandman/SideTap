@@ -30,7 +30,7 @@ Or piece by piece:
 ```bat
 phone-harness doctor      :: diagnose the whole chain, each FAIL names its fix
 phone-harness up          :: start tunnel + WebDriverAgent + port forwards
-phone-harness view        :: live viewer: watch the screen, click to tap
+phone-harness view        :: live viewer: watch the screen; click = tap, drag = swipe, keyboard = type
 phone-harness down        :: stop background processes
 ```
 
@@ -60,11 +60,25 @@ PY
 | `type_text("hello")` | type into the focused field |
 | `swipe(x1,y1,x2,y2)` / `scroll("down")` | gestures |
 | `open_app("Settings")` | launch by friendly name or bundle id |
+| `send_message("Mom", "hi")` | open Messages, open the thread, type, send |
 | `press_home()` | home screen |
 | `wait_stable()` | wait until the screen stops changing |
 | `unlock()` | wake + unlock (passcode opt-in via `.env`) |
 
 Add your own helpers in `agent-workspace/agent_helpers.py` — auto-loaded into every script.
+
+## Security
+
+- **Lock the ports.** go-ios forwards WDA (:8100) and its MJPEG stream (:9100) on
+  `0.0.0.0`, and WebDriverAgent has no auth — so by default anyone on your Wi-Fi can
+  drive the phone. The doctor **LAN exposure** check flags this; click **Lock ports**
+  in the viewer (or run `scripts\lock_ports.ps1`, one-time, needs admin) to add a
+  firewall rule. Loopback is never filtered, so the local viewer and client keep working.
+- The viewer API rejects cross-origin and DNS-rebinding requests, so a random web page
+  in another tab cannot drive your phone.
+- `send_message` refuses to send if the contact name is ambiguous or the thread that
+  opens doesn't match, and logs every send to `.state/actions.log` (shown as **Recent
+  sends** in the viewer).
 
 ## Tests
 

@@ -10,7 +10,7 @@
   body { background:var(--bg); color:var(--text); font:14px/1.5 "Segoe UI",system-ui,sans-serif; display:flex; min-height:100vh; }
   #phone-pane { flex:0 0 auto; padding:20px; display:flex; flex-direction:column; align-items:center; gap:12px; }
   #screen-wrap { position:relative; border:6px solid #2b333d; border-radius:28px; overflow:hidden; background:#000; }
-  #screen { display:block; width:320px; height:692px; max-height:80vh; object-fit:contain; background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; }
+  #screen { display:block; height:min(92vh - 90px, 1100px); width:auto; background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
   #buttons { display:flex; gap:8px; }
@@ -35,6 +35,12 @@
   .fstep.on { color:var(--text); }
   .fstep.done { color:var(--ok); }
   .fstep.err { color:var(--bad); }
+  #sent { margin-top:20px; }
+  #sent h2 { font-size:14px; margin-bottom:8px; }
+  .sent-row { padding:6px 10px; border-radius:8px; background:var(--panel); margin-bottom:5px; font-size:12.5px; }
+  .sent-row.ok { border-left:3px solid var(--ok); }
+  .sent-row.pending { border-left:3px solid var(--bad); }
+  .sent-row .who { font-weight:600; }
 </style>
 </head>
 <body>
@@ -48,8 +54,9 @@
       <button id="btn-shot">📷 Save screenshot</button>
       <button id="btn-refresh">↻ Refresh checks</button>
       <button id="btn-fix" hidden>🔧 Fix input</button>
+      <button id="btn-lock" hidden>🔒 Lock ports</button>
     </div>
-    <div class="dim" id="click-hint">Click the screen to tap the phone.</div>
+    <div class="dim" id="click-hint">Click to tap · drag to swipe · type to send keys.</div>
   </div>
   <div id="side">
     <h1>phone-harness</h1>
@@ -68,6 +75,10 @@
       Agents drive it from a terminal:<br>
       <code>phone-harness &lt;&lt;'PY' … PY</code> — helpers like <code>tap_text("General")</code> are pre-imported.
     </div>
+    <div id="sent" hidden>
+      <h2>Recent sends</h2>
+      <div id="sent-list"></div>
+    </div>
   </div>
 <script>
 const screen = document.getElementById('screen');
@@ -81,16 +92,27 @@ async function getJSON(url, opts) {
 }
 
 let inputEnabled = false;
+let streaming = false;
+
+// WDA's MJPEG server pushes ~15fps video; polling go-ios PNGs is the fallback.
+function startStream(port) {
+  if (streaming) return;
+  streaming = true;
+  screen.onload = null;
+  screen.onerror = () => { streaming = false; setTimeout(poll, 500); };
+  screen.src = 'http://' + location.hostname + ':' + port + '/';
+}
 
 async function loadStatus() {
   try {
     const s = await getJSON('/api/status');
     points = s.window;
     inputEnabled = !!s.input;
+    if (s.mjpeg) startStream(s.mjpeg);
     screen.classList.remove('dead');
     const hint = document.getElementById('click-hint');
     hint.textContent = inputEnabled
-      ? 'Click the screen to tap the phone.'
+      ? 'Click to tap · drag to swipe · type to send keys.'
       : 'Live view is on. Touch input needs the signed driver (see checks →).';
     // Show the fix affordance only while input is off and no job is running.
     if (!fixRunning) {
@@ -104,36 +126,114 @@ async function loadStatus() {
 
 // Refresh the still image one request at a time (never overlapping).
 function poll() {
-  screen.onload = screen.onerror = () => setTimeout(poll, 900);
+  if (streaming) return;
+  screen.onload = screen.onerror = () => { if (!streaming) setTimeout(poll, 900); };
   screen.src = '/api/screenshot?t=' + Date.now();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Show what the agent has texted, so the human sees each send (sec-5 audit log).
+async function loadSent() {
+  try {
+    const recs = await getJSON('/api/actions');
+    const wrap = document.getElementById('sent');
+    if (!recs.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    document.getElementById('sent-list').innerHTML = recs.slice().reverse().map(r => `
+      <div class="sent-row ${r.sent ? 'ok' : 'pending'}">
+        <span class="who">${escapeHtml(r.resolved_title || r.contact)}</span>:
+        ${escapeHtml(r.text)}
+        <span class="dim">${r.sent ? '✓ sent' : '… attempted'}</span>
+      </div>`).join('');
+  } catch (e) { /* panel is best-effort */ }
 }
 
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
-  loadStatus(); loadDoctor();
+  loadStatus(); loadDoctor(); loadSent();
   poll();
   setInterval(loadStatus, 5000);
+  setInterval(loadSent, 5000);
 });
 
-screen.addEventListener('click', async (ev) => {
+function showDot(px, py, ok) {
+  dot.style.left = px + 'px';
+  dot.style.top = py + 'px';
+  dot.style.borderColor = ok ? '#4493f8' : '#f85149';
+  dot.style.opacity = 1;
+  setTimeout(() => dot.style.opacity = 0, ok ? 400 : 600);
+}
+
+// Press = tap, drag = swipe (release point sets direction; hold time sets speed).
+let drag = null;
+screen.addEventListener('pointerdown', (ev) => {
   if (!points) return;
+  screen.setPointerCapture(ev.pointerId);
+  drag = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+});
+screen.addEventListener('pointerup', async (ev) => {
+  if (!drag || !points) return;
+  const start = drag; drag = null;
   const r = screen.getBoundingClientRect();
-  dot.style.left = (ev.clientX - r.left) + 'px';
-  dot.style.top = (ev.clientY - r.top) + 'px';
-  if (!inputEnabled) {
-    dot.style.borderColor = '#f85149'; dot.style.opacity = 1;
-    setTimeout(() => dot.style.opacity = 0, 600);
-    return;
+  showDot(start.x - r.left, start.y - r.top, inputEnabled);
+  if (!inputEnabled) return;
+  const clamp = (v, max) => Math.min(Math.max(v, 0), max);
+  const toPt = (cx, cy) => ({
+    x: clamp((cx - r.left) / r.width, 1) * points.width,
+    y: clamp((cy - r.top) / r.height, 1) * points.height,
+  });
+  const post = async (url, body) => {
+    const resp = await fetch(url, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!resp.ok) showDot(start.x - r.left, start.y - r.top, false);
+  };
+  const moved = Math.hypot(ev.clientX - start.x, ev.clientY - start.y);
+  if (moved < 8) {
+    const p = toPt(start.x, start.y);
+    await post('/api/tap', p);
+  } else {
+    const a = toPt(start.x, start.y), b = toPt(ev.clientX, ev.clientY);
+    // Cap at 0.5s: iOS pages the home screen only on quick flicks.
+    const seconds = Math.min(Math.max((Date.now() - start.t) / 1000, 0.1), 0.5);
+    await post('/api/swipe', {x1:a.x, y1:a.y, x2:b.x, y2:b.y, seconds});
   }
-  dot.style.borderColor = '#4493f8'; dot.style.opacity = 1;
-  setTimeout(() => dot.style.opacity = 0, 400);
-  const x = (ev.clientX - r.left) / r.width * points.width;
-  const y = (ev.clientY - r.top) / r.height * points.height;
-  await fetch('/api/tap', {method:'POST', headers:{'Content-Type':'application/json'},
-                           body: JSON.stringify({x, y})});
 });
 
-document.getElementById('btn-home').onclick = () => fetch('/api/home', {method:'POST'});
+// ---- keyboard: type on your keyboard, characters go to the phone -----------
+let keyBuf = '';
+let keyBusy = false;
+async function flushKeys() {
+  if (keyBusy || !keyBuf) return;
+  const text = keyBuf; keyBuf = '';
+  keyBusy = true;
+  try {
+    await fetch('/api/type', {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify({text})});
+  } finally {
+    keyBusy = false;
+    if (keyBuf) flushKeys();   // send what queued up while we were busy
+  }
+}
+window.addEventListener('keydown', (ev) => {
+  if (!inputEnabled) return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
+  let ch = null;
+  if (ev.key === 'Enter') ch = '\n';
+  else if (ev.key === 'Backspace') ch = '\b';
+  else if (ev.key.length === 1) ch = ev.key;           // letters, digits, space, emoji-less symbols
+  if (ch === null) return;
+  ev.preventDefault();
+  keyBuf += ch;
+  flushKeys();
+});
+
+const JSON_HDR = {'Content-Type':'application/json'};
+document.getElementById('btn-home').onclick = () =>
+  fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
 document.getElementById('btn-shot').onclick = () => {
   const a = document.createElement('a');
   a.href = '/api/screenshot?t=' + Date.now(); a.download = 'phone.png'; a.click();
@@ -150,9 +250,20 @@ async function loadDoctor() {
         <span><b>${r.name}</b> — ${r.detail}
           ${r.ok || !r.fix ? '' : `<div class="fix">fix: ${r.fix}</div>`}</span>
       </div>`).join('');
+    const lanBad = results.some(r => r.name === 'LAN exposure' && !r.ok);
+    document.getElementById('btn-lock').hidden = !lanBad;
   } catch (e) { el.innerHTML = '<div class="check bad"><span class="mark">FAIL</span><span>viewer server unreachable</span></div>'; }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
+document.getElementById('btn-lock').onclick = async () => {
+  const btn = document.getElementById('btn-lock');
+  btn.disabled = true;
+  const hint = document.getElementById('click-hint');
+  const r = await fetch('/api/lock-ports', {method:'POST', headers:JSON_HDR, body:'{}'});
+  const j = await r.json();
+  hint.textContent = j.message || (j.ok ? 'Locking ports…' : 'Lock failed');
+  setTimeout(() => { btn.disabled = false; loadDoctor(); }, 3000);
+};
 
 // ---- Fix input (re-sign WDA) ----------------------------------------------
 let fixRunning = false;
@@ -191,7 +302,7 @@ document.getElementById('btn-fix').onclick = async () => {
   const btn = document.getElementById('btn-fix');
   btn.disabled = true;
   document.getElementById('fix-panel').hidden = false;
-  await fetch('/api/fix-input', {method:'POST'});
+  await fetch('/api/fix-input', {method:'POST', headers:JSON_HDR, body:'{}'});
   pollFix();
 };
 </script>

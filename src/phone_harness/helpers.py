@@ -6,6 +6,7 @@ All coordinates are in points (what the UI tree uses), origin top-left.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -198,6 +199,118 @@ def open_app(name: str) -> None:
     client().app_launch(bundle)
 
 
+def _ambiguous_hits(hits: list[dict], contact: str) -> list[dict]:
+    """Competing rows when a contact name cannot be resolved confidently.
+
+    Pure function (unit-tested). Empty result = safe to tap hits[0]. Non-empty =
+    several rows match and NONE is an exact label, so tapping would be a guess.
+    An exact label match wins (tap_text/find_text sort exact first), so it is
+    never ambiguous.
+    """
+    needle = contact.strip().lower()
+    if any(h["text"].strip().lower() == needle for h in hits):
+        return []
+    return hits if len(hits) > 1 else []
+
+
+def _thread_title(tree: dict) -> str | None:
+    """Recipient name of the open one-to-one Messages thread, or None.
+
+    Pure function (unit-tested). This iOS build puts the app word "Messages" in
+    the NavigationBar (verified on device), so we read the thread header instead:
+    the "Contact photo for <name>" button uniquely names a 1:1 thread's
+    recipient. Group threads have no such button, so this returns None for them —
+    the caller treats None as "cannot verify" and leans on the ambiguity check.
+    """
+    prefix = "Contact photo for "
+    for el in collect_texts(tree):
+        if el["type"] == "Button" and el["text"].startswith(prefix):
+            return el["text"][len(prefix) :].strip()
+    return None
+
+
+def _log_action(
+    contact: str, resolved_title: str | None, text: str, sent: bool
+) -> None:
+    """Append one JSONL line to .state/actions.log (gitignored). Never raises."""
+    rec = {
+        "ts": time.time(),
+        "contact": contact,
+        "resolved_title": resolved_title,
+        "text": text,
+        "sent": sent,
+    }
+    try:
+        config.STATE_DIR.mkdir(exist_ok=True)
+        with open(config.STATE_DIR / "actions.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass  # a failed audit line must never block a send
+
+
+def send_message(contact: str, text: str) -> dict:
+    """Send a Message to a conversation: open Messages, open the thread, type, send.
+
+    `contact` must match the conversation name in the Messages list (e.g. "Mom").
+    Refuses to send if the contact name is ambiguous or the thread that opens does
+    not match `contact`, and records every send to .state/actions.log.
+
+    The compose field is labeled "Message", not "iMessage" — message bubbles carry
+    "iMessage" in their labels, so never search for that.
+    """
+    open_app("messages")
+    wait_stable(timeout=8)
+
+    hits = find_text(contact)
+    if not hits:
+        raise WDAError(
+            f"Contact {contact!r} not in the Messages list. It may be below the "
+            "fold — scroll the list, or open the thread by hand first."
+        )
+    ambiguous = _ambiguous_hits(hits, contact)
+    if ambiguous:
+        names = ", ".join(repr(h["text"][:40]) for h in ambiguous[:5])
+        raise WDAError(
+            f"Contact {contact!r} is ambiguous — matches {names}. Use a more exact "
+            "name or open the thread by hand."
+        )
+
+    tap_text(contact)
+    wait_stable(timeout=8)
+
+    title = _thread_title(ui_tree())
+    if title is not None:
+        t, c = title.strip().lower(), contact.strip().lower()
+        if c not in t and t not in c:
+            raise WDAError(
+                f"Opened thread is {title!r}, expected {contact!r} — aborting "
+                "before typing."
+            )
+
+    fields = [e for e in ocr() if e["type"] == "TextField"]
+    if not fields:
+        raise WDAError(
+            "No compose field on screen. Is the conversation open? Call ocr() to check."
+        )
+    field = max(fields, key=lambda e: e["y"])  # compose bar sits at the bottom
+    tap(field["x"], field["y"])
+    time.sleep(0.8)
+    type_text(text)
+    time.sleep(0.5)
+    sends = [
+        e
+        for e in ocr()
+        if e["type"] == "Button" and e["text"].strip().lower() == "send"
+    ]
+    if not sends:
+        raise WDAError("Send button not found — text may not have been typed.")
+    _log_action(contact, title, text, sent=False)  # attempt, before the tap
+    tap(sends[0]["x"], sends[0]["y"])
+    time.sleep(1.5)
+    _log_action(contact, title, text, sent=True)  # confirmed
+    return {"contact": contact, "resolved_title": title, "text": text, "sent": True}
+
+
 def wait_stable(timeout: float = 10.0, interval: float = 0.5) -> bool:
     """Wait until two consecutive screenshots are identical. True if stable."""
     prev = capture.screenshot_png()
@@ -244,6 +357,7 @@ __all__ = [
     "type_text",
     "press_home",
     "open_app",
+    "send_message",
     "wait_stable",
     "unlock",
     "WDAError",

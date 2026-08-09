@@ -291,6 +291,68 @@ def _free_port(port: int) -> None:
             )
 
 
+def port_exposed_to_lan(port: int) -> bool:
+    """True if `port` is LISTENING on any address other than loopback.
+
+    go-ios 1.2.1 has no bind-address flag, so `ios forward` listens on 0.0.0.0 —
+    reachable by the whole LAN. Reuses the netstat parse from `_free_port`.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        proc = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except OSError:
+        return False
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if (
+            len(parts) >= 4
+            and parts[3] == "LISTENING"
+            and parts[1].endswith(f":{port}")
+        ):
+            local = parts[1].rsplit(":", 1)[0]
+            if local not in ("127.0.0.1", "[::1]"):
+                return True
+    return False
+
+
+def lan_block_rule_active(rule_name: str = "phone-harness block LAN") -> bool:
+    """True if the firewall rule that blocks LAN access to the ports is enabled.
+
+    A block rule drops inbound LAN packets but does NOT rebind the socket, so
+    netstat still shows 0.0.0.0 after locking — `port_exposed_to_lan` alone can
+    never notice the fix. This is how the doctor confirms the lock took.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-NetFirewallRule -DisplayName '{rule_name}' "
+                "-ErrorAction SilentlyContinue | Where-Object Enabled -eq 'True' "
+                "| Measure-Object).Count",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    try:
+        return int(proc.stdout.strip()) > 0
+    except ValueError:
+        return False
+
+
 def start_forwards() -> None:
     _free_port(config.WDA_PORT)
     _free_port(config.MJPEG_PORT)
@@ -298,7 +360,7 @@ def start_forwards() -> None:
     _spawn("forward9100", ["forward", str(config.MJPEG_PORT), "9100"])
 
 
-def current_udid() -> str | None:
+def current_udid() -> str | None:  # noqa: vulture  (used by signing.py)
     """First connected iPhone's UDID, or None."""
     try:
         udids = list_devices()
@@ -307,7 +369,7 @@ def current_udid() -> str | None:
     return udids[0] if udids else None
 
 
-def sign_app(
+def sign_app(  # noqa: vulture  (used by signing.py)
     ipa: Path,
     p12: Path,
     profile: Path,

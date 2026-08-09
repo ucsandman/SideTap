@@ -149,11 +149,13 @@ class WDAClient:
     def swipe(
         self, x1: float, y1: float, x2: float, y2: float, seconds: float = 0.3
     ) -> None:
+        # Short pre-move hold: long holds read as drag-to-rearrange, and the
+        # home screen only pages on a quick flick.
         self._pointer_actions(
             [
                 {"type": "pointerMove", "duration": 0, "x": x1, "y": y1},
                 {"type": "pointerDown", "button": 0},
-                {"type": "pause", "duration": 120},
+                {"type": "pause", "duration": 40},
                 {
                     "type": "pointerMove",
                     "duration": int(seconds * 1000),

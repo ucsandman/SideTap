@@ -102,6 +102,29 @@ def _check_wda_responding():
     )
 
 
+def _check_ports_local():
+    """WDA (:8100) and MJPEG (:9100) must not be reachable from the LAN.
+
+    go-ios has no bind flag, so the forwards listen on 0.0.0.0 by default and
+    WebDriverAgent has no auth — anyone on the same Wi-Fi could drive the phone.
+    """
+    exposed = [
+        p for p in (config.WDA_PORT, config.MJPEG_PORT) if device.port_exposed_to_lan(p)
+    ]
+    if not exposed:
+        return True, "WDA/MJPEG ports are loopback-only", ""
+    # go-ios binds 0.0.0.0, so the socket alone always looks exposed; the firewall
+    # block rule is what actually protects it.
+    if device.lan_block_rule_active():
+        return True, "firewall blocks LAN access to WDA/MJPEG", ""
+    ports = ", ".join(str(p) for p in exposed)
+    return (
+        False,
+        f"port(s) {ports} are reachable from your whole network (WDA has no auth)",
+        "Click 'Lock ports' below, or run scripts/lock_ports.ps1 (one-time, needs admin).",
+    )
+
+
 CHECKS = [
     ("go-ios installed", _check_go_ios),
     ("iPhone on USB", _check_device),
@@ -109,6 +132,7 @@ CHECKS = [
     ("perception (view/OCR)", _check_perception),
     ("WDA installed (input)", _check_wda_installed),
     ("WDA responding (input)", _check_wda_responding),
+    ("LAN exposure", _check_ports_local),
 ]
 
 

@@ -35,6 +35,33 @@ def activity_file():
     return config.STATE_DIR / "agent_activity.log"
 
 
+def session_file():
+    """Path of the shared WDA session id. Read dynamically for tests.
+
+    WDA holds exactly ONE session: a client creating its own evicts whoever
+    had it (a viewer click would garble an agent mid-send_message). Every
+    client therefore adopts the published id and only mints a fresh session
+    when the published one is dead.
+    """
+    return config.STATE_DIR / "wda_session"
+
+
+def _read_shared_session() -> str | None:
+    try:
+        sid = session_file().read_text(encoding="utf-8").strip()
+        return sid or None
+    except OSError:
+        return None
+
+
+def _write_shared_session(sid: str) -> None:
+    try:
+        config.STATE_DIR.mkdir(exist_ok=True)
+        session_file().write_text(sid, encoding="utf-8")
+    except OSError:
+        pass  # sharing is best-effort; the session itself still works
+
+
 _ACTIVITY_MAX_BYTES = 64_000
 _ACTIVITY_KEEP_LINES = 200
 
@@ -153,16 +180,27 @@ class WDAClient:
     def _session_request(
         self, method: str, path: str, payload: dict | None = None
     ) -> Any:
-        """Request under /session/{id}/..., recreating the session once if it died."""
+        """Request under /session/{id}/..., recovering once if the session died.
+
+        Recovery prefers the published shared id: if another process already
+        replaced the session, adopt theirs instead of evicting it right back.
+        """
         sid = self.ensure_session()
         try:
             return self._request(method, f"/session/{sid}{path}", payload)
         except WDAError as exc:
             if "invalid session" not in str(exc).lower():
                 raise
-            self.session_id = None
-            sid = self.ensure_session()
-            return self._request(method, f"/session/{sid}{path}", payload)
+        shared = _read_shared_session()
+        if shared and shared != sid:
+            self.session_id = shared  # another process already replaced it
+            try:
+                return self._request(method, f"/session/{shared}{path}", payload)
+            except WDAError as exc:
+                if "invalid session" not in str(exc).lower():
+                    raise
+        self._create_session()
+        return self._request(method, f"/session/{self.session_id}{path}", payload)
 
     # ---- session -----------------------------------------------------------
 
@@ -179,11 +217,33 @@ class WDAClient:
     def ensure_session(self) -> str:
         if self.session_id:
             return self.session_id
+        shared = _read_shared_session()
+        if shared:
+            self.session_id = shared  # dead ids heal in _session_request
+            return shared
+        return self._create_session()
+
+    def _create_session(self) -> str:
         value = self._request("POST", "/session", {"capabilities": {"alwaysMatch": {}}})
         sid = value.get("sessionId") if isinstance(value, dict) else None
         if not sid:
             raise WDAError(f"Could not create a WDA session: {value!r}")
         self.session_id = sid
+        _write_shared_session(sid)
+        try:
+            # Settings ride with the session, so only the creator applies them.
+            self._request(
+                "POST",
+                f"/session/{sid}/appium/settings",
+                {
+                    "settings": {
+                        "waitForIdleTimeout": config.WDA_IDLE_WAIT,
+                        "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
+                    }
+                },
+            )
+        except WDAError:
+            pass  # a session on default waits is slow, not broken
         return sid
 
     # ---- perception --------------------------------------------------------
@@ -284,20 +344,6 @@ class WDAClient:
 
     def app_launch(self, bundle_id: str) -> None:
         self._session_request("POST", "/wda/apps/launch", {"bundleId": bundle_id})
-
-    def disable_action_waits(self) -> None:
-        """Stop WDA from waiting for the app to go idle after each gesture.
-
-        With the defaults (waitForIdleTimeout=10s, animationCoolOffTimeout=2s),
-        scroll momentum keeps the app "busy" and every swipe costs 2-5s of wall
-        time; with both at 0 the same swipe is ~0.8s. Per-session: a recreated
-        session is back on the defaults.
-        """
-        self._session_request(
-            "POST",
-            "/appium/settings",
-            {"settings": {"waitForIdleTimeout": 0, "animationCoolOffTimeout": 0}},
-        )
 
     def configure_mjpeg(
         self,

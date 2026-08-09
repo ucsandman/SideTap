@@ -46,6 +46,13 @@ PHONE_PASSCODE = get("PHONE_PASSCODE")  # opt-in: lets helpers.unlock() type it
 # this workstation, and both stacks must run at the same time.
 VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")
 
+# Post-gesture waits, applied by whichever client creates the shared session.
+# Measured on device: WDA's default animationCoolOffTimeout=2 made every swipe
+# cost 2-5s under scroll momentum; at 0, idle waits of 0/1/2s all measure
+# ~0.7s per swipe. idle=2 keeps settle protection on genuinely busy screens.
+WDA_IDLE_WAIT = float(get("WDA_IDLE_WAIT", "2") or "2")
+WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")
+
 # Live-view stream tuning (measured on device: WDA captures ~34fps max; 50%
 # scale halves frame weight with no fps cost, and the viewer shows ~1100px max).
 MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")

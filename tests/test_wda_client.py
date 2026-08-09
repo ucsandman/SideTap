@@ -30,6 +30,7 @@ class FakeWDA(BaseHTTPRequestHandler):
     kill_next_session = False
     session_counter = 0
     last_settings = None
+    valid_sessions = set()
 
     def log_message(self, *args):  # noqa: vulture
         pass
@@ -63,7 +64,9 @@ class FakeWDA(BaseHTTPRequestHandler):
         self.payload = json.loads(self.rfile.read(length) or b"{}")
         if self.path == "/session":
             FakeWDA.session_counter += 1
-            self._reply({"sessionId": f"sess-{FakeWDA.session_counter}"})
+            sid = f"sess-{FakeWDA.session_counter}"
+            FakeWDA.valid_sessions = {sid}  # real WDA: a new session evicts the old
+            self._reply({"sessionId": sid})
         elif self.path.endswith("/actions") or self.path.endswith("/wda/keys"):
             if self._session_dead():
                 return
@@ -83,6 +86,10 @@ class FakeWDA(BaseHTTPRequestHandler):
             FakeWDA.kill_next_session = False
             self._reply({"error": "invalid session id", "message": "session gone"}, 404)
             return True
+        sid = self.path.split("/")[2] if self.path.startswith("/session/") else None
+        if sid and sid not in FakeWDA.valid_sessions:
+            self._reply({"error": "invalid session id", "message": "session gone"}, 404)
+            return True
         return False
 
 
@@ -95,6 +102,7 @@ def wda(tmp_path, monkeypatch):
     FakeWDA.requests_seen = []
     FakeWDA.kill_next_session = False
     FakeWDA.session_counter = 0
+    FakeWDA.valid_sessions = set()
     client = WDAClient(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5)
     yield client
     server.shutdown()
@@ -128,6 +136,54 @@ def test_dead_session_recovers_once(wda):
     FakeWDA.kill_next_session = True
     assert wda.window_size() == (390.0, 844.0)  # auto-recreates and retries
     assert FakeWDA.session_counter == 2
+
+
+# WDA holds exactly ONE session: a client creating its own steals it from
+# whoever had it (viewer click garbles an agent mid-send_message). All clients
+# therefore share the active session id through .state/wda_session.
+
+
+def test_second_client_adopts_shared_session(wda):
+    wda.window_size()  # creates sess-1, publishes it
+    other = WDAClient(base_url=wda.base_url, timeout=5)
+    other.window_size()
+    assert other.session_id == wda.session_id
+    assert FakeWDA.session_counter == 1  # adopted, not stolen
+
+
+def test_stale_shared_session_file_recovers(wda):
+    (config.STATE_DIR / "wda_session").write_text("sess-gone", encoding="utf-8")
+    assert wda.window_size() == (390.0, 844.0)  # invalid -> creates fresh
+    assert FakeWDA.session_counter == 1
+    assert (config.STATE_DIR / "wda_session").read_text(
+        encoding="utf-8"
+    ).strip() == wda.session_id
+
+
+def test_both_current_and_shared_dead_creates_fresh(wda):
+    # Seen live: a process on older code churned sessions, so the in-memory id
+    # AND the published id were both dead. Recovery must still reach a fresh
+    # session instead of raising.
+    wda.window_size()  # sess-1
+    FakeWDA.valid_sessions = set()  # everything dead
+    (config.STATE_DIR / "wda_session").write_text("sess-ghost", encoding="utf-8")
+    assert wda.window_size() == (390.0, 844.0)
+    assert wda.session_id == "sess-2"
+    assert FakeWDA.session_counter == 2
+
+
+def test_invalid_session_adopts_replacement_from_file(wda):
+    import requests as _requests
+
+    wda.window_size()  # sess-1
+    # Another process replaces the session (sess-2 evicts sess-1) and
+    # publishes the new id — exactly what its own recovery path would do.
+    r = _requests.post(f"{wda.base_url}/session", json={}, timeout=5)
+    new_sid = r.json()["value"]["sessionId"]
+    (config.STATE_DIR / "wda_session").write_text(new_sid, encoding="utf-8")
+    assert wda.window_size() == (390.0, 844.0)
+    assert wda.session_id == new_sid  # adopted the replacement
+    assert FakeWDA.session_counter == 2  # did not mint a third
 
 
 def test_unreachable_server_raises_clear_error():
@@ -171,14 +227,27 @@ def test_configure_mjpeg_defaults_from_config(wda):
     assert config.MJPEG_SCALE == 50
 
 
-def test_disable_action_waits_zeroes_idle_timeouts(wda):
-    # Measured on device: with the defaults, scroll momentum makes WDA wait
-    # 2-5s after every swipe; with both timeouts at 0 the same swipe is ~0.8s.
-    wda.disable_action_waits()
+def test_new_session_applies_standard_action_waits(wda):
+    # Measured on device: animationCoolOffTimeout=2 (WDA default) is what made
+    # every swipe cost 2-5s under scroll momentum; with it at 0, idle waits of
+    # 0/1/2s all measure ~0.7s per swipe. idle=2 keeps settle protection for
+    # agents on genuinely busy screens at no measured cost. The session CREATOR
+    # applies the settings; adopters inherit them with the session.
+    wda.window_size()
     assert FakeWDA.last_settings == {
-        "waitForIdleTimeout": 0,
-        "animationCoolOffTimeout": 0,
+        "waitForIdleTimeout": config.WDA_IDLE_WAIT,
+        "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
     }
+    assert config.WDA_IDLE_WAIT == 2.0
+    assert config.WDA_ANIM_COOLOFF == 0.0
+
+
+def test_adopting_client_does_not_retune(wda):
+    wda.window_size()  # creator tunes
+    FakeWDA.last_settings = None
+    other = WDAClient(base_url=wda.base_url, timeout=5)
+    other.window_size()  # adopts the shared session
+    assert FakeWDA.last_settings is None
 
 
 def test_stop_file_blocks_actions(wda, tmp_path, monkeypatch):

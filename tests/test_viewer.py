@@ -136,9 +136,6 @@ class TuneStub:
     def configure_mjpeg(self):
         self.tuned += 1
 
-    def disable_action_waits(self):
-        pass
-
 
 def test_tune_mjpeg_reapplies_on_new_session(monkeypatch):
     # Settings are per-session: after an agent steals the session (or WDA

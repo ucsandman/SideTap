@@ -90,11 +90,10 @@ def _png_size(png: bytes) -> tuple[int, int]:
     return 0, 0
 
 
-# Tune WDA once per session: MJPEG stream settings (WDA's own defaults are
-# choppy) and gesture idle-waits (the defaults make rapid scrolling take 2-5s
-# per swipe, which queues wheel swipes until requests time out). Settings are
-# per-session — after an agent steals the session or WDA restarts, the
-# recreated session is back on the defaults, so we key on the session id.
+# Tune WDA's MJPEG stream once per session (WDA's own defaults are choppy).
+# Settings ride with the session, so a replaced session (WDA restart) needs a
+# retune — key on the session id. Gesture idle-waits are NOT tuned here: the
+# session creator applies those (wda_client._create_session, config-driven).
 _TUNED_SESSION: str | None = None
 
 
@@ -104,7 +103,6 @@ def _tune_mjpeg(client: WDAClient) -> None:
         return
     try:
         client.configure_mjpeg()  # config.MJPEG_FPS/_QUALITY/_SCALE
-        client.disable_action_waits()
         _TUNED_SESSION = client.session_id
     except WDAError:
         pass  # stream still works on defaults
@@ -292,8 +290,8 @@ class Handler(BaseHTTPRequestHandler):
                 from . import helpers
 
                 with _ACTION_LOCK:
-                    # Reuse the viewer's client: WDA holds one session, and a
-                    # second client would steal it mid-sequence.
+                    # Reuse the viewer's client: unlock is timing-sensitive,
+                    # and a fresh client would redo session discovery mid-wake.
                     helpers.unlock(self.client)
                 self._json({"ok": True})
             elif path == "/api/up":

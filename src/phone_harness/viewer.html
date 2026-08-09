@@ -16,6 +16,9 @@
   }
   * { box-sizing:border-box; margin:0; }
   [hidden] { display:none !important; }   /* buttons set display, which would beat the UA rule */
+  /* The page itself never scrolls (wheel belongs to the phone); each pane
+     scrolls internally instead. */
+  html, body { height:100%; overflow:hidden; }
   body {
     background:var(--bg);
     background-image:radial-gradient(1100px 700px at 26% -10%, #151c24 0%, transparent 70%);
@@ -28,7 +31,7 @@
   ::-webkit-scrollbar-thumb:hover { background:#39434f; }
 
   /* ---- phone pane ---------------------------------------------------- */
-  #phone-pane { flex:0 0 auto; padding:var(--s4); display:flex; flex-direction:column; align-items:center; gap:var(--s2); }
+  #phone-pane { flex:0 0 auto; padding:var(--s4); display:flex; flex-direction:column; align-items:center; gap:var(--s2); max-height:100vh; overflow-y:auto; }
   #screen-wrap {
     position:relative; border:8px solid #232b34; border-radius:44px; overflow:hidden; background:#000;
     box-shadow:0 0 0 1px #39434f, 0 26px 60px rgba(0,0,0,.55);
@@ -103,7 +106,7 @@
   }
 
   /* ---- side pane ----------------------------------------------------- */
-  #side { flex:1; padding:var(--s4); max-width:520px; }
+  #side { flex:1; padding:var(--s4); max-width:520px; height:100vh; overflow-y:auto; }
   h1 { font-size:22px; font-weight:600; letter-spacing:-.015em; margin-bottom:2px; }
   .dim { color:var(--dim); font-size:13px; }
   .sec { font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin-bottom:var(--s2); }
@@ -379,6 +382,33 @@ screen.addEventListener('pointerup', async (ev) => {
     await post('/api/swipe', {x1:a.x, y1:a.y, x2:b.x, y2:b.y, seconds});
   }
 });
+
+// ---- mouse wheel over the phone scrolls the phone ---------------------------
+// Deltas accumulate while a swipe is in flight (one at a time, like flushKeys),
+// so fast wheeling becomes one bigger swipe instead of a queue of laggy ones.
+let wheelAcc = 0;
+let wheelBusy = false;
+async function flushWheel() {
+  if (wheelBusy || !wheelAcc || !points || !inputEnabled) return;
+  const delta = wheelAcc; wheelAcc = 0;
+  wheelBusy = true;
+  try {
+    const cx = points.width / 2, cy = points.height / 2;
+    const dist = Math.min(Math.max(Math.abs(delta) * 0.7, 30), points.height * 0.45);
+    const dy = delta > 0 ? -dist : dist;   // wheel down = content moves up
+    await fetch('/api/swipe', {method:'POST', headers:JSON_HDR, body: JSON.stringify(
+      {x1: cx, y1: cy, x2: cx, y2: cy + dy, seconds: 0.25})});
+  } finally {
+    wheelBusy = false;
+    if (wheelAcc) flushWheel();
+  }
+}
+screen.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  if (!points || !inputEnabled) return;
+  wheelAcc += ev.deltaY;
+  flushWheel();
+}, {passive: false});
 
 // ---- keyboard: type on your keyboard, characters go to the phone -----------
 let keyBuf = '';

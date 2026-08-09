@@ -90,17 +90,22 @@ def _png_size(png: bytes) -> tuple[int, int]:
     return 0, 0
 
 
-# Tune WDA's MJPEG stream once per viewer run (WDA's own defaults are choppy).
-_MJPEG_TUNED = False
+# Tune WDA once per session: MJPEG stream settings (WDA's own defaults are
+# choppy) and gesture idle-waits (the defaults make rapid scrolling take 2-5s
+# per swipe, which queues wheel swipes until requests time out). Settings are
+# per-session — after an agent steals the session or WDA restarts, the
+# recreated session is back on the defaults, so we key on the session id.
+_TUNED_SESSION: str | None = None
 
 
 def _tune_mjpeg(client: WDAClient) -> None:
-    global _MJPEG_TUNED
-    if _MJPEG_TUNED:
+    global _TUNED_SESSION
+    if client.session_id and client.session_id == _TUNED_SESSION:
         return
     try:
         client.configure_mjpeg()  # config.MJPEG_FPS/_QUALITY/_SCALE
-        _MJPEG_TUNED = True
+        client.disable_action_waits()
+        _TUNED_SESSION = client.session_id
     except WDAError:
         pass  # stream still works on defaults
 

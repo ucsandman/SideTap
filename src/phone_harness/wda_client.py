@@ -285,6 +285,20 @@ class WDAClient:
     def app_launch(self, bundle_id: str) -> None:
         self._session_request("POST", "/wda/apps/launch", {"bundleId": bundle_id})
 
+    def disable_action_waits(self) -> None:
+        """Stop WDA from waiting for the app to go idle after each gesture.
+
+        With the defaults (waitForIdleTimeout=10s, animationCoolOffTimeout=2s),
+        scroll momentum keeps the app "busy" and every swipe costs 2-5s of wall
+        time; with both at 0 the same swipe is ~0.8s. Per-session: a recreated
+        session is back on the defaults.
+        """
+        self._session_request(
+            "POST",
+            "/appium/settings",
+            {"settings": {"waitForIdleTimeout": 0, "animationCoolOffTimeout": 0}},
+        )
+
     def configure_mjpeg(
         self,
         framerate: int = config.MJPEG_FPS,

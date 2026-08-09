@@ -126,6 +126,34 @@ def test_refresh_lan_state_clears_when_locked(monkeypatch, lan_state):
     assert _wait_for_lan_state(lan_state, False)
 
 
+class TuneStub:
+    """Counts tuning calls; session_id mutable like a real recreated session."""
+
+    def __init__(self, session_id="s1"):
+        self.session_id = session_id
+        self.tuned = 0
+
+    def configure_mjpeg(self):
+        self.tuned += 1
+
+    def disable_action_waits(self):
+        pass
+
+
+def test_tune_mjpeg_reapplies_on_new_session(monkeypatch):
+    # Settings are per-session: after an agent steals the session (or WDA
+    # restarts), the viewer's recreated session is back on WDA defaults and
+    # must be tuned again.
+    monkeypatch.setattr(viewer, "_TUNED_SESSION", None)
+    client = TuneStub()
+    viewer._tune_mjpeg(client)
+    viewer._tune_mjpeg(client)
+    assert client.tuned == 1  # same session: once
+    client.session_id = "s2"
+    viewer._tune_mjpeg(client)
+    assert client.tuned == 2  # recreated session: re-applied
+
+
 def test_activity_endpoint_serves_feed(base_url, tmp_path, monkeypatch):
     import json
 

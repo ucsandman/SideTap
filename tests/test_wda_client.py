@@ -171,6 +171,16 @@ def test_configure_mjpeg_defaults_from_config(wda):
     assert config.MJPEG_SCALE == 50
 
 
+def test_disable_action_waits_zeroes_idle_timeouts(wda):
+    # Measured on device: with the defaults, scroll momentum makes WDA wait
+    # 2-5s after every swipe; with both timeouts at 0 the same swipe is ~0.8s.
+    wda.disable_action_waits()
+    assert FakeWDA.last_settings == {
+        "waitForIdleTimeout": 0,
+        "animationCoolOffTimeout": 0,
+    }
+
+
 def test_stop_file_blocks_actions(wda, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     (tmp_path / "STOP").touch()

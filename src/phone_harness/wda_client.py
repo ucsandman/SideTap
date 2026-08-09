@@ -177,6 +177,15 @@ class WDAClient:
             _log_activity(path, payload)  # only actions that actually happened
         return value
 
+    @staticmethod
+    def _session_unusable(exc: WDAError) -> bool:
+        """Errors a fresh session fixes. "invalid session" is the dead one;
+        "point.x != INFINITY" is a session that crossed a screen lock — it
+        still answers perception GETs but every /actions fails forever
+        (seen live 2026-08-09; the unlock button only woke the phone)."""
+        msg = str(exc).lower()
+        return "invalid session" in msg or "point.x != infinity" in msg
+
     def _session_request(
         self, method: str, path: str, payload: dict | None = None
     ) -> Any:
@@ -189,7 +198,7 @@ class WDAClient:
         try:
             return self._request(method, f"/session/{sid}{path}", payload)
         except WDAError as exc:
-            if "invalid session" not in str(exc).lower():
+            if not self._session_unusable(exc):
                 raise
         shared = _read_shared_session()
         if shared and shared != sid:
@@ -197,7 +206,7 @@ class WDAClient:
             try:
                 return self._request(method, f"/session/{shared}{path}", payload)
             except WDAError as exc:
-                if "invalid session" not in str(exc).lower():
+                if not self._session_unusable(exc):
                     raise
         self._create_session()
         return self._request(method, f"/session/{self.session_id}{path}", payload)

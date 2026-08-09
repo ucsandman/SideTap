@@ -31,6 +31,7 @@ class FakeWDA(BaseHTTPRequestHandler):
     session_counter = 0
     last_settings = None
     valid_sessions = set()
+    infinity_sessions = set()  # sessions whose /actions fail with INFINITY
 
     def log_message(self, *args):  # noqa: vulture
         pass
@@ -70,6 +71,17 @@ class FakeWDA(BaseHTTPRequestHandler):
         elif self.path.endswith("/actions") or self.path.endswith("/wda/keys"):
             if self._session_dead():
                 return
+            sid = self.path.split("/")[2]
+            if sid in FakeWDA.infinity_sessions:
+                self._reply(
+                    {
+                        "error": "unknown error",
+                        "message": "Invalid parameter not satisfying: "
+                        "point.x != INFINITY && point.y != INFINITY",
+                    },
+                    500,
+                )
+                return
             self._reply(None)
         elif self.path.endswith("/wda/apps/launch"):
             self._reply(None)
@@ -103,6 +115,7 @@ def wda(tmp_path, monkeypatch):
     FakeWDA.kill_next_session = False
     FakeWDA.session_counter = 0
     FakeWDA.valid_sessions = set()
+    FakeWDA.infinity_sessions = set()
     client = WDAClient(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5)
     yield client
     server.shutdown()
@@ -158,6 +171,19 @@ def test_stale_shared_session_file_recovers(wda):
     assert (config.STATE_DIR / "wda_session").read_text(
         encoding="utf-8"
     ).strip() == wda.session_id
+
+
+def test_infinity_frame_error_heals_like_dead_session(wda):
+    # Seen live 2026-08-09: a session that crossed a screen lock keeps
+    # answering perception GETs but fails every /actions with "point.x !=
+    # INFINITY" — alive but unusable, forever. The shared-session model
+    # preserves such a session faithfully, so recovery must treat the
+    # INFINITY error exactly like a dead session: recreate and retry once.
+    wda.window_size()  # sess-1
+    FakeWDA.infinity_sessions = {"sess-1"}
+    wda.tap(10, 20)  # must heal to sess-2 and succeed, not raise
+    assert wda.session_id == "sess-2"
+    assert FakeWDA.session_counter == 2
 
 
 def test_both_current_and_shared_dead_creates_fresh(wda):

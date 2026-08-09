@@ -9,7 +9,8 @@ Usage:
   phone-harness down            # stop them
   phone-harness view            # live viewer web page (click = tap)
   phone-harness mcp             # MCP server over stdio, e.g.:
-                                #   claude mcp add sidetap -- phone-harness mcp
+                                #   claude mcp add sidetap \
+                                #     --env PYTHONPATH=<repo>/src -- python -m phone_harness mcp
   phone-harness fix-input [profile.mobileprovision]
                                 # sign WDA so touch input works (free Apple ID)
 """

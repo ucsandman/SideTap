@@ -1,8 +1,9 @@
 """MCP server: the agent helpers as native typed tools for any MCP client.
 
-`claude mcp add sidetap -- phone-harness mcp` (or the equivalent in Claude
-Desktop) lets a session drive the phone with typed tool calls instead of
-piping Python through stdin. stdio transport; needs the `mcp` package.
+Register (adjust the clone path):
+  claude mcp add sidetap --env PYTHONPATH=<repo>/src -- python -m phone_harness mcp
+lets a session drive the phone with typed tool calls instead of piping
+Python through stdin. stdio transport; needs the `mcp` package (<2).
 """
 
 from __future__ import annotations

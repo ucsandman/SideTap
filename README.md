@@ -92,8 +92,11 @@ Add your own helpers in `agent-workspace/agent_helpers.py`. They auto-load into 
 The same helpers are available as native typed MCP tools:
 
 ```bat
-claude mcp add sidetap -- phone-harness mcp
+claude mcp add --scope user sidetap --env PYTHONPATH=C:/path/to/sidetap/src -- python -m phone_harness mcp
 ```
+
+(Adjust the path to your clone. `--scope user` makes the tools available in
+every project; new sessions pick the server up automatically.)
 
 Then any session can call `tap_text`, `ocr`, `send_message`, `screenshot`, and the rest directly — schemas and descriptions come from the Python signatures, so the two surfaces never drift.
 

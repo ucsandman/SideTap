@@ -248,6 +248,95 @@ def start_wda(bundle_id: str) -> None:
     )
 
 
+def _free_port(port: int) -> None:
+    """Kill our own leftover `ios forward` bound to `port`.
+
+    Repeated bring-ups spawn a new forwarder and overwrite its pid file,
+    orphaning the previous one - which keeps the port and blocks WDA from ever
+    being reachable. Only ios.exe listeners are killed; unrelated ports are left
+    alone.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        proc = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except OSError:
+        return
+    pids = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if (
+            len(parts) >= 5
+            and parts[3] == "LISTENING"
+            and parts[1].endswith(f":{port}")
+        ):
+            pids.add(parts[4])
+    for pid in pids:
+        info = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if "ios.exe" in info.stdout.lower():
+            subprocess.run(
+                ["taskkill", "/F", "/PID", pid],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+
+
 def start_forwards() -> None:
+    _free_port(config.WDA_PORT)
+    _free_port(config.MJPEG_PORT)
     _spawn("forward8100", ["forward", str(config.WDA_PORT), "8100"])
     _spawn("forward9100", ["forward", str(config.MJPEG_PORT), "9100"])
+
+
+def current_udid() -> str | None:
+    """First connected iPhone's UDID, or None."""
+    try:
+        udids = list_devices()
+    except (DeviceError, subprocess.TimeoutExpired):
+        return None
+    return udids[0] if udids else None
+
+
+def sign_app(
+    ipa: Path,
+    p12: Path,
+    profile: Path,
+    p12password: str = "",
+    bundleid: str | None = None,
+    install: bool = True,
+) -> str:
+    """Sign an IPA (nested .xctest included) with `ios sign app` and install it.
+
+    This is the step Sideloadly skips: go-ios re-signs the nested
+    WebDriverAgentRunner.xctest with the same Team ID as the host app, which is
+    what iOS Library Validation requires. `bundleid` overrides the app's bundle
+    id so it matches the provisioning profile. Returns the combined go-ios output.
+    """
+    args = [
+        "sign",
+        "app",
+        f"--path={ipa}",
+        f"--p12file={p12}",
+        f"--profile={profile}",
+    ]
+    if p12password:
+        args.append(f"--p12password={p12password}")
+    if bundleid:
+        args.append(f"--bundleid={bundleid}")
+    if install:
+        args.append("--install")
+    proc = _run(args, timeout=300)
+    out = (proc.stdout + proc.stderr).strip()
+    if proc.returncode != 0:
+        raise DeviceError(f"`ios sign app` failed:\n{out[-1200:]}")
+    return out

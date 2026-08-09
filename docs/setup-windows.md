@@ -39,14 +39,34 @@ If the menu still does not appear, force-close Settings and open it again.
 1. Install [Sideloadly](https://sideloadly.io).
 2. Download the newest prebuilt WDA ipa from
    https://github.com/appium/WebDriverAgent/releases
-   (file like `WebDriverAgentRunner-Runner-*.ipa`).
+   (file like `WebDriverAgentRunner-Runner-*.ipa`) and save it as
+   `wda/WebDriverAgent.ipa` in this repo.
 3. In Sideloadly: select the ipa, select your iPhone, sign in with your
    (free) Apple ID, click Start.
 4. On the iPhone: Settings → General → VPN & Device Management → trust your
    Apple ID developer profile.
 
-**Every 7 days** the free signature expires. Fix = repeat step 3.3 (two clicks).
-`phone-harness doctor` detects this and reminds you.
+### Step 3b — enable touch input
+
+Sideloadly signs the WDA app but **not** its nested test bundle, so touch input
+stays dead. One command re-signs the whole thing (nested bundle included) with
+go-ios, using a profile it captures from your Sideloadly run — no Apple password
+re-entry:
+
+```bat
+phone-harness fix-input
+```
+
+Run it, then click **Start** in Sideloadly. `fix-input` watches for the profile
+Sideloadly mints, re-signs WDA locally, installs it, and brings the driver up.
+The viewer has the same thing as a **🔧 Fix input** button.
+
+Already have a `.mobileprovision` on disk? Skip the watch and pass it:
+`phone-harness fix-input path\to\profile.mobileprovision`.
+
+**Every 7 days** the free profile expires. Fix = run `phone-harness fix-input`
+again (click Start in Sideloadly once when it asks). `phone-harness doctor`
+detects the expiry and reminds you.
 
 ## Step 4 — verify
 

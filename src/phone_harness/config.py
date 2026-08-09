@@ -11,7 +11,6 @@ ENV_FILE = REPO_ROOT / ".env"
 
 WDA_PORT = 8100
 MJPEG_PORT = 9100
-VIEWER_PORT = 8765
 
 WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
 MJPEG_URL = f"http://127.0.0.1:{MJPEG_PORT}"
@@ -42,3 +41,7 @@ def get(key: str, default: str | None = None) -> str | None:
 # Optional overrides
 WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # else auto-detected from installed apps
 PHONE_PASSCODE = get("PHONE_PASSCODE")  # opt-in: lets helpers.unlock() type it
+
+# Default moved off 8765: Practical Systems' pipeline API owns that port on
+# this workstation, and both stacks must run at the same time.
+VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")

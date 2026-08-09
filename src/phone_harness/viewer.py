@@ -1,6 +1,7 @@
 """Local web viewer: live phone screen, click-to-tap, doctor panel.
 
-Stdlib http.server only. Serves on http://127.0.0.1:8765 (config.VIEWER_PORT).
+Stdlib http.server only. Serves on http://127.0.0.1:8770 (config.VIEWER_PORT,
+override with VIEWER_PORT in .env).
 The page streams frames from WDA's MJPEG server (:9100) and falls back to
 polling /api/screenshot when the stream is down.
 """
@@ -8,6 +9,7 @@ polling /api/screenshot when the stream is down.
 from __future__ import annotations
 
 import json
+import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +18,38 @@ from . import admin, capture, config
 from .wda_client import WDAClient, WDAError
 
 _HTML = Path(__file__).with_name("viewer.html")
+
+# Shared state for the "Fix input" job so a GET can poll a POST-started run.
+_FIX_LOCK = threading.Lock()
+_FIX_JOB = {"running": False, "step": "idle", "message": "", "ok": None}
+
+
+def _fix_input_worker():
+    from . import signing
+
+    def progress(step, message):
+        with _FIX_LOCK:
+            _FIX_JOB["step"] = step
+            _FIX_JOB["message"] = message
+
+    result = signing.fix_input(progress=progress)
+    with _FIX_LOCK:
+        _FIX_JOB.update(
+            running=False,
+            step=result["step"],
+            message=result["message"],
+            ok=result["ok"],
+        )
+
+
+def _start_fix_input() -> dict:
+    with _FIX_LOCK:
+        if _FIX_JOB["running"]:
+            return dict(_FIX_JOB)
+        _FIX_JOB.update(running=True, step="p12", message="starting…", ok=None)
+    threading.Thread(target=_fix_input_worker, daemon=True).start()
+    with _FIX_LOCK:
+        return dict(_FIX_JOB)
 
 
 def _png_size(png: bytes) -> tuple[int, int]:
@@ -71,6 +105,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"window": {"width": pw, "height": ph}, "input": False})
             elif path == "/api/doctor":
                 self._json(admin.doctor_results())
+            elif path == "/api/fix-input":
+                with _FIX_LOCK:
+                    self._json(dict(_FIX_JOB))
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:
@@ -89,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/home":
                 self.client.home()
                 self._json({"ok": True})
+            elif path == "/api/fix-input":
+                self._json(_start_fix_input())
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:

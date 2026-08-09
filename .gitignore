@@ -13,3 +13,5 @@ devimages/
 selfIdentity.plist
 *.mobileprovision
 *.p12
+sideloadlydaemon.log
+.handoff-notes-*.md

@@ -8,15 +8,17 @@ Windows rebuild of ShawnPana/phone-harness (which is macOS-only).
 - `src/phone_harness/wda_client.py` — thin HTTP client for WebDriverAgent (:8100). requests only.
 - `src/phone_harness/device.py` — go-ios wrapper; detached tunnel/runwda/forward processes, pids+logs in `.state/`.
 - `src/phone_harness/admin.py` — `doctor` (ordered checks, each names its fix), `up`, `down`.
+- `src/phone_harness/signing.py` — `fix-input`: builds a p12 from Sideloadly's cert, captures the profile Sideloadly mints (Temp watcher), re-signs WDA incl. the nested `.xctest` via `ios sign app`. All local; no Apple auth.
 - `src/phone_harness/helpers.py` — agent API (`tap`, `tap_text`, `ocr`, `open_app`, …). `ocr()` reads the UI tree.
 - `src/phone_harness/run.py` — CLI; no-arg mode executes stdin with helpers in scope; autoloads `agent-workspace/agent_helpers.py`.
-- `src/phone_harness/viewer.py` + `viewer.html` — human surface: live MJPEG screen (:9100), click-to-tap, doctor panel (:8765).
+- `src/phone_harness/viewer.py` + `viewer.html` — human surface: live MJPEG screen (:9100), click-to-tap, doctor panel (:8770, VIEWER_PORT to override; 8765 belongs to the Practical Systems API).
 
 ## Commands
 
 - Run everything: `python launch.py`
 - Tests: `python -m pytest tests -q`
 - Diagnose: `phone-harness doctor` (never guess at connection problems — run this)
+- Enable touch input (free Apple ID): `phone-harness fix-input`, then click Start in Sideloadly
 
 ## Rules
 

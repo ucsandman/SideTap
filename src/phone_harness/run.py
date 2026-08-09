@@ -8,6 +8,8 @@ Usage:
   phone-harness up              # start tunnel + WDA + port forwards
   phone-harness down            # stop them
   phone-harness view            # live viewer web page (click = tap)
+  phone-harness fix-input [profile.mobileprovision]
+                                # sign WDA so touch input works (free Apple ID)
 """
 
 from __future__ import annotations
@@ -65,6 +67,17 @@ def main(argv: list[str] | None = None) -> int:
         from . import viewer
 
         return viewer.serve()
+    if cmd == "fix-input":
+        from pathlib import Path
+
+        from . import signing
+
+        profile = Path(args[1]) if len(args) > 1 else None
+        result = signing.fix_input(
+            profile=profile, progress=lambda s, m: print(f"[{s}] {m}")
+        )
+        print(("OK: " if result["ok"] else "FAILED: ") + result["message"])
+        return 0 if result["ok"] else 1
     if cmd in ("help", "--help", "-h"):
         print(__doc__)
         return 0

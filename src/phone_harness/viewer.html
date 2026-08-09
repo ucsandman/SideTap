@@ -27,6 +27,14 @@
   .check .fix { color:var(--dim); font-size:12.5px; }
   #hint { margin-top:16px; }
   code { background:var(--panel); padding:2px 6px; border-radius:5px; font-size:12.5px; }
+  #btn-fix { border-color:var(--accent); background:#1c2b3f; }
+  #fix-panel { margin-top:18px; padding:14px 16px; border:1px solid var(--accent); border-radius:10px; background:var(--panel); }
+  #fix-body { margin-top:6px; }
+  #fix-steps { margin-top:10px; }
+  .fstep { padding:4px 0; color:var(--dim); font-size:13px; }
+  .fstep.on { color:var(--text); }
+  .fstep.done { color:var(--ok); }
+  .fstep.err { color:var(--bad); }
 </style>
 </head>
 <body>
@@ -39,12 +47,22 @@
       <button id="btn-home">⌂ Home</button>
       <button id="btn-shot">📷 Save screenshot</button>
       <button id="btn-refresh">↻ Refresh checks</button>
+      <button id="btn-fix" hidden>🔧 Fix input</button>
     </div>
     <div class="dim" id="click-hint">Click the screen to tap the phone.</div>
   </div>
   <div id="side">
     <h1>phone-harness</h1>
     <div class="dim">Your iPhone, driven from Windows over USB.</div>
+    <div id="fix-panel" hidden>
+      <div id="fix-title"><b>🔧 Enable touch input</b></div>
+      <div class="dim" id="fix-body">
+        Touch input needs WebDriverAgent re-signed. Click <b>Fix input</b>, then in
+        Sideloadly load <code>wda/WebDriverAgent.ipa</code> and press Start. It signs
+        the driver locally with your existing Apple ID — no password re-entry.
+      </div>
+      <div id="fix-steps"></div>
+    </div>
     <div id="doctor"><div class="dim">Running checks…</div></div>
     <div id="hint" class="dim">
       Agents drive it from a terminal:<br>
@@ -74,6 +92,11 @@ async function loadStatus() {
     hint.textContent = inputEnabled
       ? 'Click the screen to tap the phone.'
       : 'Live view is on. Touch input needs the signed driver (see checks →).';
+    // Show the fix affordance only while input is off and no job is running.
+    if (!fixRunning) {
+      document.getElementById('btn-fix').hidden = inputEnabled;
+      document.getElementById('fix-panel').hidden = inputEnabled;
+    }
   } catch (e) {
     points = null; screen.classList.add('dead');
   }
@@ -130,6 +153,47 @@ async function loadDoctor() {
   } catch (e) { el.innerHTML = '<div class="check bad"><span class="mark">FAIL</span><span>viewer server unreachable</span></div>'; }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
+
+// ---- Fix input (re-sign WDA) ----------------------------------------------
+let fixRunning = false;
+const FIX_STEPS = [
+  ['p12', 'Build signing identity'],
+  ['waiting', 'Waiting for Sideloadly to sign'],
+  ['captured', 'Captured provisioning profile'],
+  ['signing', 'Re-signing WDA (nested .xctest)'],
+  ['up', 'Starting tunnel + WDA'],
+  ['done', 'Input live'],
+];
+function renderFix(job) {
+  const order = FIX_STEPS.map(s => s[0]);
+  const cur = order.indexOf(job.step);
+  const html = FIX_STEPS.map(([key, label], i) => {
+    let cls = 'fstep';
+    if (job.step === 'error') { cls += i === 0 ? '' : ''; }
+    if (i < cur || job.step === 'done') cls += ' done';
+    else if (i === cur) cls += ' on';
+    const mark = (i < cur || job.step === 'done') ? '✓' : (i === cur ? '▶' : '·');
+    return `<div class="${cls}">${mark} ${label}${i === cur && job.message ? ' — ' + job.message : ''}</div>`;
+  }).join('');
+  const err = job.step === 'error' ? `<div class="fstep err">✗ ${job.message}</div>` : '';
+  document.getElementById('fix-steps').innerHTML = html + err;
+}
+async function pollFix() {
+  const job = await getJSON('/api/fix-input');
+  renderFix(job);
+  if (job.running) { setTimeout(pollFix, 1000); return; }
+  fixRunning = false;
+  document.getElementById('btn-fix').disabled = false;
+  loadDoctor(); loadStatus();
+}
+document.getElementById('btn-fix').onclick = async () => {
+  fixRunning = true;
+  const btn = document.getElementById('btn-fix');
+  btn.disabled = true;
+  document.getElementById('fix-panel').hidden = false;
+  await fetch('/api/fix-input', {method:'POST'});
+  pollFix();
+};
 </script>
 </body>
 </html>

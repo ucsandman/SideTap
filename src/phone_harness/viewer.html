@@ -189,7 +189,7 @@
         <button id="btn-refresh">Refresh checks</button>
         <button id="btn-up" hidden>Restart link</button>
         <button id="btn-fix" hidden>Fix input</button>
-        <button id="btn-lock" hidden>Lock ports</button>
+        <button id="btn-lock-ports" hidden>Lock ports</button>
       </div>
       <div id="paste-row" hidden>
         <textarea id="paste-text" rows="1"
@@ -238,6 +238,7 @@ async function getJSON(url, opts) {
 
 let inputEnabled = false;
 let streaming = false;
+let bootSeen = null;  // viewer process id; a change means stale JS — reload
 
 // WDA's MJPEG server pushes ~15fps video; polling go-ios PNGs is the fallback.
 function startStream(port) {
@@ -251,6 +252,12 @@ function startStream(port) {
 async function loadStatus() {
   try {
     const s = await getJSON('/api/status');
+    // A restarted viewer serves new endpoints this page's JS may not know
+    // (and vice versa); reload once so tab and server always match.
+    if (s.boot) {
+      if (bootSeen && s.boot !== bootSeen) { location.reload(); return; }
+      bootSeen = s.boot;
+    }
     points = s.window;
     inputEnabled = !!s.input;
     if (s.mjpeg) startStream(s.mjpeg);
@@ -514,7 +521,7 @@ async function loadDoctor() {
       setTimeout(() => { b.textContent = '⧉ copy'; }, 1500);
     });
     const lanBad = results.some(r => r.name === 'LAN exposure' && !r.ok);
-    document.getElementById('btn-lock').hidden = !lanBad;
+    document.getElementById('btn-lock-ports').hidden = !lanBad;
     // The 7-day countdown must not hide inside this panel: banner it.
     const sig = results.find(r => r.name === 'input signature (7-day)');
     const sigBad = !!sig && !sig.ok;
@@ -543,7 +550,7 @@ async function lockPorts(btn) {
   hint.textContent = j.message || (j.ok ? 'Locking ports…' : 'Lock failed');
   setTimeout(() => { btn.disabled = false; loadDoctor(); }, 3000);
 }
-document.getElementById('btn-lock').onclick = (ev) => lockPorts(ev.currentTarget);
+document.getElementById('btn-lock-ports').onclick = (ev) => lockPorts(ev.currentTarget);
 document.getElementById('btn-lan-lock').onclick = (ev) => lockPorts(ev.currentTarget);
 
 // ---- edge-gesture shortcuts: reliable clicks for gestures that are nearly ---

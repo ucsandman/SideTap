@@ -19,11 +19,22 @@ class StubClient:
     def __init__(self):
         self.calls = []
 
+    session_id = "stub-session"
+    window = None  # set to (w, h) to make /api/status succeed
+
     def home(self):
         self.calls.append("home")
 
     def lock(self):
         self.calls.append("lock")
+
+    def window_size(self):
+        if self.window is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.window
+
+    def configure_mjpeg(self):
+        pass
 
 
 @pytest.fixture()
@@ -134,6 +145,27 @@ def test_refresh_lan_state_clears_when_locked(monkeypatch, lan_state):
     monkeypatch.setattr(viewer.admin, "_check_ports_local", lambda: (True, "ok", ""))
     viewer._refresh_lan_state()
     assert _wait_for_lan_state(lan_state, False)
+
+
+def test_viewer_html_has_no_duplicate_element_ids():
+    # A second id="btn-lock" made getElementById wire the phone-Lock button to
+    # the Lock-ports handler (clicking it opened an admin PowerShell) and the
+    # doctor's visibility toggle hid it. Duplicate ids fail silently — ban them.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    ids = re.findall(r'\bid="([^"]+)"', html)
+    dupes = {i for i in ids if ids.count(i) > 1}
+    assert not dupes, f"duplicate element ids: {sorted(dupes)}"
+
+
+def test_status_carries_boot_id_for_auto_reload(base_url):
+    # A tab from before a viewer restart runs stale JS against new endpoints;
+    # the page reloads itself when the boot id in /api/status changes.
+    viewer.Handler.client.window = (390.0, 844.0)
+    r = requests.get(base_url + "/api/status", timeout=5)
+    assert r.json()["boot"] == viewer._BOOT_ID
+    assert viewer._BOOT_ID  # non-empty
 
 
 class TuneStub:

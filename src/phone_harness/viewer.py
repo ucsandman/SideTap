@@ -23,6 +23,11 @@ from .wda_client import WDAClient, WDAError, stop_engaged, stop_file
 
 _HTML = Path(__file__).with_name("viewer.html")
 
+# Identifies this viewer process in /api/status; the page reloads itself when
+# it changes, so a tab from before a restart never runs stale JS against new
+# endpoints (a stale tab cost three debugging rounds on 2026-08-09).
+_BOOT_ID = str(os.getpid()) + "-" + str(int(time.time()))
+
 # Shared state for the "Fix input" job so a GET can poll a POST-started run.
 _FIX_LOCK = threading.Lock()
 _FIX_JOB = {"running": False, "step": "idle", "message": "", "ok": None}
@@ -223,6 +228,7 @@ class Handler(BaseHTTPRequestHandler):
                         "input": True,
                         "mjpeg": config.MJPEG_PORT,
                         "lan_exposed": _LAN_STATE["exposed"],
+                        "boot": _BOOT_ID,
                     }
                     self._json(_LAST_STATUS)
                 except WDAError:
@@ -233,6 +239,7 @@ class Handler(BaseHTTPRequestHandler):
                             "input": False,
                             "mjpeg": None,
                             "lan_exposed": _LAN_STATE["exposed"],
+                            "boot": _BOOT_ID,
                         }
                     )
             elif path == "/api/doctor":

@@ -12,7 +12,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from phone_harness import config  # noqa: E402
-from phone_harness.wda_client import WDAClient, WDAError  # noqa: E402
+from phone_harness import wda_client  # noqa: E402
+from phone_harness.wda_client import (  # noqa: E402
+    WDAClient,
+    WDAError,
+    _activity_summary,
+    activity_file,
+)
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\nfakedata"
 
@@ -81,7 +87,9 @@ class FakeWDA(BaseHTTPRequestHandler):
 
 
 @pytest.fixture()
-def wda():
+def wda(tmp_path, monkeypatch):
+    # Point .state at tmp so activity/STOP writes never touch the real repo.
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeWDA)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     FakeWDA.requests_seen = []
@@ -189,3 +197,78 @@ def test_removing_stop_file_restores_actions(wda, tmp_path, monkeypatch):
         wda.tap(1, 1)
     stop.unlink()
     wda.tap(1, 1)  # must not raise
+
+
+# ---- activity feed ----------------------------------------------------------
+
+
+def _feed_lines(tmp_path):
+    text = (tmp_path / "agent_activity.log").read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines()]
+
+
+def test_actions_land_in_activity_feed(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    wda.tap(10, 20)
+    wda.type_text("secret")
+    actions = [r["action"] for r in _feed_lines(tmp_path)]
+    assert actions == ["tap (10, 20)", "type (6 chars)"]
+
+
+def test_activity_feed_never_records_typed_text(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    wda.type_text("hunter2")
+    assert "hunter2" not in activity_file().read_text(encoding="utf-8")
+
+
+def test_blocked_actions_stay_out_of_the_feed(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    (tmp_path / "STOP").touch()
+    with pytest.raises(WDAError):
+        wda.tap(1, 1)
+    assert not activity_file().exists()
+
+
+def test_activity_summary_swipe_and_long_press():
+    def gesture(steps):
+        return {
+            "actions": [
+                {"type": "pointer", "id": "finger1", "actions": steps},
+            ]
+        }
+
+    swipe = gesture(
+        [
+            {"type": "pointerMove", "duration": 0, "x": 100, "y": 800},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pause", "duration": 40},
+            {"type": "pointerMove", "duration": 300, "x": 100, "y": 200},
+            {"type": "pointerUp", "button": 0},
+        ]
+    )
+    assert _activity_summary("/session/s/actions", swipe) == (
+        "swipe (100, 800) → (100, 200)"
+    )
+    press = gesture(
+        [
+            {"type": "pointerMove", "duration": 0, "x": 50, "y": 60},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pause", "duration": 1000},
+            {"type": "pointerUp", "button": 0},
+        ]
+    )
+    assert _activity_summary("/session/s/actions", press) == "long-press (50, 60)"
+
+
+def test_activity_summary_skips_stream_tuning():
+    assert _activity_summary("/session/s/appium/settings", {"settings": {}}) is None
+
+
+def test_activity_feed_stays_bounded(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(wda_client, "_ACTIVITY_MAX_BYTES", 500)
+    monkeypatch.setattr(wda_client, "_ACTIVITY_KEEP_LINES", 5)
+    for _ in range(50):
+        wda.tap(1, 2)
+    assert len(_feed_lines(tmp_path)) <= 6  # 5 kept + at most 1 fresh append
+    assert activity_file().stat().st_size < 1000

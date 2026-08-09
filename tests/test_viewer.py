@@ -94,3 +94,46 @@ def test_stop_state_readable(base_url, tmp_path, monkeypatch):
     (tmp_path / "STOP").touch()
     r = requests.get(base_url + "/api/stop", timeout=5)
     assert r.json() == {"stopped": True}
+
+
+def _wait_for_lan_state(state, value, tries=100):
+    import time
+
+    for _ in range(tries):
+        if state["exposed"] is value:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@pytest.fixture()
+def lan_state():
+    yield viewer._LAN_STATE
+    viewer._LAN_STATE["exposed"] = None
+
+
+def test_refresh_lan_state_flags_exposure(monkeypatch, lan_state):
+    monkeypatch.setattr(
+        viewer.admin, "_check_ports_local", lambda: (False, "exposed", "fix")
+    )
+    viewer._refresh_lan_state()
+    assert _wait_for_lan_state(lan_state, True)
+
+
+def test_refresh_lan_state_clears_when_locked(monkeypatch, lan_state):
+    monkeypatch.setattr(viewer.admin, "_check_ports_local", lambda: (True, "ok", ""))
+    viewer._refresh_lan_state()
+    assert _wait_for_lan_state(lan_state, False)
+
+
+def test_activity_endpoint_serves_feed(base_url, tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    r = requests.get(base_url + "/api/activity", timeout=5)
+    assert r.json() == []
+    (tmp_path / "agent_activity.log").write_text(
+        json.dumps({"ts": 1.0, "action": "tap (10, 20)"}) + "\n", encoding="utf-8"
+    )
+    r = requests.get(base_url + "/api/activity", timeout=5)
+    assert r.json() == [{"ts": 1.0, "action": "tap (10, 20)"}]

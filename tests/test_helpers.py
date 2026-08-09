@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from phone_harness import config, helpers  # noqa: E402
 from phone_harness.config import _load_env  # noqa: E402
 from phone_harness.helpers import (  # noqa: E402
-    _ambiguous_hits,
     _passcode_pad_visible,
     _thread_title,
     collect_texts,
@@ -81,28 +80,25 @@ def test_collect_texts_skips_invisible_and_zero_size():
     assert "Zero Size" not in texts
 
 
-def test_ambiguous_hits_exact_match_is_never_ambiguous():
-    # The Messages list has cells whose labels contain "Mom" plus a StaticText
-    # that is exactly "Mom" (the 1:1 thread). The exact one wins, not ambiguous.
+def test_leads_with_accepts_own_row_only():
+    # 1:1 rows lead with the name; group rows lead with other members.
+    assert helpers._leads_with("Elissa", "Elissa")
+    assert helpers._leads_with("Elissa, Thank you!! It feels so good", "Elissa")
+    assert not helpers._leads_with("Mom & Elissa, Unread, Mom loved", "Elissa")
+    assert not helpers._leads_with("Dad,  Mom,  Elissa & Grandma", "Elissa")
+    assert not helpers._leads_with("Elissa & Grandma, hi", "Elissa")
+
+
+def test_dedup_rows_collapses_repeated_labels_keeps_order():
+    # Every Messages list row renders twice (verified on device); the
+    # duplicate is not a competing match.
     hits = [
-        {"text": "Mom, Alex & Sam, Unread, Summary"},
-        {"text": "Mom"},
-        {"text": "Mom laughed at a message"},
+        {"text": "Elissa, Thank you!!", "x": 1},
+        {"text": "Elissa, Thank you!!", "x": 2},
+        {"text": "Mom & Elissa, hi", "x": 3},
     ]
-    assert _ambiguous_hits(hits, "Mom") == []
-
-
-def test_ambiguous_hits_flags_multiple_fuzzy_no_exact():
-    hits = [
-        {"text": "Mommy dearest"},
-        {"text": "Mom, Alex & Sam"},
-    ]
-    result = _ambiguous_hits(hits, "Mom")
-    assert len(result) == 2
-
-
-def test_ambiguous_hits_single_hit_is_fine():
-    assert _ambiguous_hits([{"text": "Mom, Anytown OH"}], "Mom") == []
+    deduped = helpers._dedup_rows(hits)
+    assert [h["x"] for h in deduped] == [1, 3]
 
 
 def test_thread_title_reads_contact_photo_button():
@@ -124,6 +120,32 @@ def test_thread_title_reads_contact_photo_button():
 def test_thread_title_none_when_no_header_button():
     # A group thread / unknown layout has no "Contact photo for X" button.
     assert _thread_title(SAMPLE_TREE) is None
+
+
+def test_thread_title_ignores_list_row_photos():
+    # The conversation LIST also shows contact photos (verified on device),
+    # but they hug the left edge of their rows — never the centered header.
+    tree = {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+        "children": [
+            {
+                "type": "Button",
+                "label": "Contact photo for Toria",
+                "isVisible": "1",
+                "rect": {"x": 26, "y": 89, "width": 45, "height": 45},
+            },
+        ],
+    }
+    assert _thread_title(tree) is None
+
+
+def test_title_matches_rejects_group_title_for_single_contact():
+    assert helpers._title_matches("Elissa", "Elissa")
+    assert helpers._title_matches("Elissa Sander", "Elissa")
+    assert not helpers._title_matches("Mom & Elissa", "Elissa")
+    assert not helpers._title_matches("Mom, Elissa & Abby", "Elissa")
+    assert helpers._title_matches("Mom & Elissa", "Mom & Elissa")
 
 
 def _buttons_tree(labels):
@@ -372,6 +394,183 @@ def test_tree_cache_expires_by_ttl(monkeypatch):
     monkeypatch.setattr(helpers.time, "monotonic", lambda: helpers.time.time() + 3600)
     helpers.ui_tree()  # the screen can change on its own; a stale tree is unsafe
     assert stub.source_calls == 2
+
+
+@pytest.fixture()
+def fake_clock(monkeypatch):
+    """time.sleep advances a fake monotonic clock, so poll loops run instantly."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(helpers.time, "monotonic", lambda: clock["t"])
+
+    def sleep(seconds):
+        clock["t"] += seconds
+
+    monkeypatch.setattr(helpers.time, "sleep", sleep)
+    return clock
+
+
+class AppearingClient(CountingClient):
+    """Tree gains the text 'Target' from the given fetch onward."""
+
+    def __init__(self, appear_at=3):
+        super().__init__()
+        self.appear_at = appear_at
+
+    def source(self):
+        self.source_calls += 1
+        if self.source_calls >= self.appear_at:
+            return _buttons_tree(["Target"])
+        return SAMPLE_TREE
+
+
+def test_wait_for_text_returns_element_when_it_appears(fake_clock, monkeypatch):
+    helpers._invalidate_tree()
+    stub = AppearingClient(appear_at=3)
+    monkeypatch.setattr(helpers, "_client", stub)
+    el = helpers.wait_for_text("Target", timeout=10)
+    assert el and el["text"] == "Target"
+    assert stub.source_calls >= 3  # each poll dropped the cache and re-read
+    assert 0 < fake_clock["t"] < 10  # waited between polls, returned before timeout
+
+
+def test_wait_for_text_times_out_to_none(fake_clock, monkeypatch):
+    helpers._invalidate_tree()
+    stub = CountingClient()
+    monkeypatch.setattr(helpers, "_client", stub)
+    assert helpers.wait_for_text("Never There", timeout=3) is None
+    assert fake_clock["t"] >= 3  # gave the full timeout before giving up
+
+
+class AppSwitchingClient:
+    """active_app() reports springboard first, then the target app."""
+
+    def __init__(self, switch_at=2):
+        self.calls = 0
+        self.switch_at = switch_at
+
+    def active_app(self):
+        self.calls += 1
+        if self.calls >= self.switch_at:
+            return {"bundleId": "com.apple.MobileSMS"}
+        return {"bundleId": "com.apple.springboard"}
+
+
+def test_wait_for_app_true_when_app_arrives(fake_clock, monkeypatch):
+    monkeypatch.setattr(helpers, "_client", AppSwitchingClient(switch_at=3))
+    assert helpers.wait_for_app("com.apple.MobileSMS", timeout=10) is True
+    assert fake_clock["t"] < 10  # returned as soon as the app arrived
+
+
+def test_wait_for_app_false_on_timeout(fake_clock, monkeypatch):
+    monkeypatch.setattr(helpers, "_client", AppSwitchingClient(switch_at=10_000))
+    assert helpers.wait_for_app("com.apple.MobileSMS", timeout=2) is False
+    assert fake_clock["t"] >= 2  # gave the full timeout before giving up
+
+
+def _bubble_cell(label, y, inner_x, inner_w):
+    """One bubble as it renders on device (iOS 18, captured 2026-08-09):
+    a full-width Cell whose inner Other repeats the label with real geometry."""
+    return {
+        "type": "Cell",
+        "label": label,
+        "isVisible": "1",
+        "rect": {"x": 0, "y": y, "width": 440, "height": 70},
+        "children": [
+            {
+                "type": "Other",
+                "label": label,
+                "isVisible": "1",
+                "rect": {"x": inner_x, "y": y, "width": inner_w, "height": 68},
+            },
+        ],
+    }
+
+
+def test_message_bubbles_real_device_structure():
+    nnbsp = "\u202f"  # iOS separates time with a narrow no-break space
+    tree = {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+        "children": [
+            _bubble_cell(f"Your iMessage, Want a pizza?, 7:09{nnbsp}PM", 53, 146, 274),
+            _bubble_cell("Elissa, Medium pls, You liked this, 7:09 PM", 144, 20, 106),
+            {  # date separator: StaticText, not a Cell — never a bubble
+                "type": "StaticText",
+                "label": "Wed, Jul 8 at 5:09 PM",
+                "isVisible": "1",
+                "rect": {"x": 20, "y": 195, "width": 400, "height": 16},
+            },
+            {  # compose bar: not a Cell
+                "type": "TextField",
+                "label": "Message",
+                "isVisible": "1",
+                "rect": {"x": 91, "y": 887, "width": 277, "height": 36},
+            },
+        ],
+    }
+    assert helpers._message_bubbles(tree, 440) == [
+        {"text": "Want a pizza?", "from_me": True},  # inner hugs the right
+        {"text": "Medium pls", "from_me": False},  # left; tapback+time stripped
+    ]
+
+
+def test_nav_back_button_found_by_geometry_not_label():
+    tree = {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+        "children": [
+            {  # the back control: top-left, label varies ('33 unread')
+                "type": "Button",
+                "label": "33 unread",
+                "isVisible": "1",
+                "rect": {"x": 20, "y": 62, "width": 83, "height": 40},
+            },
+            {  # top-right button must not win
+                "type": "Button",
+                "label": "FaceTime",
+                "isVisible": "1",
+                "rect": {"x": 380, "y": 66, "width": 36, "height": 36},
+            },
+            {  # lower-left button must not win either
+                "type": "Button",
+                "label": "add",
+                "isVisible": "1",
+                "rect": {"x": 28, "y": 888, "width": 40, "height": 40},
+            },
+        ],
+    }
+    back = helpers._nav_back_button(tree)
+    assert back and back["text"] == "33 unread"
+
+
+def test_nav_back_button_none_without_top_left_button():
+    tree = {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+        "children": [
+            {  # content button well below the nav bar: not a back control
+                "type": "Button",
+                "label": "General",
+                "isVisible": "1",
+                "rect": {"x": 20, "y": 300, "width": 350, "height": 44},
+            },
+        ],
+    }
+    assert helpers._nav_back_button(tree) is None
+
+
+def test_message_bubbles_your_prefix_fallback_without_inner():
+    # No inner Other captured: fall back to the 'Your ...' sender prefix.
+    cell = _bubble_cell("Your iMessage, On my way, 9:01 PM", 100, 120, 300)
+    cell["children"] = []
+    tree = {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+        "children": [cell],
+    }
+    assert helpers._message_bubbles(tree, 440) == [
+        {"text": "On my way", "from_me": True},
+    ]
 
 
 def test_load_env(tmp_path):

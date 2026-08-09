@@ -53,3 +53,24 @@ def test_signature_check_skips_when_no_profile(monkeypatch, tmp_path):
 
 def test_signature_check_in_doctor_checks():
     assert any(fn is admin._check_signature for _name, fn in admin.CHECKS)
+
+
+def test_stop_check_flags_engaged(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.config, "STATE_DIR", tmp_path)
+    (tmp_path / "STOP").touch()
+    ok, detail, fix = admin._check_stop_engaged()
+    assert not ok
+    assert "ENGAGED" in detail
+    assert "RESUME" in fix
+
+
+def test_stop_check_passes_without_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.config, "STATE_DIR", tmp_path)
+    ok, _detail, _fix = admin._check_stop_engaged()
+    assert ok
+
+
+def test_stop_check_runs_first():
+    # Doctor's advice is "fix the first FAIL"; a forgotten kill switch must be
+    # the first thing named, not buried under infra checks.
+    assert admin.CHECKS[0][1] is admin._check_stop_engaged

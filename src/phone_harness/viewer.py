@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,24 @@ _ACTION_LOCK = threading.Lock()
 # the browser's poll doesn't queue requests inside WDA mid-sequence (unlock is
 # timing-sensitive: added latency lets the lock screen fall back asleep).
 _LAST_STATUS: dict | None = None
+
+# LAN exposure, probed in the background (the port probe can take a second) and
+# surfaced as a persistent banner on the phone pane — not only inside the
+# doctor tab. WDA has no auth, so an exposed port must be loud by default.
+_LAN_STATE = {"exposed": None}  # None = not checked yet
+
+
+def _refresh_lan_state(delay: float = 0.0) -> None:
+    def probe():
+        if delay:
+            time.sleep(delay)
+        try:
+            ok, _detail, _fix = admin._check_ports_local()
+            _LAN_STATE["exposed"] = not ok
+        except Exception:
+            _LAN_STATE["exposed"] = None  # unknown; never crash the viewer
+
+    threading.Thread(target=probe, daemon=True).start()
 
 
 def _fix_input_worker():
@@ -94,9 +113,9 @@ _PLACEHOLDER = bytes.fromhex(
 )
 
 
-def _recent_actions(limit: int = 10) -> list[dict]:
-    """Last `limit` send records from .state/actions.log (newest last)."""
-    log = config.STATE_DIR / "actions.log"
+def _jsonl_tail(name: str, limit: int) -> list[dict]:
+    """Last `limit` records of a JSONL file in .state/ (newest last)."""
+    log = config.STATE_DIR / name
     if not log.exists():
         return []
     recs = []
@@ -106,6 +125,16 @@ def _recent_actions(limit: int = 10) -> list[dict]:
         except ValueError:
             pass
     return recs
+
+
+def _recent_actions(limit: int = 10) -> list[dict]:
+    """Last `limit` send records from .state/actions.log (newest last)."""
+    return _jsonl_tail("actions.log", limit)
+
+
+def _recent_activity(limit: int = 30) -> list[dict]:
+    """Last `limit` phone actions from .state/agent_activity.log (newest last)."""
+    return _jsonl_tail("agent_activity.log", limit)
 
 
 def _lock_ports() -> dict:
@@ -190,6 +219,7 @@ class Handler(BaseHTTPRequestHandler):
                         "window": {"width": w, "height": h},
                         "input": True,
                         "mjpeg": config.MJPEG_PORT,
+                        "lan_exposed": _LAN_STATE["exposed"],
                     }
                     self._json(_LAST_STATUS)
                 except WDAError:
@@ -199,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                             "window": {"width": pw, "height": ph},
                             "input": False,
                             "mjpeg": None,
+                            "lan_exposed": _LAN_STATE["exposed"],
                         }
                     )
             elif path == "/api/doctor":
@@ -208,6 +239,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(dict(_FIX_JOB))
             elif path == "/api/actions":
                 self._json(_recent_actions())
+            elif path == "/api/activity":
+                self._json(_recent_activity())
             elif path == "/api/stop":
                 self._json({"stopped": stop_engaged()})
             else:
@@ -265,7 +298,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/fix-input":
                 self._json(_start_fix_input())
             elif path == "/api/lock-ports":
-                self._json(_lock_ports())
+                result = _lock_ports()
+                # Re-probe once the UAC prompt has had time to be approved, so
+                # the banner clears without a manual refresh.
+                _refresh_lan_state(delay=8.0)
+                self._json(result)
             elif path == "/api/stop":
                 config.STATE_DIR.mkdir(exist_ok=True)
                 if payload.get("stop"):
@@ -308,6 +345,7 @@ def _kill_stale_viewer() -> None:
 
 def serve(open_browser: bool = True) -> int:  # noqa: vulture
     _kill_stale_viewer()
+    _refresh_lan_state()
     server = _Server(("127.0.0.1", config.VIEWER_PORT), Handler)
     url = f"http://127.0.0.1:{config.VIEWER_PORT}"
     print(f"Viewer: {url}  (Ctrl+C to stop)")

@@ -7,6 +7,7 @@ All coordinates are in points (what the UI tree uses), origin top-left.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -204,6 +205,26 @@ BUNDLE_IDS = {
 }
 
 
+def current_app() -> dict:
+    """Frontmost app info from WDA (bundleId, name, pid)."""
+    return client().active_app()
+
+
+def wait_for_app(bundle_id: str, timeout: float = 10.0, interval: float = 0.5) -> bool:
+    """Poll until `bundle_id` is frontmost. True on success, False on timeout.
+
+    Lets open_app() flows fail fast and loud instead of inferring foreground
+    state from wait_stable() timing.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if current_app().get("bundleId") == bundle_id:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
 def open_app(name: str) -> None:
     """Open an app by friendly name ('Settings'), bundle id, or installed-app name."""
     key = name.lower().strip()
@@ -222,18 +243,30 @@ def open_app(name: str) -> None:
     client().app_launch(bundle)
 
 
-def _ambiguous_hits(hits: list[dict], contact: str) -> list[dict]:
-    """Competing rows when a contact name cannot be resolved confidently.
+def _leads_with(text: str, contact: str) -> bool:
+    """Does a list-row label lead with the contact name? Pure (unit-tested).
 
-    Pure function (unit-tested). Empty result = safe to tap hits[0]. Non-empty =
-    several rows match and NONE is an exact label, so tapping would be a guess.
-    An exact label match wins (tap_text/find_text sort exact first), so it is
-    never ambiguous.
+    'Elissa' or 'Elissa, <preview>' leads; 'Mom & Elissa, …' and
+    'Dad, Mom, …' do not. This is the bar for accepting a thread whose header
+    cannot name it (groups): tapping a row where the name only appears
+    mid-label is how a send lands in the wrong group chat.
     """
-    needle = contact.strip().lower()
-    if any(h["text"].strip().lower() == needle for h in hits):
-        return []
-    return hits if len(hits) > 1 else []
+    t, c = text.strip().lower(), contact.strip().lower()
+    return t == c or t.startswith(c + ",")
+
+
+def _dedup_rows(hits: list[dict]) -> list[dict]:
+    """Collapse duplicate labels, keeping order. Pure (unit-tested). Every
+    Messages list row renders twice — nested elements repeat the label
+    (verified on device 2026-08-09) — and a duplicate is not a competitor."""
+    seen: set[str] = set()
+    out = []
+    for h in hits:
+        key = h["text"].strip().lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(h)
+    return out
 
 
 def _thread_title(tree: dict) -> str | None:
@@ -241,13 +274,21 @@ def _thread_title(tree: dict) -> str | None:
 
     Pure function (unit-tested). This iOS build puts the app word "Messages" in
     the NavigationBar (verified on device), so we read the thread header instead:
-    the "Contact photo for <name>" button uniquely names a 1:1 thread's
-    recipient. Group threads have no such button, so this returns None for them —
-    the caller treats None as "cannot verify" and leans on the ambiguity check.
+    the "Contact photo for <name>" button names a 1:1 thread's recipient. The
+    conversation LIST also shows contact photos (verified on device
+    2026-08-09), but those hug the left edge of their rows — only a photo
+    centered in the nav area (top of the screen, clear of the left edge) is
+    the header. None = the list, or a thread the layout cannot name (groups) —
+    the caller treats None as "cannot verify".
     """
     prefix = "Contact photo for "
     for el in collect_texts(tree):
-        if el["type"] == "Button" and el["text"].startswith(prefix):
+        if (
+            el["type"] == "Button"
+            and el["text"].startswith(prefix)
+            and el["rect"]["y"] < 140
+            and el["rect"]["x"] > 130
+        ):
             return el["text"][len(prefix) :].strip()
     return None
 
@@ -271,6 +312,173 @@ def _log_action(
         pass  # a failed audit line must never block a send
 
 
+def _title_matches(title: str, contact: str) -> bool:
+    """Does an open thread's header title verify `contact`? Pure (unit-tested).
+
+    Containment keeps 'Elissa' matching a header that shows a fuller name,
+    but a multi-person title ('Mom & Elissa') must never verify a
+    single-person contact — that is how a read or send lands in a group chat.
+    """
+    t, c = title.strip().lower(), contact.strip().lower()
+    if t == c:
+        return True
+    if (" & " in t or "," in t) and not (" & " in c or "," in c):
+        return False
+    return c in t or t in c
+
+
+def _nav_back_button(tree: dict) -> dict | None:
+    """The nav-stack back control: the leftmost button hugging the top-left.
+
+    Pure function (unit-tested). Its label varies ('Back', '33 unread'), so
+    geometry is the signal, not text. WDA's synthetic edge-swipe does NOT
+    trigger iOS's edge-pan back gesture (verified on device 2026-08-09), so
+    tapping this button is the only reliable way back.
+    """
+    candidates = [
+        el
+        for el in collect_texts(tree)
+        if el["type"] == "Button" and el["rect"]["y"] < 130 and el["rect"]["x"] < 130
+    ]
+    return min(candidates, key=lambda e: e["rect"]["x"]) if candidates else None
+
+
+def _go_back() -> bool:
+    """Tap the nav back button; wait until the thread header is gone.
+
+    Polling matters: a second tap issued mid-animation lands on the list's
+    profile button and opens its menu (seen on device 2026-08-09).
+    """
+    back = _nav_back_button(ui_tree())
+    if back is None:
+        return False
+    tap(back["x"], back["y"])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _thread_title(ui_tree()) is not None:
+        time.sleep(0.5)
+        _invalidate_tree()
+    return True
+
+
+def _open_thread(contact: str) -> str | None:
+    """Open the Messages conversation for `contact`; return the thread title.
+
+    Group labels make list rows unparseable ('Mom & Elissa, …' vs
+    'Elissa, <preview>'), so candidates are verified by OPENING them: the
+    thread header names 1:1 threads exactly; a wrong thread is backed out of
+    and the next candidate tried (near misses get marked read on the phone —
+    the price of verifying by opening). Returns None when an unnameable
+    (group) thread was opened via a row that leads with `contact`. Handles
+    Messages resuming mid-thread and rows scrolled off screen (bounded).
+    """
+    open_app("messages")
+    wait_stable(timeout=8)
+
+    # Messages resumes wherever it last was. Already in the right thread: done.
+    # In some other 1:1 thread: back out toward the list (bounded).
+    for _ in range(3):
+        title = _thread_title(ui_tree())
+        if title is None:
+            break  # no 1:1 thread header: the list (or a group thread)
+        if _title_matches(title, contact):
+            return title
+        if not _go_back():
+            break  # cannot navigate out; the loud failures below take over
+
+    if not find_text(contact):  # the row may be above or below the fold
+        for direction in ("up", "up", "down", "down", "down"):
+            scroll(direction, 0.6)
+            if find_text(contact):
+                break
+
+    tried: set[str] = set()
+    for _ in range(3):
+        rows = [
+            r
+            for r in _dedup_rows(find_text(contact))
+            if r["text"].strip().lower() not in tried
+        ]
+        if not rows:
+            raise WDAError(
+                f"Contact {contact!r} not found in the Messages list (or every "
+                "match opened the wrong thread). Scroll to the conversation or "
+                "open it by hand, then retry."
+            )
+        # find_text orders exact-first; prefer rows that lead with the name.
+        rows.sort(key=lambda r: not _leads_with(r["text"], contact))
+        row = rows[0]
+        sole = len(rows) == 1
+        tried.add(row["text"].strip().lower())
+        tap(row["x"], row["y"])
+        wait_stable(timeout=8)
+        title = _thread_title(ui_tree())
+        if title is not None and _title_matches(title, contact):
+            return title
+        if title is None and sole and _leads_with(row["text"], contact):
+            return None  # a group thread opened via its own leading row
+        if not _go_back():
+            raise WDAError(
+                f"Opened thread is {title!r}, expected {contact!r} — aborting."
+            )
+    raise WDAError(
+        f"Contact {contact!r} is ambiguous in the Messages list — no candidate "
+        "row opened a matching thread. Open the conversation by hand."
+    )
+
+
+# Bubble labels end with a time and sometimes a tapback note; both are chrome.
+_BUBBLE_TIME = re.compile(r",\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$", re.IGNORECASE)
+_BUBBLE_TAPBACK = re.compile(
+    r",\s*\S+\s+(liked|loved|laughed at|emphasized|disliked|questioned)\s+this\s*$",
+    re.IGNORECASE,
+)
+
+
+def _message_bubbles(tree: dict, width: float) -> list[dict]:
+    """Message bubbles of the open thread, ordered top-to-bottom.
+
+    Pure function (unit-tested). Verified on device (iOS 18, 2026-08-09): a
+    bubble is a full-width Cell labeled '<sender>, <text>, <time>' — sender is
+    'Your iMessage' when sent (why send_message never matches on 'iMessage').
+    The Cell's inner Other repeats the label with the bubble's real geometry:
+    which half of the screen it hugs gives from_me; the 'Your' prefix is the
+    fallback when no inner element is found.
+    """
+    els = collect_texts(tree)
+    bubbles = []
+    for i, el in enumerate(els):
+        if el["type"] != "Cell" or ", " not in el["text"]:
+            continue
+        sender, text = el["text"].split(", ", 1)
+        text = _BUBBLE_TIME.sub("", text.replace("\u202f", " ")).strip()
+        text = _BUBBLE_TAPBACK.sub("", text).strip()
+        inner = next(
+            (
+                e
+                for e in els[i + 1 : i + 4]
+                if e["type"] == "Other" and e["text"] == el["text"]
+            ),
+            None,
+        )
+        from_me = (
+            inner["x"] > width / 2 if inner is not None else sender.startswith("Your")
+        )
+        bubbles.append({"text": text, "from_me": from_me, "y": el["rect"]["y"]})
+    bubbles.sort(key=lambda b: b["y"])
+    return [{"text": b["text"], "from_me": b["from_me"]} for b in bubbles]
+
+
+def read_messages(contact: str, limit: int = 20) -> list[dict]:
+    """Read the last messages of a conversation, oldest first.
+
+    Returns [{'text', 'from_me'}, ...]. Closes the loop send_message opened:
+    the agent can now see the reply, not just write.
+    """
+    _open_thread(contact)
+    w, _h = client().window_size()
+    return _message_bubbles(ui_tree(), w)[-limit:]
+
+
 def send_message(contact: str, text: str) -> dict:
     """Send a Message to a conversation: open Messages, open the thread, type, send.
 
@@ -281,34 +489,7 @@ def send_message(contact: str, text: str) -> dict:
     The compose field is labeled "Message", not "iMessage" — message bubbles carry
     "iMessage" in their labels, so never search for that.
     """
-    open_app("messages")
-    wait_stable(timeout=8)
-
-    hits = find_text(contact)
-    if not hits:
-        raise WDAError(
-            f"Contact {contact!r} not in the Messages list. It may be below the "
-            "fold — scroll the list, or open the thread by hand first."
-        )
-    ambiguous = _ambiguous_hits(hits, contact)
-    if ambiguous:
-        names = ", ".join(repr(h["text"][:40]) for h in ambiguous[:5])
-        raise WDAError(
-            f"Contact {contact!r} is ambiguous — matches {names}. Use a more exact "
-            "name or open the thread by hand."
-        )
-
-    tap_text(contact)
-    wait_stable(timeout=8)
-
-    title = _thread_title(ui_tree())
-    if title is not None:
-        t, c = title.strip().lower(), contact.strip().lower()
-        if c not in t and t not in c:
-            raise WDAError(
-                f"Opened thread is {title!r}, expected {contact!r} — aborting "
-                "before typing."
-            )
+    title = _open_thread(contact)
 
     fields = [e for e in ocr() if e["type"] == "TextField"]
     if not fields:
@@ -332,6 +513,26 @@ def send_message(contact: str, text: str) -> dict:
     time.sleep(1.5)
     _log_action(contact, title, text, sent=True)  # confirmed
     return {"contact": contact, "resolved_title": title, "text": text, "sent": True}
+
+
+def wait_for_text(
+    text: str, timeout: float = 10.0, interval: float = 0.5, exact: bool = False
+) -> dict | None:
+    """Poll until `text` appears on screen; returns the element or None.
+
+    The complement of wait_stable(): that says the screen stopped moving, this
+    says the thing you were waiting for actually showed up. The returned
+    element carries x/y, so the caller can tap it without re-searching.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        hits = find_text(text, exact=exact)
+        if hits:
+            return hits[0]
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
+        _invalidate_tree()  # never poll the cached tree — read a fresh one
 
 
 def wait_stable(timeout: float = 10.0, interval: float = 0.5) -> bool:
@@ -433,8 +634,12 @@ __all__ = [
     "type_text",
     "press_home",
     "open_app",
+    "current_app",
+    "wait_for_app",
     "send_message",
+    "read_messages",
     "wait_stable",
+    "wait_for_text",
     "unlock",
     "WDAError",
 ]

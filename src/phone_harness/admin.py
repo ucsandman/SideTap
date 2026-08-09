@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 from . import capture, config, device
-from .wda_client import WDAClient
+from .wda_client import WDAClient, stop_file
+
+
+def _check_stop_engaged():
+    """A leftover .state/STOP blocks every action while all infra checks pass."""
+    if stop_file().exists():
+        return (
+            False,
+            "kill switch ENGAGED (.state/STOP exists) — every action is blocked",
+            "Click RESUME in the viewer, or delete .state/STOP.",
+        )
+    return True, "kill switch off", ""
 
 
 def _check_go_ios():
@@ -165,6 +177,7 @@ def _check_ports_local():
 
 
 CHECKS = [
+    ("kill switch (STOP)", _check_stop_engaged),
     ("go-ios installed", _check_go_ios),
     ("iPhone on USB", _check_device),
     ("tunnel", _check_tunnel),
@@ -202,8 +215,21 @@ def doctor() -> int:  # noqa: vulture
     return 1
 
 
+# launch.py's background bring-up and the viewer's Restart link can overlap;
+# two concurrent up() runs would spawn duplicate tunnel/WDA processes.
+_UP_LOCK = threading.Lock()
+
+
 def up(wait_seconds: float = 60.0) -> int:  # noqa: vulture
-    """Bring the whole chain up. Idempotent: skips whatever already runs."""
+    """Bring the whole chain up. Idempotent: skips whatever already runs.
+
+    Serialized: a second caller waits, then returns fast via the is_up check.
+    """
+    with _UP_LOCK:
+        return _up(wait_seconds)
+
+
+def _up(wait_seconds: float) -> int:
     client = WDAClient(timeout=3)
     if client.is_up():
         print("Already up: WDA is answering.")

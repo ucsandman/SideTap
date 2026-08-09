@@ -38,10 +38,29 @@
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
   /* Rows below the phone stretch to the phone's width instead of widening the pane. */
-  #controls, #click-hint { width:0; min-width:100%; }
+  #controls, #click-hint, #lan-banner { width:0; min-width:100%; }
   #controls { display:flex; flex-direction:column; gap:var(--s1); }
   #buttons { display:flex; flex-wrap:wrap; justify-content:center; gap:var(--s1); }
   #click-hint { text-align:center; }
+
+  /* ---- LAN exposure banner (WDA has no auth: must be loud, not a tab away) - */
+  #lan-banner {
+    display:flex; align-items:center; gap:var(--s2); padding:9px 12px;
+    border:1px solid var(--bad); border-radius:var(--r2);
+    background:rgba(248,81,73,.13); color:#ffb9b4; font-size:12.5px; font-weight:600;
+  }
+  #lan-banner span { flex:1; }
+  #lan-banner button { border-color:rgba(248,81,73,.6); color:var(--bad); flex:0 0 auto; }
+  #lan-banner button:hover { background:rgba(248,81,73,.12); border-color:var(--bad); }
+
+  /* ---- paste box ------------------------------------------------------ */
+  #paste-row { display:flex; gap:var(--s1); align-items:stretch; }
+  #paste-text {
+    flex:1; resize:vertical; min-height:34px; max-height:140px;
+    background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px;
+  }
+  #paste-text:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
 
   /* ---- buttons ------------------------------------------------------- */
   button {
@@ -104,6 +123,12 @@
   .fstep.done { color:var(--ok); }
   .fstep.err { color:var(--warn); }
 
+  /* ---- live activity feed --------------------------------------------- */
+  #activity { margin-top:var(--s4); }
+  #activity-list { max-height:220px; overflow-y:auto; }
+  .act-row { display:flex; gap:var(--s2); padding:3px 12px; font-size:12.5px; color:var(--text2); }
+  .act-row .t { color:var(--dim); font-size:11.5px; flex:0 0 40px; text-align:right; font-family:var(--mono); }
+
   /* ---- recent sends --------------------------------------------------- */
   #sent { margin-top:var(--s4); }
   .sent-row {
@@ -119,6 +144,10 @@
 </head>
 <body>
   <div id="phone-pane">
+    <div id="lan-banner" hidden>
+      <span>⚠ Phone control ports are open to your network — WDA has no auth.</span>
+      <button id="btn-lan-lock">Lock ports</button>
+    </div>
     <div id="screen-wrap">
       <img id="screen" alt="phone screen" src="/api/screenshot">
       <div id="tap-dot"></div>
@@ -128,11 +157,18 @@
       <div id="buttons">
         <button id="btn-home">⌂ Home</button>
         <button id="btn-unlock">Unlock</button>
+        <button id="btn-notifs" hidden>▾ Notifs</button>
+        <button id="btn-control" hidden>▾ Control</button>
         <button id="btn-shot">Save screenshot</button>
         <button id="btn-refresh">Refresh checks</button>
         <button id="btn-up" hidden>Restart link</button>
         <button id="btn-fix" hidden>Fix input</button>
         <button id="btn-lock" hidden>Lock ports</button>
+      </div>
+      <div id="paste-row" hidden>
+        <textarea id="paste-text" rows="1"
+          placeholder="Paste a URL, password, or long text — sends to the focused field"></textarea>
+        <button id="btn-paste-send">Send text</button>
       </div>
     </div>
     <div class="dim" id="click-hint">Click to tap · drag to swipe · type to send keys.</div>
@@ -153,6 +189,10 @@
     <div id="hint" class="dim">
       Agents drive it from a terminal:<br>
       <code>phone-harness &lt;&lt;'PY' … PY</code> with helpers like <code>tap_text("General")</code> pre-imported.
+    </div>
+    <div id="activity" hidden>
+      <h2 class="sec">Activity</h2>
+      <div id="activity-list"></div>
     </div>
     <div id="sent" hidden>
       <h2 class="sec">Recent sends</h2>
@@ -199,6 +239,12 @@ async function loadStatus() {
       document.getElementById('btn-up').hidden = inputEnabled;
       document.getElementById('fix-panel').hidden = inputEnabled;
     }
+    // Gesture shortcuts and the paste box need the input driver.
+    document.getElementById('btn-notifs').hidden = !inputEnabled;
+    document.getElementById('btn-control').hidden = !inputEnabled;
+    document.getElementById('paste-row').hidden = !inputEnabled;
+    // Loud by default: WDA has no auth, so exposure is a banner, not a tab.
+    document.getElementById('lan-banner').hidden = s.lan_exposed !== true;
   } catch (e) {
     points = null; screen.classList.add('dead');
   }
@@ -232,13 +278,33 @@ async function loadSent() {
   } catch (e) { /* panel is best-effort */ }
 }
 
+// The whole trust story is "you can see what the agent does" — every action any
+// process sends to the phone lands here (taps, swipes, typing; never key text).
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return Math.floor(s) + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  return Math.floor(s / 3600) + 'h';
+}
+async function loadActivity() {
+  try {
+    const recs = await getJSON('/api/activity');
+    const wrap = document.getElementById('activity');
+    if (!recs.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    document.getElementById('activity-list').innerHTML = recs.slice().reverse().map(r => `
+      <div class="act-row"><span class="t">${ago(r.ts)}</span><span>${escapeHtml(r.action)}</span></div>`).join('');
+  } catch (e) { /* panel is best-effort */ }
+}
+
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
-  loadStatus(); loadDoctor(); loadSent(); loadStop();
+  loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity();
   poll();
   setInterval(loadStatus, 5000);
   setInterval(loadSent, 5000);
   setInterval(loadStop, 5000);
+  setInterval(loadActivity, 3000);
 });
 
 // ---- kill switch: blocks all agent actions until resumed -------------------
@@ -314,6 +380,7 @@ async function flushKeys() {
 }
 window.addEventListener('keydown', (ev) => {
   if (!inputEnabled) return;
+  if (ev.target.closest('input,textarea')) return;     // typing in the paste box stays local
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
   let ch = null;
   if (ev.key === 'Enter') ch = '\n';
@@ -380,14 +447,43 @@ document.getElementById('btn-up').onclick = async () => {
   btn.disabled = false; btn.textContent = 'Restart link';
   loadDoctor();
 };
-document.getElementById('btn-lock').onclick = async () => {
-  const btn = document.getElementById('btn-lock');
+async function lockPorts(btn) {
   btn.disabled = true;
   const hint = document.getElementById('click-hint');
   const r = await fetch('/api/lock-ports', {method:'POST', headers:JSON_HDR, body:'{}'});
   const j = await r.json();
   hint.textContent = j.message || (j.ok ? 'Locking ports…' : 'Lock failed');
   setTimeout(() => { btn.disabled = false; loadDoctor(); }, 3000);
+}
+document.getElementById('btn-lock').onclick = (ev) => lockPorts(ev.currentTarget);
+document.getElementById('btn-lan-lock').onclick = (ev) => lockPorts(ev.currentTarget);
+
+// ---- edge-gesture shortcuts: reliable clicks for gestures that are nearly ---
+// impossible to land by dragging on a scaled-down screenshot.
+async function edgeSwipe(x1, y1, x2, y2) {
+  if (!points || !inputEnabled) return;
+  await fetch('/api/swipe', {method:'POST', headers:JSON_HDR, body: JSON.stringify(
+    {x1, y1, x2, y2, seconds: 0.3})});
+}
+document.getElementById('btn-notifs').onclick = () =>       // pull from top-left
+  edgeSwipe(points.width * 0.25, 1, points.width * 0.25, points.height * 0.55);
+document.getElementById('btn-control').onclick = () =>      // pull from top-right
+  edgeSwipe(points.width * 0.92, 1, points.width * 0.92, points.height * 0.5);
+
+// ---- paste box: whole strings in one call (the key path is one char at a time
+// and cannot paste at all).
+document.getElementById('btn-paste-send').onclick = async () => {
+  const box = document.getElementById('paste-text');
+  const btn = document.getElementById('btn-paste-send');
+  const text = box.value;
+  if (!text) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/type', {method:'POST', headers:JSON_HDR,
+                                        body: JSON.stringify({text})});
+    if (r.ok) box.value = '';
+    else document.getElementById('click-hint').textContent = 'Send failed — is a text field focused?';
+  } finally { btn.disabled = false; }
 };
 
 // ---- Fix input (re-sign WDA) ----------------------------------------------

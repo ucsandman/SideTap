@@ -25,7 +25,9 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 
 - **Real UI tree, not screenshots.** `tap_text("General")` finds the actual element and taps its center. Coordinates are points, exact.
 - **Live viewer in your browser** at ~34 fps: click to tap, drag to swipe, type on your keyboard, save screenshots. One-click **Unlock** (types your passcode from `.env`) and **Restart link** (the fix after a replug). Works even before touch input is set up.
-- **One-call flows** like `send_message("Mom", "on my way")` that open Messages, find the thread, type, and send, with guardrails (see Security).
+- **One-call flows** like `send_message("Mom", "on my way")` that open Messages, find the thread, type, and send, with guardrails (see Security). `read_messages("Mom")` reads the replies back.
+- **Native MCP tools.** `claude mcp add sidetap -- phone-harness mcp` gives any Claude Code or Claude Desktop session the whole helper API as typed tool calls — no Python piping.
+- **Live activity feed.** Every tap, swipe, and keystroke count any agent sends shows up in the viewer as it happens, so you always know what just drove the screen.
 - **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires.
 - **Free Apple ID signing that actually works.** Sideloadly leaves the nested `.xctest` bundle unsigned, so the driver never launches. `phone-harness fix-input` repairs that locally: no Apple password scripting, no paid developer account. See [How the signing fix works](#how-the-signing-fix-works).
 - **Kill switch.** A red STOP button in the viewer freezes every agent action while you keep watching the screen.
@@ -36,7 +38,7 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 git clone https://github.com/ucsandman/sidetap
 cd sidetap
 pip install -r requirements.txt
-python launch.py          :: brings the link up + opens the live viewer
+python launch.py          :: opens the live viewer; the link comes up in the background
 ```
 
 First time? Follow **[docs/setup-windows.md](docs/setup-windows.md)** (about 20 minutes, one-time: USB driver, Developer Mode, sideload WebDriverAgent).
@@ -75,19 +77,33 @@ PY
 | `type_text("hello")` | type into the focused field |
 | `swipe(x1,y1,x2,y2)` / `scroll("down")` | gestures |
 | `open_app("Settings")` | launch by friendly name or bundle id |
+| `current_app()` / `wait_for_app(bundle_id)` | which app is frontmost / wait until one is |
 | `send_message("Mom", "hi")` | open Messages, open the thread, type, send |
+| `read_messages("Mom")` | read the open thread back: `[{text, from_me}, ...]` |
 | `press_home()` | home screen |
 | `wait_stable()` | wait until the screen stops changing |
+| `wait_for_text("Done")` | wait until specific text appears; returns the element |
 | `unlock()` | wake + unlock (passcode opt-in via `.env`) |
 
 Add your own helpers in `agent-workspace/agent_helpers.py`. They auto-load into every script.
+
+### MCP (Claude Code / Claude Desktop)
+
+The same helpers are available as native typed MCP tools:
+
+```bat
+claude mcp add sidetap -- phone-harness mcp
+```
+
+Then any session can call `tap_text`, `ocr`, `send_message`, `screenshot`, and the rest directly — schemas and descriptions come from the Python signatures, so the two surfaces never drift.
 
 ## Security and responsible use
 
 This tool is for **your own phone, under your supervision**. The guardrails are part of the product:
 
-- **Lock the ports.** go-ios forwards WDA (:8100) and its MJPEG stream (:9100) on `0.0.0.0`, and WebDriverAgent has no auth, so by default anyone on your Wi-Fi could drive the phone. The doctor flags this; click **Lock ports** in the viewer (or run `scripts\lock_ports.ps1`, one-time, needs admin) to add a firewall rule. Loopback keeps working.
-- **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**. It bounds a runaway agent. It does not defend against prompt injection.
+- **Lock the ports.** go-ios forwards WDA (:8100) and its MJPEG stream (:9100) on `0.0.0.0`, and WebDriverAgent has no auth, so by default anyone on your Wi-Fi could drive the phone. The viewer shows a red banner whenever the ports are exposed (the doctor flags it too); click **Lock ports** there (or run `scripts\lock_ports.ps1`, one-time, needs admin) to add a firewall rule. Loopback keeps working.
+- **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**, and the doctor calls out a forgotten STOP as its first check. It bounds a runaway agent. It does not defend against prompt injection.
+- **Live activity feed.** Every action any process sends to the phone — taps, swipes, app launches, typing — lands in the viewer's **Activity** panel as it happens. Typed text is never recorded, only the character count (it can be a password or your passcode).
 - **Send guardrails.** `send_message` refuses to send if the contact name is ambiguous or the opened thread does not match, and logs every send to `.state/actions.log`, shown as **Recent sends** in the viewer.
 - **Origin guard.** The viewer API rejects cross-origin and DNS-rebinding requests, so a random web page in another tab cannot drive your phone.
 - **Passcode safety.** `unlock()` decides from what is actually on screen (never the driver's lock flag, which can lie), types your passcode only when the passcode pad is visible, makes exactly one attempt per call (repeated wrong passcodes lock an iPhone out), and scrubs it from error messages. The passcode itself is opt-in via `.env` and never committed.
@@ -110,10 +126,11 @@ Mid-week re-installs can skip Sideloadly entirely by reusing the captured profil
 
 | Module | Role |
 |---|---|
-| `wda_client.py` | thin HTTP client for WebDriverAgent (requests only), kill-switch chokepoint |
+| `wda_client.py` | thin HTTP client for WebDriverAgent (requests only), kill-switch chokepoint, activity feed |
 | `device.py` | go-ios wrapper: tunnel, runwda, port forwards, pids and logs in `.state/` |
-| `capture.py` | signing-free screenshots via go-ios (perception works before input does) |
-| `helpers.py` | the agent API: tap, tap_text, ocr, send_message, unlock |
+| `capture.py` | screenshots: WDA HTTP when up, go-ios subprocess fallback (perception works before input does) |
+| `helpers.py` | the agent API: tap, tap_text, ocr, send_message, read_messages, unlock |
+| `mcp_server.py` | the helper API as native MCP tools (`phone-harness mcp`) |
 | `admin.py` | doctor, up, down |
 | `signing.py` | the free-Apple-ID re-signing flow |
 | `viewer.py` + `viewer.html` | the human surface: live screen, remote control, doctor panel, STOP |
@@ -142,7 +159,7 @@ Issues and PRs are welcome. Ground rules:
 - `python -m pytest tests -q` must pass without a phone attached.
 - New agent primitives go in `helpers.py` and `__all__`.
 - Keep `wda_client.py` free of go-ios knowledge and `device.py` free of HTTP knowledge.
-- No new runtime dependencies beyond `requests` without a stated reason.
+- No new runtime dependencies beyond `requests` and `mcp` without a stated reason.
 
 ## Credits
 

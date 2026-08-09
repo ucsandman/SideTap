@@ -8,6 +8,8 @@ Usage:
   phone-harness up              # start tunnel + WDA + port forwards
   phone-harness down            # stop them
   phone-harness view            # live viewer web page (click = tap)
+  phone-harness mcp             # MCP server over stdio, e.g.:
+                                #   claude mcp add sidetap -- phone-harness mcp
   phone-harness fix-input [profile.mobileprovision]
                                 # sign WDA so touch input works (free Apple ID)
 """
@@ -67,6 +69,16 @@ def main(argv: list[str] | None = None) -> int:
         from . import viewer
 
         return viewer.serve()
+    if cmd == "mcp":
+        try:
+            from . import mcp_server
+        except ImportError:
+            print(
+                "MCP support needs the `mcp` package: pip install mcp",
+                file=sys.stderr,
+            )
+            return 1
+        return mcp_server.main()
     if cmd == "fix-input":
         from pathlib import Path
 

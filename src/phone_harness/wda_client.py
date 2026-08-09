@@ -8,6 +8,8 @@ Coordinates are in points (the same units the UI element tree uses).
 from __future__ import annotations
 
 import base64
+import json
+import time
 from typing import Any
 
 import requests
@@ -26,6 +28,78 @@ def stop_file():
 
 def stop_engaged() -> bool:
     return stop_file().exists()
+
+
+def activity_file():
+    """Path of the live activity feed. Read dynamically so tests can relocate it."""
+    return config.STATE_DIR / "agent_activity.log"
+
+
+_ACTIVITY_MAX_BYTES = 64_000
+_ACTIVITY_KEEP_LINES = 200
+
+
+def _activity_summary(path: str, payload: dict | None) -> str | None:
+    """One feed line for a phone-changing POST, or None to skip.
+
+    Pure function (unit-tested). NEVER includes typed text — /wda/keys carries
+    passwords and passcodes, so only the character count is recorded.
+    """
+    payload = payload or {}
+    if path == "/wda/homescreen":
+        return "home"
+    if path == "/wda/unlock":
+        return "wake"
+    if path.endswith("/wda/keys"):
+        return f"type ({len(payload.get('value') or [])} chars)"
+    if path.endswith("/wda/pressButton"):
+        return f"button: {payload.get('name', '?')}"
+    if path.endswith("/wda/apps/launch"):
+        return f"open app: {payload.get('bundleId', '?')}"
+    if path.endswith("/actions"):
+        try:
+            steps = payload["actions"][0]["actions"]
+            moves = [s for s in steps if s.get("type") == "pointerMove"]
+            pauses = [s.get("duration", 0) for s in steps if s.get("type") == "pause"]
+            if len(moves) >= 2:
+                a, b = moves[0], moves[-1]
+                return (
+                    f"swipe ({a['x']:.0f}, {a['y']:.0f}) → ({b['x']:.0f}, {b['y']:.0f})"
+                )
+            if moves:
+                kind = "long-press" if max(pauses or [0]) > 300 else "tap"
+                return f"{kind} ({moves[0]['x']:.0f}, {moves[0]['y']:.0f})"
+        except (KeyError, IndexError, TypeError):
+            pass
+        return "touch gesture"
+    if path.endswith("/appium/settings"):
+        return None  # stream tuning, not a phone action
+    return path.rsplit("/", 1)[-1]  # unknown action: still visible in the feed
+
+
+def _log_activity(path: str, payload: dict | None) -> None:
+    """Append one line to .state/agent_activity.log. Never raises.
+
+    Every process driving the phone (agent scripts, the viewer) funnels through
+    _request, so this one append gives the human a complete live feed. The
+    trim keeps the file bounded; losing lines to a rare concurrent trim is
+    acceptable, breaking a phone action is not.
+    """
+    try:
+        summary = _activity_summary(path, payload)
+        if not summary:
+            return
+        feed = activity_file()
+        config.STATE_DIR.mkdir(exist_ok=True)
+        with open(feed, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": time.time(), "action": summary}) + "\n")
+        if feed.stat().st_size > _ACTIVITY_MAX_BYTES:
+            lines = feed.read_text(encoding="utf-8", errors="replace").splitlines(
+                keepends=True
+            )
+            feed.write_text("".join(lines[-_ACTIVITY_KEEP_LINES:]), encoding="utf-8")
+    except Exception:
+        pass  # the feed must never break a phone action
 
 
 class WDAClient:
@@ -72,6 +146,8 @@ class WDAClient:
             )
         if resp.status_code >= 400:
             raise WDAError(f"{method} {path}: HTTP {resp.status_code}: {body}")
+        if method == "POST" and path != "/session":
+            _log_activity(path, payload)  # only actions that actually happened
         return value
 
     def _session_request(
@@ -125,10 +201,12 @@ class WDAClient:
         """Full UI element tree as nested dicts (type, label, name, value, rect, children)."""
         return self._session_request("GET", "/source?format=json")
 
-    def active_app(self) -> dict:  # noqa: vulture
+    def active_app(self) -> dict:
         return self._session_request("GET", "/wda/activeAppInfo")
 
-    def is_locked(self) -> bool:
+    # Kept but unused on purpose: /wda/locked can report unlocked with the
+    # passcode pad on screen (a test pins that unlock() never consults it).
+    def is_locked(self) -> bool:  # noqa: vulture
         return bool(self._request("GET", "/wda/locked"))
 
     # ---- action ------------------------------------------------------------

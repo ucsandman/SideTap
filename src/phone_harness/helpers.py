@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from . import config, device
+from . import capture, config, device
 from .wda_client import WDAClient, WDAError
 
 _client: WDAClient | None = None
@@ -26,8 +26,12 @@ def client() -> WDAClient:
 
 
 def screenshot(path: str | None = None) -> bytes:
-    """PNG of the current screen. Saves to `path` if given, returns the bytes."""
-    png = client().screenshot()
+    """PNG of the current screen. Saves to `path` if given, returns the bytes.
+
+    Uses go-ios (no WebDriverAgent needed), so viewing works even before the
+    input driver is signed.
+    """
+    png = capture.screenshot_png()
     if path:
         Path(path).write_bytes(png)
     return png
@@ -196,11 +200,11 @@ def open_app(name: str) -> None:
 
 def wait_stable(timeout: float = 10.0, interval: float = 0.5) -> bool:
     """Wait until two consecutive screenshots are identical. True if stable."""
-    prev = client().screenshot()
+    prev = capture.screenshot_png()
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(interval)
-        cur = client().screenshot()
+        cur = capture.screenshot_png()
         if cur == prev:
             return True
         prev = cur

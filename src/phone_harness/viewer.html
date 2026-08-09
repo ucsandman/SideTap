@@ -54,8 +54,7 @@
 <script>
 const screen = document.getElementById('screen');
 const dot = document.getElementById('tap-dot');
-let points = null;   // {width, height} of phone screen in points
-let live = false;    // true when the MJPEG stream is running
+let points = null;   // {width, height} of phone screen (points if input up, else pixels)
 
 async function getJSON(url, opts) {
   const r = await fetch(url, opts);
@@ -63,45 +62,50 @@ async function getJSON(url, opts) {
   return r.json();
 }
 
+let inputEnabled = false;
+
 async function loadStatus() {
   try {
     const s = await getJSON('/api/status');
     points = s.window;
+    inputEnabled = !!s.input;
     screen.classList.remove('dead');
-    if (!live) {  // switch to the low-latency MJPEG stream
-      live = true;
-      screen.onload = null;
-      screen.onerror = () => { live = false; poll(); };  // stream down -> poll stills
-      screen.src = s.mjpeg_url;
-    }
+    const hint = document.getElementById('click-hint');
+    hint.textContent = inputEnabled
+      ? 'Click the screen to tap the phone.'
+      : 'Live view is on. Touch input needs the signed driver (see checks →).';
   } catch (e) {
-    points = null; live = false;
-    screen.classList.add('dead');
+    points = null; screen.classList.add('dead');
   }
 }
 
-// fallback: refresh the still image, one request at a time (never overlapping)
+// Refresh the still image one request at a time (never overlapping).
 function poll() {
-  if (live) return;
-  screen.onload = screen.onerror = () => setTimeout(poll, 1500);
+  screen.onload = screen.onerror = () => setTimeout(poll, 900);
   screen.src = '/api/screenshot?t=' + Date.now();
 }
 
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
   loadStatus(); loadDoctor();
-  setTimeout(poll, 1500);
+  poll();
   setInterval(loadStatus, 5000);
 });
 
 screen.addEventListener('click', async (ev) => {
   if (!points) return;
   const r = screen.getBoundingClientRect();
-  const x = (ev.clientX - r.left) / r.width * points.width;
-  const y = (ev.clientY - r.top) / r.height * points.height;
   dot.style.left = (ev.clientX - r.left) + 'px';
   dot.style.top = (ev.clientY - r.top) + 'px';
-  dot.style.opacity = 1; setTimeout(() => dot.style.opacity = 0, 400);
+  if (!inputEnabled) {
+    dot.style.borderColor = '#f85149'; dot.style.opacity = 1;
+    setTimeout(() => dot.style.opacity = 0, 600);
+    return;
+  }
+  dot.style.borderColor = '#4493f8'; dot.style.opacity = 1;
+  setTimeout(() => dot.style.opacity = 0, 400);
+  const x = (ev.clientX - r.left) / r.width * points.width;
+  const y = (ev.clientY - r.top) / r.height * points.height;
   await fetch('/api/tap', {method:'POST', headers:{'Content-Type':'application/json'},
                            body: JSON.stringify({x, y})});
 });

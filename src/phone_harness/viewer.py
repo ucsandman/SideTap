@@ -12,10 +12,18 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import admin, config
+from . import admin, capture, config
 from .wda_client import WDAClient, WDAError
 
 _HTML = Path(__file__).with_name("viewer.html")
+
+
+def _png_size(png: bytes) -> tuple[int, int]:
+    """Read width/height from a PNG's IHDR chunk (bytes 16..24)."""
+    if len(png) >= 24 and png[12:16] == b"IHDR":
+        return int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+    return 0, 0
+
 
 # 1x1 grey PNG shown when the phone is unreachable
 _PLACEHOLDER = bytes.fromhex(
@@ -49,14 +57,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, _HTML.read_bytes(), "text/html; charset=utf-8")
             elif path == "/api/screenshot":
                 try:
-                    self._send(200, self.client.screenshot(), "image/png")
-                except WDAError:
+                    self._send(200, capture.screenshot_png(max_age=0.4), "image/png")
+                except Exception:
                     self._send(200, _PLACEHOLDER, "image/png")
             elif path == "/api/status":
-                w, h = self.client.window_size()
-                self._json(
-                    {"window": {"width": w, "height": h}, "mjpeg_url": config.MJPEG_URL}
-                )
+                # Screen size in points comes from WDA when the input driver is up.
+                # Without it we still stream go-ios screenshots and use pixel size.
+                try:
+                    w, h = self.client.window_size()
+                    self._json({"window": {"width": w, "height": h}, "input": True})
+                except WDAError:
+                    pw, ph = _png_size(capture.screenshot_png(max_age=0.4))
+                    self._json({"window": {"width": pw, "height": ph}, "input": False})
             elif path == "/api/doctor":
                 self._json(admin.doctor_results())
             else:
@@ -85,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-def serve(open_browser: bool = True) -> int:
+def serve(open_browser: bool = True) -> int:  # noqa: vulture
     server = ThreadingHTTPServer(("127.0.0.1", config.VIEWER_PORT), Handler)
     url = f"http://127.0.0.1:{config.VIEWER_PORT}"
     print(f"Viewer: {url}  (Ctrl+C to stop)")

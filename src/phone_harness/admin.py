@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from . import config, device
+from . import capture, config, device
 from .wda_client import WDAClient
 
 
@@ -74,6 +74,20 @@ def _check_wda_installed():
     )
 
 
+def _check_perception():
+    """Screenshots via go-ios need no app signing. This is the 'seeing' half."""
+    try:
+        png = capture.screenshot_png()
+    except Exception as exc:
+        return (
+            False,
+            f"screenshot failed: {exc}",
+            "Unlock the phone; make sure the developer image is mounted "
+            "(`ios image auto`).",
+        )
+    return True, f"live screen capture works ({len(png) // 1024} KB frame)", ""
+
+
 def _check_wda_responding():
     client = WDAClient(timeout=5)
     if client.is_up():
@@ -92,8 +106,9 @@ CHECKS = [
     ("go-ios installed", _check_go_ios),
     ("iPhone on USB", _check_device),
     ("tunnel", _check_tunnel),
-    ("WDA installed", _check_wda_installed),
-    ("WDA responding", _check_wda_responding),
+    ("perception (view/OCR)", _check_perception),
+    ("WDA installed (input)", _check_wda_installed),
+    ("WDA responding (input)", _check_wda_responding),
 ]
 
 
@@ -109,7 +124,7 @@ def doctor_results() -> list[dict]:
     return results
 
 
-def doctor() -> int:
+def doctor() -> int:  # noqa: vulture
     results = doctor_results()
     for r in results:
         mark = "PASS" if r["ok"] else "FAIL"
@@ -123,7 +138,7 @@ def doctor() -> int:
     return 1
 
 
-def up(wait_seconds: float = 60.0) -> int:
+def up(wait_seconds: float = 60.0) -> int:  # noqa: vulture
     """Bring the whole chain up. Idempotent: skips whatever already runs."""
     client = WDAClient(timeout=3)
     if client.is_up():
@@ -177,7 +192,7 @@ def up(wait_seconds: float = 60.0) -> int:
     return 1
 
 
-def down() -> int:
+def down() -> int:  # noqa: vulture
     stopped = device.stop_all()
     print("Stopped: " + (", ".join(stopped) if stopped else "nothing was running"))
     return 0

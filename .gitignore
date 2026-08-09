@@ -8,3 +8,8 @@ node_modules/
 screenshots/
 .dashclaw-local/
 .offlocal/
+wda/
+devimages/
+selfIdentity.plist
+*.mobileprovision
+*.p12

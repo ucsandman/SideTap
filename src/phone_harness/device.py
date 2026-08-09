@@ -112,11 +112,11 @@ def tunnel_running() -> bool:
     except (DeviceError, subprocess.TimeoutExpired):
         return False
     for obj in _json_lines(proc.stdout + proc.stderr):
-        if (
-            obj.get("address")
-            or obj.get("udid")
-            or (isinstance(obj, dict) and obj.get("tunnels"))
-        ):
+        # skip go-ios log lines ({"level": ..., "msg": ...}); a real tunnel
+        # entry carries an address + RSD port
+        if obj.get("level"):
+            continue
+        if obj.get("address") and obj.get("rsdPort"):
             return True
     return False
 

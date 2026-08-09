@@ -73,11 +73,26 @@ def sideloadly_identity() -> tuple[Path, Path]:
     return certs[0], key
 
 
+def _find_openssl() -> str | None:
+    """openssl from PATH, else Git for Windows' copies (PowerShell-launched
+    processes often lack Git's bin dirs on PATH; bash-launched ones have them)."""
+    found = shutil.which("openssl")
+    if found:
+        return found
+    for cand in (
+        Path("C:/Program Files/Git/mingw64/bin/openssl.exe"),
+        Path("C:/Program Files/Git/usr/bin/openssl.exe"),
+    ):
+        if cand.exists():
+            return str(cand)
+    return None
+
+
 def build_p12(dest: Path = P12_PATH, password: str = P12_PASSWORD) -> Path:
     """Build a .p12 from Sideloadly's cert/key so the signing identity matches
     the profile Sideloadly mints (same Team ID)."""
     cert, key = sideloadly_identity()
-    openssl = shutil.which("openssl")
+    openssl = _find_openssl()
     if not openssl:
         raise SigningError(
             "openssl not found on PATH (Git for Windows ships it in "

@@ -1,4 +1,4 @@
-# phone-claude
+# sidetap
 
 LLM agents drive a real iPhone from Windows over USB + WebDriverAgent (go-ios).
 Windows rebuild of ShawnPana/phone-harness (which is macOS-only).
@@ -10,16 +10,17 @@ Windows rebuild of ShawnPana/phone-harness (which is macOS-only).
 - `src/phone_harness/admin.py` — `doctor` (ordered checks, each names its fix, incl. LAN exposure and the 7-day signature countdown), `up`, `down`.
 - `scripts/lock_ports.ps1` — self-elevating firewall rule blocking LAN access to :8100/:9100 (WDA has no auth). Fired by the viewer's Lock ports button or run by hand.
 - `src/phone_harness/signing.py` — `fix-input`: builds a p12 from Sideloadly's cert, captures the profile Sideloadly mints (Temp watcher), re-signs WDA incl. the nested `.xctest` via `ios sign app`. All local; no Apple auth.
-- `src/phone_harness/helpers.py` — agent API (`tap`, `tap_text`, `ocr`, `open_app`, …). `ocr()` reads the UI tree; the tree is cached ~2s and every action invalidates it (WDA `/elements` queries were measured SLOWER than `/source` on device — don't reintroduce them). `unlock()` types the passcode only when the passcode pad is visible.
+- `src/phone_harness/helpers.py` — agent API (`tap`, `tap_text`, `ocr`, `open_app`, …). `ocr()` reads the UI tree; the tree is cached ~2s and every action invalidates it (WDA `/elements` queries were measured SLOWER than `/source` on device — don't reintroduce them). `unlock()` decides from the screen — NEVER from `/wda/locked`, which can report unlocked with the pad on screen (a test pins this): wake + bottom-edge swipe, type PHONE_PASSCODE only if the pad actually appeared, one attempt only (iOS lockout), success = pad gone.
 - `src/phone_harness/run.py` — CLI; no-arg mode executes stdin with helpers in scope; autoloads `agent-workspace/agent_helpers.py`.
-- `src/phone_harness/viewer.py` + `viewer.html` — human surface: live MJPEG screen (:9100), click-to-tap, drag-to-swipe, keyboard typing, doctor panel, Recent sends audit list, red STOP/RESUME kill switch (:8770, VIEWER_PORT to override; 8765 belongs to the Practical Systems API). All `/api/*` calls are origin-guarded against cross-site/DNS-rebinding.
+- `src/phone_harness/viewer.py` + `viewer.html` — human surface: live MJPEG screen (:9100), click-to-tap, drag-to-swipe, keyboard typing, doctor panel, Recent sends audit list, Unlock and Restart link buttons, red STOP/RESUME kill switch (:8770, VIEWER_PORT to override; 8765 belongs to the Practical Systems API). All `/api/*` calls are origin-guarded against cross-site/DNS-rebinding. Gestures serialize through `_ACTION_LOCK`, and `/api/unlock` passes the viewer's own client into `helpers.unlock(c)` — WDA holds ONE session; a second client steals it mid-sequence.
 
 ## Commands
 
 - Run everything: `python launch.py`
 - Tests: `python -m pytest tests -q`
 - Diagnose: `phone-harness doctor` (never guess at connection problems — run this)
-- Enable touch input (free Apple ID): `phone-harness fix-input`, then click Start in Sideloadly
+- After a replug: the viewer's Restart link button, or `phone-harness up`
+- Enable touch input (free Apple ID): `phone-harness fix-input`, then click Start in Sideloadly (mid-week: `phone-harness fix-input .state/profile.mobileprovision` skips Sideloadly; installs need the phone unlocked)
 
 ## Rules
 

@@ -127,8 +127,10 @@
       <button id="btn-stop">■ STOP</button>
       <div id="buttons">
         <button id="btn-home">⌂ Home</button>
+        <button id="btn-unlock">Unlock</button>
         <button id="btn-shot">Save screenshot</button>
         <button id="btn-refresh">Refresh checks</button>
+        <button id="btn-up" hidden>Restart link</button>
         <button id="btn-fix" hidden>Fix input</button>
         <button id="btn-lock" hidden>Lock ports</button>
       </div>
@@ -194,6 +196,7 @@ async function loadStatus() {
     // Show the fix affordance only while input is off and no job is running.
     if (!fixRunning) {
       document.getElementById('btn-fix').hidden = inputEnabled;
+      document.getElementById('btn-up').hidden = inputEnabled;
       document.getElementById('fix-panel').hidden = inputEnabled;
     }
   } catch (e) {
@@ -330,6 +333,17 @@ document.getElementById('btn-stop').onclick = async () => {
 };
 document.getElementById('btn-home').onclick = () =>
   fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
+document.getElementById('btn-unlock').onclick = async () => {
+  const btn = document.getElementById('btn-unlock');
+  const hint = document.getElementById('click-hint');
+  btn.disabled = true; btn.textContent = 'Unlocking…';
+  try {
+    const r = await fetch('/api/unlock', {method:'POST', headers:JSON_HDR, body:'{}'});
+    const j = await r.json();
+    hint.textContent = j.ok ? 'Unlocked.' : (j.error || 'Unlock failed');
+  } catch (e) { hint.textContent = 'Unlock failed'; }
+  btn.disabled = false; btn.textContent = 'Unlock';
+};
 document.getElementById('btn-shot').onclick = () => {
   const a = document.createElement('a');
   a.href = '/api/screenshot?t=' + Date.now(); a.download = 'phone.png'; a.click();
@@ -354,6 +368,18 @@ async function loadDoctor() {
   } catch (e) { el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>'; }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
+document.getElementById('btn-up').onclick = async () => {
+  const btn = document.getElementById('btn-up');
+  const hint = document.getElementById('click-hint');
+  btn.disabled = true; btn.textContent = 'Restarting… (up to a minute)';
+  try {
+    const r = await fetch('/api/up', {method:'POST', headers:JSON_HDR, body:'{}'});
+    const j = await r.json();
+    hint.textContent = j.ok ? 'Link is up.' : 'Restart failed — see checks.';
+  } catch (e) { hint.textContent = 'Restart failed — see checks.'; }
+  btn.disabled = false; btn.textContent = 'Restart link';
+  loadDoctor();
+};
 document.getElementById('btn-lock').onclick = async () => {
   const btn = document.getElementById('btn-lock');
   btn.disabled = true;

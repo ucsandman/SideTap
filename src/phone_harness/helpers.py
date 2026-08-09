@@ -367,32 +367,52 @@ def _scrub_secret(message: str, secret: str | None) -> str:
     return message.replace(secret, "•••") if secret else message
 
 
-def unlock() -> None:
-    """Wake and unlock the phone. Types PHONE_PASSCODE from .env if set (opt-in).
+def unlock(c: WDAClient | None = None) -> None:
+    """Make the phone usable: wake it and, if the passcode pad comes up, type
+    PHONE_PASSCODE from .env (opt-in). Scrubs the passcode from any error.
 
-    Refuses to type unless the passcode pad is actually on screen, and scrubs
-    the passcode from any error it raises.
+    Decides from what is actually on screen — NEVER from /wda/locked, which
+    can report unlocked while the pad is on screen (seen live 2026-08-09).
+    Pass `c` to reuse an existing client: WDA holds ONE session, so a second
+    client would steal it mid-sequence (the viewer passes its own).
     """
-    c = client()
-    c.unlock()
-    time.sleep(0.5)
-    if c.is_locked() and config.PHONE_PASSCODE:
-        w, h = c.window_size()
-        c.swipe(w / 2, h * 0.85, w / 2, h * 0.25, 0.2)  # swipe up to passcode pad
-        time.sleep(1.0)
-        if not _passcode_pad_visible(c.source()):
-            raise WDAError(
-                "Passcode pad is not on screen — refusing to type the passcode "
-                "blind. Unlock the phone by hand."
-            )
-        try:
-            c.type_text(config.PHONE_PASSCODE)
-        except WDAError as exc:
-            raise WDAError(_scrub_secret(str(exc), config.PHONE_PASSCODE)) from None
+    c = c or client()
+    if c.active_app().get("bundleId") != "com.apple.springboard":
+        return  # an app is frontmost: unlocked and in use — touch nothing
+    w, h = c.window_size()  # before the wake, so it can't eat awake-time
+
+    def wake_and_swipe():
+        # On a locked phone the bottom-edge swipe summons the passcode pad;
+        # on a merely-asleep phone it lands on the home screen. Higher swipe
+        # starts scroll the lock-screen notification list instead.
+        c.press_button("home")  # wake the display
         time.sleep(0.5)
-    if c.is_locked():
+        c.swipe(w / 2, h * 0.98, w / 2, h * 0.30, 0.25)
+        time.sleep(1.0)
+
+    wake_and_swipe()
+    if not _passcode_pad_visible(c.source()):
+        return  # no pad appeared: the phone was just asleep, now awake+usable
+    if not config.PHONE_PASSCODE:
         raise WDAError(
-            "Phone is still locked. Unlock it by hand or set PHONE_PASSCODE in .env."
+            "Phone is locked. Set PHONE_PASSCODE in .env or unlock it by hand."
+        )
+    # The tree fetch above can take seconds when the viewer is streaming, and
+    # the lock screen re-sleeps fast — typed keys on a dark screen go nowhere.
+    # A black frame compresses to almost nothing, so screenshot size is a
+    # cheap screen-still-lit probe; wake and swipe again if it slept.
+    if len(c.screenshot()) < 150_000:
+        wake_and_swipe()
+    try:
+        c.type_text(config.PHONE_PASSCODE)
+    except WDAError as exc:
+        raise WDAError(_scrub_secret(str(exc), config.PHONE_PASSCODE)) from None
+    time.sleep(0.7)
+    if _passcode_pad_visible(c.source()):
+        raise WDAError(
+            "Typed the passcode but the pad is still on screen — wrong "
+            "PHONE_PASSCODE, or the screen slept mid-type. Not retrying "
+            "automatically (repeated wrong attempts lock the phone out)."
         )
 
 

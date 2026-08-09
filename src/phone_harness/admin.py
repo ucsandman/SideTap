@@ -97,8 +97,9 @@ def _check_wda_responding():
         False,
         f"WDA not answering at {config.WDA_URL}",
         (
-            "Run: phone-harness up. If it fails right after a working week, the free-ID "
-            "signature likely expired (7 days) - re-sign WDA in Sideloadly."
+            "Click 'Restart link' in the viewer (or run: phone-harness up) - this is "
+            "the fix after a replug. If it fails right after a working week, the "
+            "free-ID signature likely expired (7 days) - re-sign WDA in Sideloadly."
         ),
     )
 

@@ -26,6 +26,15 @@ _HTML = Path(__file__).with_name("viewer.html")
 _FIX_LOCK = threading.Lock()
 _FIX_JOB = {"running": False, "step": "idle", "message": "", "ok": None}
 
+# One phone gesture at a time: unlock() is a timed wake→swipe→type sequence,
+# and a tap/keystroke landing in the middle of it garbles both.
+_ACTION_LOCK = threading.Lock()
+
+# Last good /api/status payload. Served while a gesture holds _ACTION_LOCK so
+# the browser's poll doesn't queue requests inside WDA mid-sequence (unlock is
+# timing-sensitive: added latency lets the lock screen fall back asleep).
+_LAST_STATUS: dict | None = None
+
 
 def _fix_input_worker():
     from . import signing
@@ -170,16 +179,19 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/status":
                 # Screen size in points comes from WDA when the input driver is up.
                 # Without it we still stream go-ios screenshots and use pixel size.
+                global _LAST_STATUS
+                if _ACTION_LOCK.locked() and _LAST_STATUS is not None:
+                    self._json(_LAST_STATUS)
+                    return
                 try:
                     w, h = self.client.window_size()
                     _tune_mjpeg(self.client)
-                    self._json(
-                        {
-                            "window": {"width": w, "height": h},
-                            "input": True,
-                            "mjpeg": config.MJPEG_PORT,
-                        }
-                    )
+                    _LAST_STATUS = {
+                        "window": {"width": w, "height": h},
+                        "input": True,
+                        "mjpeg": config.MJPEG_PORT,
+                    }
+                    self._json(_LAST_STATUS)
                 except WDAError:
                     pw, ph = _png_size(capture.screenshot_png(max_age=0.4))
                     self._json(
@@ -217,23 +229,39 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
         try:
             if path == "/api/tap":
-                self.client.tap(float(payload["x"]), float(payload["y"]))
+                with _ACTION_LOCK:
+                    self.client.tap(float(payload["x"]), float(payload["y"]))
                 self._json({"ok": True})
             elif path == "/api/swipe":
-                self.client.swipe(
-                    float(payload["x1"]),
-                    float(payload["y1"]),
-                    float(payload["x2"]),
-                    float(payload["y2"]),
-                    min(max(float(payload.get("seconds", 0.3)), 0.05), 3.0),
-                )
+                with _ACTION_LOCK:
+                    self.client.swipe(
+                        float(payload["x1"]),
+                        float(payload["y1"]),
+                        float(payload["x2"]),
+                        float(payload["y2"]),
+                        min(max(float(payload.get("seconds", 0.3)), 0.05), 3.0),
+                    )
                 self._json({"ok": True})
             elif path == "/api/type":
-                self.client.type_text(str(payload.get("text", "")))
+                with _ACTION_LOCK:
+                    self.client.type_text(str(payload.get("text", "")))
                 self._json({"ok": True})
             elif path == "/api/home":
-                self.client.home()
+                with _ACTION_LOCK:
+                    self.client.home()
                 self._json({"ok": True})
+            elif path == "/api/unlock":
+                from . import helpers
+
+                with _ACTION_LOCK:
+                    # Reuse the viewer's client: WDA holds one session, and a
+                    # second client would steal it mid-sequence.
+                    helpers.unlock(self.client)
+                self._json({"ok": True})
+            elif path == "/api/up":
+                # Restart tunnel + WDA (the fix after a replug). Slow (up to
+                # ~60s) but synchronous: the button disables while it runs.
+                self._json({"ok": admin.up() == 0})
             elif path == "/api/fix-input":
                 self._json(_start_fix_input())
             elif path == "/api/lock-ports":

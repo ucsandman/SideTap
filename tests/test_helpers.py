@@ -166,23 +166,44 @@ def test_passcode_pad_not_visible_on_ordinary_screen():
 class StubPhone:
     """Stands in for WDAClient in unlock() tests. Locked until typed at."""
 
-    def __init__(self, tree, type_error=None):
+    def __init__(
+        self,
+        tree,
+        type_error=None,
+        unlock_error=None,
+        frame=None,
+        app="com.apple.springboard",
+        wrong_pin=False,
+    ):
         self.tree = tree
         self.typed = []
+        self.pressed = []
+        self.swipes = 0
         self.type_error = type_error
-        self._locked = True
+        self.unlock_error = unlock_error
+        self.app = app
+        self.wrong_pin = wrong_pin
+        # A lit screen compresses to a big PNG; a dark one to almost nothing.
+        self.frame = frame if frame is not None else b"\0" * 200_000
+
+    def active_app(self):
+        return {"bundleId": self.app}
+
+    def screenshot(self):
+        return self.frame
 
     def unlock(self):
-        pass
+        if self.unlock_error:
+            raise self.unlock_error
 
-    def is_locked(self):
-        return self._locked
+    def press_button(self, name):
+        self.pressed.append(name)
 
     def window_size(self):
         return (390.0, 844.0)
 
     def swipe(self, *_args):
-        pass
+        self.swipes += 1
 
     def source(self):
         return self.tree
@@ -191,7 +212,8 @@ class StubPhone:
         if self.type_error:
             raise self.type_error
         self.typed.append(text)
-        self._locked = False
+        if not self.wrong_pin:
+            self.tree = SAMPLE_TREE  # accepted: pad dismissed, home screen
 
 
 @pytest.fixture()
@@ -206,17 +228,75 @@ def fast(monkeypatch):
     return use
 
 
-def test_unlock_refuses_to_type_passcode_blind(fast):
-    stub = fast(StubPhone(SAMPLE_TREE))  # no passcode pad on screen
-    with pytest.raises(WDAError, match="pad"):
-        helpers.unlock()
-    assert stub.typed == []  # the passcode must never have been sent
+def test_unlock_types_nothing_when_no_pad_appears(fast):
+    """Wake + swipe lands somewhere without a pad (phone was just asleep):
+    unlock() is done — and must never type the passcode blind."""
+    stub = fast(StubPhone(SAMPLE_TREE))
+    helpers.unlock()
+    assert stub.pressed == ["home"]  # woke the screen
+    assert stub.typed == []
 
 
 def test_unlock_types_when_pad_is_visible(fast):
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
     assert stub.typed == ["246810"]
+
+
+def test_unlock_never_consults_wda_locked(fast):
+    """/wda/locked lies (returned False with the pad on screen, live
+    2026-08-09). unlock() must decide from the screen, never that endpoint."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    stub.is_locked = None  # noqa: vulture  (poison: any call raises TypeError)
+    helpers.unlock()
+    assert stub.typed == ["246810"]
+
+
+def test_unlock_locked_without_passcode_raises(fast, monkeypatch):
+    """Pad on screen but no PHONE_PASSCODE configured: clear error, no typing."""
+    monkeypatch.setattr(config, "PHONE_PASSCODE", None)
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    with pytest.raises(WDAError, match="PHONE_PASSCODE"):
+        helpers.unlock()
+    assert stub.typed == []
+
+
+def test_unlock_leaves_foreground_app_alone(fast):
+    """An app is frontmost -> the phone is unlocked and in use. The edge swipe
+    would yank the user out of the app; unlock() must not gesture at all."""
+    stub = fast(StubPhone(SAMPLE_TREE, app="com.apple.mobilesafari"))
+    helpers.unlock()
+    assert stub.pressed == []
+    assert stub.swipes == 0
+    assert stub.typed == []
+
+
+def test_unlock_wrong_pin_raises_and_never_retries(fast):
+    """Pad still up after typing = wrong PIN (or lost keys). One attempt only —
+    iOS lockout escalates on repeated wrong passcodes."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890")), wrong_pin=True))
+    with pytest.raises(WDAError, match="still on screen"):
+        helpers.unlock()
+    assert stub.typed == ["246810"]  # exactly one attempt
+
+
+def test_unlock_resummons_pad_when_screen_slept(fast):
+    """If the screen went dark during the (slow) pad check, unlock() must wake
+    and swipe again before typing — keys on a dark screen go nowhere."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890")), frame=b"tiny"))
+    helpers.unlock()
+    assert stub.pressed == ["home", "home"]  # woke twice
+    assert stub.typed == ["246810"]
+
+
+def test_unlock_uses_the_client_it_is_given(fast):
+    """The viewer passes its own client (WDA holds one session; a second
+    client steals it mid-sequence). unlock(c) must not touch the singleton."""
+    singleton = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    mine = StubPhone(_buttons_tree(list("1234567890")))
+    helpers.unlock(mine)
+    assert mine.typed == ["246810"]
+    assert singleton.typed == []
 
 
 def test_unlock_scrubs_passcode_from_errors(fast):

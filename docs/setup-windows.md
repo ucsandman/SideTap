@@ -59,7 +59,8 @@ phone-harness fix-input
 
 Run it, then click **Start** in Sideloadly. `fix-input` watches for the profile
 Sideloadly mints, re-signs WDA locally, installs it, and brings the driver up.
-The viewer has the same thing as a **🔧 Fix input** button.
+The viewer has the same thing as a **Fix input** button. Keep the phone
+**unlocked** during the install step — iOS refuses installs on a locked phone.
 
 Already have a `.mobileprovision` on disk? Skip the watch and pass it:
 `phone-harness fix-input path\to\profile.mobileprovision`.
@@ -82,3 +83,9 @@ python launch.py
 ```
 
 Your phone screen appears in the browser. Click it — the phone taps.
+
+Day-to-day notes:
+
+- Phone locked? Set `PHONE_PASSCODE` in `.env` (copy `.env.example`), then the
+  viewer's **Unlock** button and the agent's `unlock()` helper type it for you.
+- Unplugged the phone? Click **Restart link** in the viewer.

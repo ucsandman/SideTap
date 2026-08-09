@@ -1,15 +1,15 @@
-# phone-claude
+# sidetap
 
 **Let an LLM agent see and control a real iPhone from a Windows desktop. No Mac, no Xcode, no Appium server, no jailbreak, free Apple ID.**
 
-[![tests](https://github.com/ucsandman/phone-claude/actions/workflows/tests.yml/badge.svg)](https://github.com/ucsandman/phone-claude/actions/workflows/tests.yml)
+[![tests](https://github.com/ucsandman/sidetap/actions/workflows/tests.yml/badge.svg)](https://github.com/ucsandman/sidetap/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-![phone-claude driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
+![sidetap driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
 
-Every iPhone automation route assumes you own a Mac. This one does not. phone-claude drives a real iPhone over USB using [go-ios](https://github.com/danielpaulus/go-ios) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
+Every iPhone automation route assumes you own a Mac. This one does not. sidetap drives a real iPhone over USB using [go-ios](https://github.com/danielpaulus/go-ios) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
 
 It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-harness), which relies on macOS iPhone Mirroring. Bonus over the original: WebDriverAgent exposes the real UI element tree, so the agent reads exact buttons and labels instead of OCR guesses.
 
@@ -24,7 +24,7 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 ## Features
 
 - **Real UI tree, not screenshots.** `tap_text("General")` finds the actual element and taps its center. Coordinates are points, exact.
-- **Live viewer in your browser** at ~34 fps: click to tap, drag to swipe, type on your keyboard, save screenshots. Works even before touch input is set up.
+- **Live viewer in your browser** at ~34 fps: click to tap, drag to swipe, type on your keyboard, save screenshots. One-click **Unlock** (types your passcode from `.env`) and **Restart link** (the fix after a replug). Works even before touch input is set up.
 - **One-call flows** like `send_message("Mom", "on my way")` that open Messages, find the thread, type, and send, with guardrails (see Security).
 - **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires.
 - **Free Apple ID signing that actually works.** Sideloadly leaves the nested `.xctest` bundle unsigned, so the driver never launches. `phone-harness fix-input` repairs that locally: no Apple password scripting, no paid developer account. See [How the signing fix works](#how-the-signing-fix-works).
@@ -33,8 +33,8 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 ## Quick start
 
 ```bat
-git clone https://github.com/ucsandman/phone-claude
-cd phone-claude
+git clone https://github.com/ucsandman/sidetap
+cd sidetap
 pip install -r requirements.txt
 python launch.py          :: brings the link up + opens the live viewer
 ```
@@ -90,7 +90,7 @@ This tool is for **your own phone, under your supervision**. The guardrails are 
 - **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**. It bounds a runaway agent. It does not defend against prompt injection.
 - **Send guardrails.** `send_message` refuses to send if the contact name is ambiguous or the opened thread does not match, and logs every send to `.state/actions.log`, shown as **Recent sends** in the viewer.
 - **Origin guard.** The viewer API rejects cross-origin and DNS-rebinding requests, so a random web page in another tab cannot drive your phone.
-- **Passcode safety.** `unlock()` types your passcode only when the passcode pad is actually on screen, and scrubs it from error messages. The passcode itself is opt-in via `.env` and never committed.
+- **Passcode safety.** `unlock()` decides from what is actually on screen (never the driver's lock flag, which can lie), types your passcode only when the passcode pad is visible, makes exactly one attempt per call (repeated wrong passcodes lock an iPhone out), and scrubs it from error messages. The passcode itself is opt-in via `.env` and never committed.
 
 Do not point this at a phone you do not own. Do not use it to send unsolicited messages. Automated bulk messaging will get your Apple ID or number flagged, and it makes you a bad person besides.
 
@@ -103,6 +103,8 @@ Sideloading WebDriverAgent with a free Apple ID installs the app, but the test r
 3. Re-signs the whole IPA with go-ios `ios sign app`, which signs the nested `.xctest` with the same Team ID, then installs.
 
 No Apple servers are contacted, no Apple password is scripted, no session tokens are reused. The 7-day free-ID expiry still applies; the doctor counts it down and one command re-signs.
+
+Mid-week re-installs can skip Sideloadly entirely by reusing the captured profile: `phone-harness fix-input .state\profile.mobileprovision`. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
 
 ## Architecture
 
@@ -129,7 +131,8 @@ python -m pytest tests -q
 
 - Free Apple ID signatures expire every 7 days. Run `phone-harness fix-input` again; the doctor warns you 48 hours ahead.
 - No Face ID, camera, or DRM video flows. One phone per session.
-- The phone must be unlocked, or set `PHONE_PASSCODE` in `.env` and call `unlock()`.
+- The phone can stay locked between tasks: set `PHONE_PASSCODE` in `.env`, then agents call `unlock()` and the viewer has an **Unlock** button. Exception: installs (the weekly re-sign) need the phone unlocked in hand.
+- Unplugged the phone? Click **Restart link** in the viewer (or run `phone-harness up`).
 - iOS 17+ tunnel needs wintun.dll once (admin) if userspace mode fails.
 
 ## Contributing

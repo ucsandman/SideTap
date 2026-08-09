@@ -182,6 +182,7 @@
       <div id="buttons">
         <button id="btn-home">⌂ Home</button>
         <button id="btn-unlock">Unlock</button>
+        <button id="btn-lock">Lock</button>
         <button id="btn-notifs" hidden>▾ Notifs</button>
         <button id="btn-control" hidden>▾ Control</button>
         <button id="btn-shot">Save screenshot</button>
@@ -462,6 +463,19 @@ document.getElementById('btn-unlock').onclick = async () => {
     hint.textContent = j.ok ? 'Unlocked.' : (j.error || 'Unlock failed');
   } catch (e) { hint.textContent = 'Unlock failed'; }
   btn.disabled = false; btn.textContent = 'Unlock';
+};
+document.getElementById('btn-lock').onclick = async () => {
+  const btn = document.getElementById('btn-lock');
+  const hint = document.getElementById('click-hint');
+  btn.disabled = true; btn.textContent = 'Locking…';
+  try {
+    const r = await fetch('/api/lock', {method:'POST', headers:JSON_HDR, body:'{}'});
+    const j = await r.json();
+    // Right after an unlock, iOS's grace period can time this out while the
+    // screen still turns off — surface the error but don't dramatize it.
+    hint.textContent = j.ok ? 'Locked.' : (j.error || 'Lock failed');
+  } catch (e) { hint.textContent = 'Lock failed'; }
+  btn.disabled = false; btn.textContent = 'Lock';
 };
 document.getElementById('btn-shot').onclick = () => {
   const a = document.createElement('a');

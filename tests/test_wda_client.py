@@ -76,7 +76,7 @@ class FakeWDA(BaseHTTPRequestHandler):
         elif self.path.endswith("/appium/settings"):
             FakeWDA.last_settings = self.payload.get("settings")
             self._reply(None)
-        elif self.path == "/wda/homescreen":
+        elif self.path in ("/wda/homescreen", "/wda/lock"):
             self._reply(None)
         else:
             self._reply({"error": "unknown command", "message": self.path}, 404)
@@ -206,6 +206,11 @@ def test_slow_server_raises_wda_error_not_timeout(monkeypatch):
     with pytest.raises(WDAError, match="did not answer"):
         client.status()
     assert client.is_up() is False
+
+
+def test_lock_posts_wda_lock(wda):
+    wda.lock()
+    assert ("POST", "/wda/lock") in FakeWDA.requests_seen
 
 
 def test_type_text_sends_characters(wda):

@@ -22,6 +22,9 @@ class StubClient:
     def home(self):
         self.calls.append("home")
 
+    def lock(self):
+        self.calls.append("lock")
+
 
 @pytest.fixture()
 def base_url():
@@ -74,6 +77,13 @@ def test_post_same_origin_json_ok(base_url):
     r = requests.post(base_url + "/api/home", json={}, timeout=5)
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+
+
+def test_lock_endpoint_locks_phone(base_url):
+    r = requests.post(base_url + "/api/lock", json={}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert "lock" in viewer.Handler.client.calls
 
 
 def test_stop_toggle_creates_and_removes_file(base_url, tmp_path, monkeypatch):

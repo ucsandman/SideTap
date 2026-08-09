@@ -342,6 +342,12 @@ class WDAClient:
         """Wake + swipe up. Only unlocks fully if the phone has no passcode."""
         self._request("POST", "/wda/unlock")
 
+    def lock(self) -> None:
+        """Lock the screen. Right after an unlock, iOS's require-passcode
+        grace period can make this time out while the screen still turns off —
+        treat that error as cosmetic, not a failure to lock."""
+        self._request("POST", "/wda/lock")
+
     def app_launch(self, bundle_id: str) -> None:
         self._session_request("POST", "/wda/apps/launch", {"bundleId": bundle_id})
 

@@ -286,6 +286,10 @@ class Handler(BaseHTTPRequestHandler):
                 with _ACTION_LOCK:
                     self.client.home()
                 self._json({"ok": True})
+            elif path == "/api/lock":
+                with _ACTION_LOCK:
+                    self.client.lock()
+                self._json({"ok": True})
             elif path == "/api/unlock":
                 from . import helpers
 

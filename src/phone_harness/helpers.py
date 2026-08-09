@@ -380,6 +380,7 @@ def unlock(c: WDAClient | None = None) -> None:
     if c.active_app().get("bundleId") != "com.apple.springboard":
         return  # an app is frontmost: unlocked and in use — touch nothing
     w, h = c.window_size()  # before the wake, so it can't eat awake-time
+    _invalidate_tree()  # about to change the screen, like any other action
 
     def wake_and_swipe():
         # On a locked phone the bottom-edge swipe summons the passcode pad;

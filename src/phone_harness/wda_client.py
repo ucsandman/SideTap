@@ -48,7 +48,13 @@ class WDAClient:
         url = self.base_url + path
         try:
             resp = requests.request(method, url, json=payload, timeout=self.timeout)
-        except requests.ConnectionError as exc:
+        except requests.Timeout as exc:
+            raise WDAError(
+                f"{method} {path}: WebDriverAgent did not answer within "
+                f"{self.timeout:g}s. It may be busy or wedged; try again or "
+                "run `phone-harness up`."
+            ) from exc
+        except requests.RequestException as exc:
             raise WDAError(
                 f"Cannot reach WebDriverAgent at {self.base_url}. "
                 "Run `phone-harness up` (and check `phone-harness doctor`)."

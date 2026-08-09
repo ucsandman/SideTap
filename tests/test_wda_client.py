@@ -128,6 +128,22 @@ def test_unreachable_server_raises_clear_error():
         client.status()
 
 
+def test_slow_server_raises_wda_error_not_timeout(monkeypatch):
+    # A reachable-but-slow WDA raises ReadTimeout, which is NOT a
+    # ConnectionError subclass — it must still surface as WDAError so
+    # is_up() and the viewer's error paths keep working.
+    import requests
+
+    def slow(*_args, **_kwargs):
+        raise requests.exceptions.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(requests, "request", slow)
+    client = WDAClient(base_url="http://127.0.0.1:1", timeout=1)
+    with pytest.raises(WDAError, match="did not answer"):
+        client.status()
+    assert client.is_up() is False
+
+
 def test_type_text_sends_characters(wda):
     wda.type_text("hi")
     assert any(p.endswith("/wda/keys") for m, p in FakeWDA.requests_seen if m == "POST")

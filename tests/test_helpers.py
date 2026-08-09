@@ -179,6 +179,7 @@ class StubPhone:
         self.typed = []
         self.pressed = []
         self.swipes = 0
+        self.source_calls = 0
         self.type_error = type_error
         self.unlock_error = unlock_error
         self.app = app
@@ -206,6 +207,7 @@ class StubPhone:
         self.swipes += 1
 
     def source(self):
+        self.source_calls += 1
         return self.tree
 
     def type_text(self, text):
@@ -353,6 +355,15 @@ def test_type_text_invalidates_tree_cache(monkeypatch):
     helpers.type_text("hi")
     helpers.ui_tree()
     assert stub.source_calls == 2
+
+
+def test_unlock_invalidates_tree_cache(fast):
+    stub = fast(StubPhone(SAMPLE_TREE))
+    helpers._invalidate_tree()  # cache is module state; start the test clean
+    helpers.ui_tree()  # 1: cache the pre-unlock screen
+    helpers.unlock()  # 2: unlock's own pad check; screen changed
+    helpers.ui_tree()  # must refetch (3), not reuse the pre-unlock tree
+    assert stub.source_calls == 3
 
 
 def test_tree_cache_expires_by_ttl(monkeypatch):

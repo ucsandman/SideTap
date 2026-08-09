@@ -171,6 +171,46 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _pid_image(pid: int) -> str:
+    """Executable name for a live PID, lowercased ('' if dead or unknown)."""
+    if sys.platform == "win32":
+        proc = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        first = proc.stdout.strip().splitlines()
+        if first and first[0].startswith('"'):
+            return first[0].split('","')[0].strip('"').lower()
+        return ""
+    try:
+        return Path(f"/proc/{pid}/comm").read_text().strip().lower()
+    except OSError:
+        return ""
+
+
+def _safe_kill(pid: int, expected_prefix: str) -> bool:
+    """Force-kill `pid` only if its executable name starts with
+    `expected_prefix`. Pid files outlive their process and Windows reuses
+    pids, so an unchecked kill could hit an innocent process. Returns True
+    if a kill was issued."""
+    if not expected_prefix or not _pid_image(pid).startswith(expected_prefix.lower()):
+        return False
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    else:
+        import os
+        import signal
+
+        os.kill(pid, signal.SIGTERM)
+    return True
+
+
 def proc_status(name: str) -> str:
     """'running', 'dead', or 'not started'."""
     pf = _pid_file(name)
@@ -194,6 +234,8 @@ def log_tail(name: str, lines: int = 5) -> str:
 
 def stop_all() -> list[str]:
     """Kill every process we started. Returns names of processes stopped."""
+    exe = ios_path()
+    expected = Path(exe).name.lower() if exe else "ios"
     stopped = []
     for name in PROCS:
         pf = _pid_file(name)
@@ -204,18 +246,7 @@ def stop_all() -> list[str]:
         except ValueError:
             pf.unlink()
             continue
-        if _pid_alive(pid):
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-            else:
-                import os
-                import signal
-
-                os.kill(pid, signal.SIGTERM)
+        if _safe_kill(pid, expected):
             stopped.append(name)
         pf.unlink()
     return stopped

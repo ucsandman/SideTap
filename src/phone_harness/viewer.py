@@ -297,19 +297,11 @@ def _kill_stale_viewer() -> None:
         except ValueError:
             pid = 0
         if pid and pid != os.getpid():
-            from .device import _pid_alive
+            from .device import _safe_kill
 
-            if _pid_alive(pid):
-                if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        capture_output=True,
-                        creationflags=subprocess.CREATE_NO_WINDOW,
-                    )
-                else:
-                    import signal
-
-                    os.kill(pid, signal.SIGTERM)
+            # Only kill a process that is still a python (viewer) one: the
+            # pid file survives crashes and Windows reuses pids.
+            _safe_kill(pid, "python")
     config.STATE_DIR.mkdir(exist_ok=True)
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
@@ -325,4 +317,12 @@ def serve(open_browser: bool = True) -> int:  # noqa: vulture
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nViewer stopped.")
+    finally:
+        # Drop our pid file so a later launch can't kill a reused pid.
+        pid_file = config.STATE_DIR / "viewer.pid"
+        try:
+            if pid_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                pid_file.unlink()
+        except OSError:
+            pass
     return 0

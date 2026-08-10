@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sidetap · your iPhone, driven from Windows</title>
+<meta name="description" content="Let an LLM agent see and control a real iPhone from a Windows desktop. No Mac, no jailbreak, free Apple ID. Open source, MIT.">
+<link rel="icon" href="/assets/favicon.ico">
+<link rel="canonical" href="https://sidetap.io/">
+<meta property="og:title" content="sidetap · your iPhone, driven from Windows">
+<meta property="og:description" content="Let an LLM agent see and control a real iPhone from Windows over USB. No Mac. No jailbreak. Kill switch included.">
+<meta property="og:image" content="https://sidetap.io/assets/og.png">
+<meta property="og:url" content="https://sidetap.io/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#101418; --surface:#1a2129; --surface2:#222b36; --line:#313b46;
+  --ink:#e8edf2; --ink2:#c4cdd6; --ink3:#8a97a5;
+  --blue:#4493f8; --red:#f85149; --green:#3fb950;
+  --mono:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  --sans:'Inter',system-ui,-apple-system,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+
+/* ---------- nav ---------- */
+nav{position:sticky;top:0;z-index:10;background:rgba(16,20,24,.94);border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;height:58px}
+.mark{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;color:var(--ink);letter-spacing:-.02em}
+.mark:hover{text-decoration:none}
+.mark svg{display:block}
+.nav-links{display:flex;gap:22px;margin-left:auto;font-size:14.5px;font-weight:500}
+.nav-links a{color:var(--ink2)}
+.nav-links a:hover{color:var(--ink);text-decoration:none}
+.nav-links a.gh{color:var(--blue)}
+
+/* ---------- hero ---------- */
+.hero{padding:76px 0 64px;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
+.hook{font-size:clamp(30px,4.6vw,46px);font-weight:800;letter-spacing:-.03em;line-height:1.12}
+.hook .from{color:var(--ink3)}
+.sub{margin-top:20px;font-size:17.5px;color:var(--ink2);max-width:46ch}
+.sub b{color:var(--ink);font-weight:600}
+.hero-ctas{margin-top:30px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.clone{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:11px 16px;font-family:var(--mono);font-size:14px;color:var(--ink)}
+.clone button{background:none;border:0;color:var(--blue);font-family:var(--mono);font-size:13px;cursor:pointer;padding:2px 4px}
+.clone button:hover{color:var(--ink)}
+.cta2{font-size:14.5px;font-weight:500}
+.oneliner{margin-top:14px;font-size:13px;color:var(--ink3)}
+.oneliner code{font-family:var(--mono);color:var(--ink2)}
+
+/* viewer frame */
+.frame{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.frame-bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+.dots{display:flex;gap:5px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.frame video{display:block;width:100%;height:auto}
+.feed{border-top:1px solid var(--line);padding:10px 14px;font-family:var(--mono);font-size:12px;min-height:96px;display:flex;flex-direction:column;justify-content:flex-end;gap:4px;background:var(--bg)}
+.feed-row{display:flex;gap:10px;color:var(--ink2);animation:rowin .25s ease}
+.feed-row .t{color:var(--ink3)}
+.feed-row .verb{color:var(--blue)}
+.feed-stopped{color:var(--red);font-weight:700}
+@keyframes rowin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.frame-foot{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-top:1px solid var(--line)}
+.frame-foot .hint{font-size:12px;color:var(--ink3)}
+.stopbtn{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:.08em;color:#fff;background:var(--red);border:0;border-radius:7px;padding:9px 22px;cursor:pointer}
+.stopbtn.resume{background:transparent;color:var(--red);border:1.5px solid var(--red)}
+.stopbtn:hover{filter:brightness(1.12)}
+
+/* ---------- proof strip ---------- */
+.proof{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--surface)}
+.proof-in{display:flex;flex-wrap:wrap;gap:8px 34px;justify-content:center;padding:15px 24px;font-family:var(--mono);font-size:13px;color:var(--ink2)}
+.proof-in span::before{content:"× ";color:var(--ink3)}
+.proof-in span.yes::before{content:"✓ ";color:var(--green)}
+
+/* ---------- sections ---------- */
+section{padding:72px 0}
+.eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);margin-bottom:14px}
+h2{font-size:clamp(24px,3vw,32px);font-weight:800;letter-spacing:-.02em;line-height:1.2}
+.lead{margin-top:14px;color:var(--ink2);max-width:62ch;font-size:16.5px}
+
+/* chain diagram */
+.chain{margin-top:44px;display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+.node{flex:1;min-width:150px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 16px;position:relative}
+.node h3{font-size:15px;font-weight:600}
+.node p{margin-top:6px;font-size:13px;color:var(--ink3);line-height:1.45}
+.node .tag{font-family:var(--mono);font-size:11px;color:var(--blue);display:block;margin-bottom:8px}
+.link-seg{display:flex;align-items:center;padding:0 4px}
+.link-seg svg{display:block}
+.pulse{animation:pulse 1.6s linear infinite}
+@keyframes pulse{0%{stroke-dashoffset:24}100%{stroke-dashoffset:0}}
+
+/* features */
+.grid{margin-top:44px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:22px}
+.card h3{font-size:15.5px;font-weight:600;display:flex;align-items:center;gap:9px}
+.card p{margin-top:9px;font-size:14px;color:var(--ink3);line-height:1.5}
+.card p code{font-family:var(--mono);font-size:12.5px;color:var(--ink2);background:var(--bg);padding:1px 5px;border-radius:4px}
+.card .ic{width:8px;height:8px;border-radius:2px;background:var(--blue);flex:none}
+.card.kill .ic{background:var(--red)}
+
+/* install */
+.install-cols{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.termbox{background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.termbox header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--surface)}
+.termbox header span{font-family:var(--mono);font-size:12px;color:var(--ink3)}
+.termbox header button{background:none;border:1px solid var(--line);border-radius:6px;color:var(--blue);font-family:var(--mono);font-size:12px;padding:4px 10px;cursor:pointer}
+.termbox header button:hover{border-color:var(--blue)}
+.termbox pre{padding:16px;font-family:var(--mono);font-size:12.5px;line-height:1.65;color:var(--ink2);overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+.termbox pre .c{color:var(--ink3)}
+.termbox pre .g{color:var(--green)}
+.install-note{margin-top:16px;font-size:13.5px;color:var(--ink3)}
+
+/* pro */
+.pro{border-top:1px solid var(--line);background:linear-gradient(180deg,var(--surface) 0,var(--bg) 100%)}
+.pro-grid{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.tier{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px}
+.tier.paid{border-color:var(--blue)}
+.tier h3{font-size:17px;font-weight:800}
+.tier .price{margin-top:8px;font-size:30px;font-weight:800;letter-spacing:-.02em}
+.tier .price small{font-size:14px;color:var(--ink3);font-weight:500}
+.tier ul{margin:18px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14px;color:var(--ink2)}
+.tier li::before{content:"✓  ";color:var(--green);font-family:var(--mono)}
+.tier .ghost{margin-top:22px;display:inline-block;font-size:14px}
+.wl{margin-top:22px}
+.wl form{display:flex;gap:10px}
+.wl input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--sans);font-size:14.5px;padding:11px 14px}
+.wl input::placeholder{color:var(--ink3)}
+.wl button{background:var(--blue);color:#fff;border:0;border-radius:8px;font-weight:600;font-size:14.5px;padding:11px 20px;cursor:pointer}
+.wl button:hover{filter:brightness(1.1)}
+.wl button:disabled{opacity:.55;cursor:default}
+.wl-msg{margin-top:10px;font-size:13.5px;color:var(--ink3);min-height:20px}
+.wl-msg.ok{color:var(--green)}
+.wl-msg.err{color:var(--red)}
+.pro-foot{margin-top:26px;font-size:13px;color:var(--ink3);max-width:70ch}
+
+/* footer */
+footer{border-top:1px solid var(--line);padding:34px 0 46px;font-size:13.5px;color:var(--ink3)}
+.foot-in{display:flex;flex-wrap:wrap;gap:12px 30px;align-items:center}
+.foot-in .mark{font-size:15px}
+.foot-links{display:flex;gap:22px;margin-left:auto}
+.foot-links a{color:var(--ink3)}
+.foot-links a:hover{color:var(--ink2)}
+
+@media (max-width:880px){
+  .hero{grid-template-columns:1fr;gap:40px;padding-top:48px}
+  .grid{grid-template-columns:1fr 1fr}
+  .install-cols,.pro-grid{grid-template-columns:1fr}
+  .chain{flex-direction:column}
+  .link-seg{justify-content:center;transform:rotate(90deg);height:34px}
+}
+@media (max-width:560px){.grid{grid-template-columns:1fr}.nav-links{gap:14px}}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+  html{scroll-behavior:auto}
+}
+body.stopped *{animation-play-state:paused!important}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="mark" href="#top" aria-label="sidetap home">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3" stroke="#4493f8" stroke-width="2"/><path d="M10 9l2.2 2.5L10 14" stroke="#4493f8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.4 14h1.8" stroke="#4493f8" stroke-width="1.8" stroke-linecap="round"/></svg>
+      sidetap
+    </a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="#pro">Pro</a>
+      <a class="gh" href="https://github.com/ucsandman/sidetap">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap" id="top">
+  <div>
+    <h1 class="hook" id="hook">My PC just texted my mom. <span class="from">From my real iPhone.</span></h1>
+    <p class="sub">sidetap lets an LLM agent see and control a real iPhone from a Windows desktop, over USB. <b>No Mac. No jailbreak. No Appium server.</b> A free Apple ID is enough. Open source, MIT.</p>
+    <div class="hero-ctas">
+      <div class="clone">
+        <span id="clone-cmd">git clone github.com/ucsandman/sidetap</span>
+        <button id="copy-clone" aria-label="Copy clone command">copy</button>
+      </div>
+      <a class="cta2" href="#install">Set it up with an agent →</a>
+    </div>
+    <p class="oneliner">Works with Claude Code out of the box: <code>claude mcp add sidetap</code> turns the phone into native tool calls.</p>
+  </div>
+
+  <div class="frame" aria-label="sidetap live viewer demo">
+    <div class="frame-bar">
+      <span class="dots" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+      <span>viewer · 12 checks ok · battery 82% · unlocked</span>
+    </div>
+    <video id="demo" src="/assets/demo.mp4" poster="/assets/demo-poster.jpg" autoplay muted loop playsinline></video>
+    <div class="feed" id="feed" aria-live="off"></div>
+    <div class="frame-foot">
+      <span class="hint" id="stop-hint">Every agent action, live. The switch works here too.</span>
+      <button class="stopbtn" id="stop" aria-pressed="false">STOP</button>
+    </div>
+  </div>
+</header>
+
+<div class="proof">
+  <div class="wrap proof-in">
+    <span>Mac</span><span>Xcode</span><span>jailbreak</span><span>Appium server</span><span>paid developer account</span><span class="yes">free Apple ID + a USB cable</span>
+  </div>
+</div>
+
+<section id="how">
+  <div class="wrap">
+    <p class="eyebrow">How it works</p>
+    <h2>One cable. Four hops. Real hands on a real phone.</h2>
+    <p class="lead">Every other iPhone automation route assumes you own a Mac. sidetap does not. It drives the phone through WebDriverAgent, so the agent reads the actual UI element tree: exact buttons, exact labels, exact coordinates. Not OCR guesses.</p>
+    <div class="chain">
+      <div class="node">
+        <span class="tag">iOS 17+</span>
+        <h3>iPhone</h3>
+        <p>WebDriverAgent sideloaded once with a free Apple ID.</p>
+      </div>
+      <div class="link-seg" aria-hidden="true"><svg width="34" height="12" viewBox="0 0 34 12"><line x1="0" y1="6" x2="34" y2="6" stroke="#313b46" stroke-width="2"/><line class="pulse" x1="0" y1="6" x2="34" y2="6" stroke="#4493f8" stroke-width="2" stroke-dasharray="6 18"/></svg></div>
+      <div class="node">
+        <span class="tag">USB</span>
+        <h3>go-ios</h3>
+        <p>Tunnel, app launch, port forward. Installs with npm.</p>
+      </div>
+      <div class="link-seg" aria-hidden="true"><svg width="34" height="12" viewBox="0 0 34 12"><line x1="0" y1="6" x2="34" y2="6" stroke="#313b46" stroke-width="2"/><line class="pulse" x1="0" y1="6" x2="34" y2="6" stroke="#4493f8" stroke-width="2" stroke-dasharray="6 18"/></svg></div>
+      <div class="node">
+        <span class="tag">Python</span>
+        <h3>harness</h3>
+        <p>tap, swipe, type, read the screen. One helper call per intent.</p>
+      </div>
+      <div class="link-seg" aria-hidden="true"><svg width="34" height="12" viewBox="0 0 34 12"><line x1="0" y1="6" x2="34" y2="6" stroke="#313b46" stroke-width="2"/><line class="pulse" x1="0" y1="6" x2="34" y2="6" stroke="#4493f8" stroke-width="2" stroke-dasharray="6 18"/></svg></div>
+      <div class="node">
+        <span class="tag">you + agent</span>
+        <h3>viewer &amp; MCP</h3>
+        <p>Live screen in your browser. Native tool calls for the agent.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features" style="padding-top:0">
+  <div class="wrap">
+    <p class="eyebrow">What you get</p>
+    <h2>Built for agents. Supervised by you.</h2>
+    <div class="grid">
+      <div class="card">
+        <h3><span class="ic"></span>Real UI tree, not screenshots</h3>
+        <p><code>tap_text("General")</code> finds the actual element and taps its center. Coordinates are points, exact.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ic"></span>Live viewer at ~34 fps</h3>
+        <p>Click to tap, drag to swipe, type on your keyboard. One-click Unlock and Restart link.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ic"></span>One-call flows</h3>
+        <p><code>send_message("Mom", "on my way")</code> opens Messages, finds the thread, types, sends. <code>read_messages</code> reads replies back.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ic"></span>Native MCP tools</h3>
+        <p>One command registers the whole helper API as typed tool calls in Claude Code or Claude Desktop.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ic"></span>A doctor that names the fix</h3>
+        <p><code>phone-harness doctor</code> walks the whole chain. Every FAIL tells you the exact command or click that repairs it.</p>
+      </div>
+      <div class="card kill">
+        <h3><span class="ic"></span>Kill switch + live activity feed</h3>
+        <p>Every tap, swipe, and keystroke count shows up as it happens. One red button freezes every agent action while you keep watching. Typed text is never logged, only its length.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <p class="eyebrow">Install</p>
+    <h2>Let your agent set it up for you.</h2>
+    <p class="lead">Paste the prompt into Claude Code (or Codex) on your Windows PC. It clones, installs, and walks you through the three steps that need your hands. About 20 minutes, one time.</p>
+    <div class="install-cols">
+      <div class="termbox">
+        <header><span>paste into your agent</span><button data-copy="agent-prompt">copy</button></header>
+        <pre id="agent-prompt">Set up sidetap (github.com/ucsandman/sidetap) on this
+Windows machine so LLM agents can drive my iPhone over USB.
+Follow the README section "Set it up with an agent",
+run phone-harness doctor after every step, and loop
+until every check passes. Ask me before anything that
+touches my Apple ID, my phone's settings, or sends
+anything from my phone.</pre>
+      </div>
+      <div class="termbox">
+        <header><span>or by hand</span><button data-copy="quickstart">copy</button></header>
+        <pre id="quickstart"><span class="c">:: Windows 10/11 · Python 3.10+ · Node.js · iPhone on iOS 17+</span>
+git clone https://github.com/ucsandman/sidetap
+cd sidetap
+npm install -g go-ios
+pip install -r requirements.txt
+python launch.py
+<span class="c">:: live viewer opens at</span> <span class="g">http://127.0.0.1:8770</span></pre>
+      </div>
+    </div>
+    <p class="install-note">First time? <a href="https://github.com/ucsandman/sidetap/blob/main/docs/setup-windows.md">docs/setup-windows.md</a> covers the one-time phone setup: USB driver, Developer Mode, sideloading WebDriverAgent.</p>
+  </div>
+</section>
+
+<section id="pro" class="pro">
+  <div class="wrap">
+    <p class="eyebrow">sidetap Pro</p>
+    <h2>The weekly re-sign, gone.</h2>
+    <p class="lead">Free Apple IDs expire app signatures every 7 days. sidetap already softens this: a desktop toast before it lapses, a one-command local fix. Pro removes the chore completely.</p>
+    <div class="pro-grid">
+      <div class="tier">
+        <h3>Open source</h3>
+        <p class="price">$0 <small>MIT, forever</small></p>
+        <ul>
+          <li>Everything on this page: viewer, helpers, MCP tools, doctor, kill switch</li>
+          <li>Weekly re-sign with one command and one click</li>
+          <li>Expiry countdown and desktop notifications</li>
+          <li>Community support on GitHub</li>
+        </ul>
+        <a class="ghost" href="https://github.com/ucsandman/sidetap">Clone it free →</a>
+      </div>
+      <div class="tier paid">
+        <h3>Pro <span style="font-family:var(--mono);font-size:11px;color:var(--blue);vertical-align:middle;margin-left:6px">IN DEVELOPMENT</span></h3>
+        <p class="price">$49<small>/year · early-bird price for the waitlist</small></p>
+        <ul>
+          <li>Automatic signature renewal, fully local. Set it once, never re-sign by hand again</li>
+          <li>Your Apple ID and passcode never leave your machine</li>
+          <li>Multi-device: drive more than one iPhone from one PC</li>
+          <li>Priority support, direct line</li>
+        </ul>
+        <div class="wl">
+          <form id="wl-form">
+            <input type="email" id="wl-email" placeholder="you@example.com" required autocomplete="email" aria-label="Email for the Pro waitlist">
+            <button type="submit" id="wl-btn">Join the waitlist</button>
+          </form>
+          <p class="wl-msg" id="wl-msg"></p>
+        </div>
+      </div>
+    </div>
+    <p class="pro-foot">The core stays MIT and free. Pro is optional convenience for people who drive their phone every day. Joining the waitlist locks the early-bird price and helps decide what ships first. No spam, one email when it is ready.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <span class="mark">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3" stroke="#4493f8" stroke-width="2"/><path d="M10 9l2.2 2.5L10 14" stroke="#4493f8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.4 14h1.8" stroke="#4493f8" stroke-width="1.8" stroke-linecap="round"/></svg>
+      sidetap
+    </span>
+    <span>MIT license. Built on <a href="https://github.com/danielpaulus/go-ios">go-ios</a> and <a href="https://github.com/appium/WebDriverAgent">WebDriverAgent</a>.</span>
+    <div class="foot-links">
+      <a href="https://github.com/ucsandman/sidetap">GitHub</a>
+      <a href="https://github.com/ucsandman/sidetap/blob/main/docs/setup-windows.md">Setup guide</a>
+      <a href="https://github.com/ucsandman/sidetap/issues">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ---- kill switch: actually freezes the page, like the product ----
+const stopBtn=document.getElementById('stop');
+const video=document.getElementById('demo');
+const feed=document.getElementById('feed');
+const hint=document.getElementById('stop-hint');
+let stopped=false,feedTimer=null;
+
+const actions=[
+  ['tap','(182, 641)'],['type','14 chars'],['tap_text','"Send"'],
+  ['swipe','(200, 620) → (200, 310)'],['open_app','Messages'],
+  ['tap','(94, 388)'],['type','1 char'],['ocr','41 elements'],
+  ['tap_text','"Mom"'],['swipe','(160, 500) → (160, 220)']
+];
+let ai=0;
+function tick(){
+  const now=new Date();
+  const t=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0')+':'+String(now.getSeconds()).padStart(2,'0');
+  const [verb,arg]=actions[ai++%actions.length];
+  const row=document.createElement('div');
+  row.className='feed-row';
+  row.innerHTML='<span class="t">'+t+'</span><span class="verb">'+verb+'</span><span>'+arg+'</span>';
+  feed.appendChild(row);
+  while(feed.children.length>4)feed.removeChild(feed.firstChild);
+}
+function startFeed(){tick();feedTimer=setInterval(tick,1700)}
+startFeed();
+
+stopBtn.addEventListener('click',()=>{
+  stopped=!stopped;
+  stopBtn.setAttribute('aria-pressed',String(stopped));
+  if(stopped){
+    document.body.classList.add('stopped');
+    video.pause();clearInterval(feedTimer);
+    const row=document.createElement('div');
+    row.className='feed-row feed-stopped';
+    row.textContent='■ STOPPED · every agent action blocked';
+    feed.appendChild(row);
+    while(feed.children.length>4)feed.removeChild(feed.firstChild);
+    stopBtn.textContent='RESUME';stopBtn.classList.add('resume');
+    hint.textContent='Frozen. The agent waits. You stay in control.';
+  }else{
+    document.body.classList.remove('stopped');
+    video.play();startFeed();
+    stopBtn.textContent='STOP';stopBtn.classList.remove('resume');
+    hint.textContent='Every agent action, live. The switch works here too.';
+  }
+});
+
+// ---- copy buttons ----
+function flash(btn){const o=btn.textContent;btn.textContent='copied';setTimeout(()=>btn.textContent=o,1300)}
+document.getElementById('copy-clone').addEventListener('click',e=>{
+  navigator.clipboard.writeText('git clone https://github.com/ucsandman/sidetap');flash(e.target);
+});
+document.querySelectorAll('[data-copy]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    navigator.clipboard.writeText(document.getElementById(btn.dataset.copy).innerText);flash(btn);
+  });
+});
+
+// ---- waitlist ----
+const wlForm=document.getElementById('wl-form');
+const wlMsg=document.getElementById('wl-msg');
+const wlBtn=document.getElementById('wl-btn');
+wlForm.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const email=document.getElementById('wl-email').value.trim();
+  if(!email)return;
+  wlBtn.disabled=true;wlMsg.className='wl-msg';wlMsg.textContent='Adding you…';
+  try{
+    const r=await fetch('/api/waitlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    if(!r.ok)throw new Error('bad status');
+    wlMsg.className='wl-msg ok';wlMsg.textContent='You are on the list. One email when Pro ships.';
+    wlForm.reset();
+  }catch(err){
+    wlMsg.className='wl-msg err';
+    wlMsg.innerHTML='Could not reach the list. Email <a href="mailto:wes@practicalsystems.io?subject=sidetap%20Pro%20waitlist">wes@practicalsystems.io</a> instead.';
+  }
+  wlBtn.disabled=false;
+});
+</script>
+</body>
+</html>

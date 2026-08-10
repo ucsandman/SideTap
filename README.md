@@ -65,6 +65,8 @@ python launch.py          :: opens the live viewer; the link comes up in the bac
 
 First time? Follow **[docs/setup-windows.md](docs/setup-windows.md)** (about 20 minutes, one-time: USB driver, Developer Mode, sideload WebDriverAgent).
 
+Prefer one click? Run `powershell scripts\install_shortcut.ps1` once — it puts a **Sidetap** shortcut on your Desktop and in the Start Menu. Double-click it (or double-click `sidetap.cmd`) instead of typing `python launch.py`. Add `-Startup` to also start sidetap when Windows starts.
+
 Day-to-day commands:
 
 ```bat

@@ -115,7 +115,20 @@
   h1 { font-size:22px; font-weight:600; letter-spacing:-.015em; margin-bottom:2px; }
   .dim { color:var(--dim); font-size:13px; }
   .sec { font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin-bottom:var(--s2); }
-  #doctor { margin-top:var(--s5); }
+  #doctor { margin-top:var(--s2); }
+  #strip { display:flex; align-items:center; gap:var(--s2); padding:9px 12px; margin-top:var(--s3);
+           background:var(--panel); border:1px solid var(--line); border-radius:var(--r2); }
+  #strip-main { border:0; background:none; padding:0; font-size:13px; font-weight:600; gap:8px; }
+  #strip-main:hover { background:none; color:var(--text); }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--ok); display:inline-block; flex:0 0 auto; }
+  .dot.bad { background:var(--bad); }
+  #strip-info { margin-left:auto; font-size:12.5px; white-space:nowrap; }
+  #checks-wrap { margin-top:var(--s2); }
+  #tabs { display:flex; gap:var(--s1); margin-top:var(--s3); border-bottom:1px solid var(--line); }
+  .tab { border:0; background:none; border-radius:var(--r1) var(--r1) 0 0; padding:8px 12px; color:var(--dim); }
+  .tab:hover { background:var(--panel); color:var(--text); }
+  .tab.on { color:var(--text); box-shadow:inset 0 -2px 0 var(--accent); }
+  .tabpane { margin-top:var(--s3); }
   .check {
     display:flex; gap:var(--s2); padding:9px 12px; border-radius:var(--r2);
     background:var(--panel); border:1px solid var(--line); border-left-width:3px;
@@ -130,7 +143,6 @@
   .check.bad { border-left-color:var(--warn); }
   .check.bad .mark { color:var(--warn); }
   .check .fix { color:var(--warn); font-size:12.5px; margin-top:3px; overflow-wrap:anywhere; }
-  #hint { margin-top:var(--s4); padding-top:var(--s3); border-top:1px solid var(--line); line-height:1.7; }
   code { font-family:var(--mono); background:var(--panel); border:1px solid var(--line); padding:1px 6px; border-radius:var(--r1); font-size:12px; }
 
   /* ---- fix-input panel ----------------------------------------------- */
@@ -146,7 +158,7 @@
 
   /* ---- live activity feed --------------------------------------------- */
   #activity { margin-top:var(--s4); }
-  #activity-list { max-height:220px; overflow-y:auto; }
+  #activity-list { max-height:55vh; overflow-y:auto; }
   .act-row { display:flex; gap:var(--s2); padding:3px 12px; font-size:12.5px; color:var(--text2); }
   .act-row .t { color:var(--dim); font-size:11.5px; flex:0 0 40px; text-align:right; font-family:var(--mono); }
 
@@ -211,19 +223,34 @@
       </div>
       <div id="fix-steps"></div>
     </div>
-    <div id="doctor"><div class="sec">Checks</div><div class="dim">Running checks…</div></div>
-    <div id="hint" class="dim">
-      Agents drive it from a terminal:<br>
-      <code>phone-harness &lt;&lt;'PY' … PY</code> with helpers like <code>tap_text("General")</code> pre-imported.
+    <div id="strip">
+      <button id="strip-main" title="Show / hide the full checks">
+        <span id="strip-dot" class="dot"></span><span id="strip-text">Checking…</span>
+      </button>
+      <span id="strip-info" class="dim"></span>
     </div>
-    <div id="activity" hidden>
-      <h2 class="sec">Activity</h2>
-      <div id="activity-list"></div>
+    <div id="checks-wrap" hidden>
+      <div id="doctor"><div class="sec">Checks</div><div class="dim">Running checks…</div></div>
     </div>
-    <div id="sent" hidden>
-      <h2 class="sec">Recent sends</h2>
-      <div id="sent-list"></div>
+    <nav id="tabs">
+      <button class="tab" data-tab="actions">Actions</button>
+      <button class="tab" data-tab="agent">Agent</button>
+      <button class="tab" data-tab="phone">Phone</button>
+      <button class="tab" data-tab="console">&gt;_</button>
+    </nav>
+    <div id="tab-actions" class="tabpane"></div>
+    <div id="tab-agent" class="tabpane" hidden>
+      <div id="activity" hidden>
+        <h2 class="sec">Activity</h2>
+        <div id="activity-list"></div>
+      </div>
+      <div id="sent" hidden>
+        <h2 class="sec">Recent sends</h2>
+        <div id="sent-list"></div>
+      </div>
     </div>
+    <div id="tab-phone" class="tabpane" hidden></div>
+    <div id="tab-console" class="tabpane" hidden></div>
   </div>
 <script>
 const screen = document.getElementById('screen');
@@ -239,6 +266,7 @@ async function getJSON(url, opts) {
 let inputEnabled = false;
 let streaming = false;
 let bootSeen = null;  // viewer process id; a change means stale JS — reload
+let lastDoctor = [];
 
 // Button feedback ("Locked.", "Unlocked.") lives in the same hint line the
 // status poll rewrites every 5s; hold fresh feedback so the poll can't wipe
@@ -304,6 +332,22 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ---- tabs ------------------------------------------------------------------
+function showTab(name) {
+  document.querySelectorAll('#tabs .tab').forEach(b =>
+    b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.tabpane').forEach(p => p.hidden = p.id !== 'tab-' + name);
+  localStorage.setItem('sidetap.tab', name);
+}
+document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+showTab(localStorage.getItem('sidetap.tab') || 'actions');
+
+// ---- status strip ----------------------------------------------------------
+document.getElementById('strip-main').onclick = () => {
+  const w = document.getElementById('checks-wrap');
+  w.hidden = !w.hidden;
+};
 
 // Show what the agent has texted, so the human sees each send (sec-5 audit log).
 async function loadSent() {
@@ -535,7 +579,18 @@ async function loadDoctor() {
     const sigBad = !!sig && !sig.ok;
     document.getElementById('sig-banner').hidden = !sigBad;
     if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
-  } catch (e) { el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>'; }
+    lastDoctor = results;
+    const fails = results.filter(r => !r.ok).length;
+    document.getElementById('strip-dot').className = 'dot' + (fails ? ' bad' : '');
+    document.getElementById('strip-text').textContent =
+      fails ? fails + ' check' + (fails > 1 ? 's' : '') + ' failing' : 'All checks pass';
+    if (fails) document.getElementById('checks-wrap').hidden = false;  // auto-expand
+  } catch (e) {
+    el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>';
+    document.getElementById('strip-dot').className = 'dot bad';
+    document.getElementById('strip-text').textContent = 'viewer unreachable';
+    document.getElementById('checks-wrap').hidden = false;
+  }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
 document.getElementById('btn-up').onclick = async () => {

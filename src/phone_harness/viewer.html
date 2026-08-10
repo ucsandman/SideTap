@@ -186,6 +186,14 @@
   #text-to:focus-visible, #text-msg:focus-visible, #console-in:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
   #text-row { display:flex; gap:var(--s1); align-items:stretch; }
   #text-msg { flex:1; resize:vertical; min-height:38px; }
+  #console-row { display:flex; gap:var(--s1); }
+  #console-in { flex:1; background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:var(--r1); padding:7px 10px; font-family:var(--mono); font-size:12.5px; }
+  #console-out { font-family:var(--mono); font-size:12px; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--r2); padding:var(--s2);
+    margin-top:var(--s2); max-height:52vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #console-out > div { padding:4px 0; border-bottom:1px solid var(--line); }
+  #console-hint { margin-top:var(--s2); line-height:1.7; }
 </style>
 </head>
 <body>
@@ -273,7 +281,20 @@
       </div>
     </div>
     <div id="tab-phone" class="tabpane" hidden></div>
-    <div id="tab-console" class="tabpane" hidden></div>
+    <div id="tab-console" class="tabpane" hidden>
+      <div class="sec">Console</div>
+      <div id="console-row">
+        <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
+        <button id="btn-console-run">Run</button>
+      </div>
+      <div id="console-out" hidden></div>
+      <div class="dim" id="console-hint">
+        Whitelisted helpers only: <code>ocr()</code>, <code>tap_text("…")</code>,
+        <code>open_app("…")</code>, <code>swipe(x1,y1,x2,y2)</code>,
+        <code>send_message("Mom","hi")</code>…
+        Agents get the same helpers from a terminal: <code>phone-harness &lt;&lt;'PY' … PY</code>.
+      </div>
+    </div>
   </div>
 <script>
 const screen = document.getElementById('screen');
@@ -798,6 +819,47 @@ function updateActionAvail() {
     if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; }
   });
 }
+// ---- Console tab -----------------------------------------------------------
+const consoleIn = document.getElementById('console-in');
+let consoleHist = pins('sidetap.console.hist');
+let histIdx = consoleHist.length;
+async function runConsole() {
+  const line = consoleIn.value.trim();
+  if (!line) return;
+  consoleHist.push(line);
+  if (consoleHist.length > 50) consoleHist.shift();
+  localStorage.setItem('sidetap.console.hist', JSON.stringify(consoleHist));
+  histIdx = consoleHist.length;
+  const out = document.getElementById('console-out');
+  out.hidden = false;
+  const entry = document.createElement('div');
+  entry.textContent = '> ' + line + '\n…';
+  out.prepend(entry);
+  consoleIn.value = '';
+  const runBtn = document.getElementById('btn-console-run');
+  runBtn.disabled = true; runBtn.dataset.busy = '1';
+  try {
+    const r = await fetch('/api/console', {method:'POST', headers:JSON_HDR,
+                                           body: JSON.stringify({line})});
+    const j = await r.json();
+    entry.textContent = '> ' + line + '\n' +
+      (j.ok ? JSON.stringify(j.result === undefined ? null : j.result, null, 1)
+            : '✗ ' + j.error);
+  } catch (e) { entry.textContent = '> ' + line + '\n✗ ' + e; }
+  finally { delete runBtn.dataset.busy; runBtn.disabled = !inputEnabled; }
+}
+document.getElementById('btn-console-run').onclick = runConsole;
+consoleIn.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') runConsole();
+  else if (ev.key === 'ArrowUp') {
+    if (histIdx > 0) { histIdx--; consoleIn.value = consoleHist[histIdx]; }
+    ev.preventDefault();
+  } else if (ev.key === 'ArrowDown') {
+    histIdx = Math.min(histIdx + 1, consoleHist.length);
+    consoleIn.value = consoleHist[histIdx] || '';
+    ev.preventDefault();
+  }
+});
 </script>
 </body>
 </html>

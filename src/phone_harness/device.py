@@ -135,7 +135,7 @@ def detect_wda_bundle() -> str | None:
     return None
 
 
-def lockdown_ready() -> bool:
+def lockdown_ready() -> bool:  # noqa: vulture
     """Can we talk lockdown right now? Deep sleep gates it (ReadPair errors,
     exit 1) while tunnel services like screenshot keep working — so this is
     the cheap "has the human woken the phone yet" probe."""
@@ -158,6 +158,39 @@ def tunnel_running() -> bool:
         if obj.get("address") and obj.get("rsdPort"):
             return True
     return False
+
+
+def ddi_mounted() -> bool:
+    """Is the personalized Developer Disk Image mounted? An iOS UPDATE silently
+    unmounts it, and without it testmanagerd refuses every test session — runwda
+    dies in dtx channel timeouts that look like a broken tunnel (bit live
+    2026-08-10, the 26.5→26.6 update). Mounted: `image list` prints a line with
+    a "signature" key; unmounted: msg "none"."""
+    try:
+        proc = _run(["image", "list"], timeout=15)
+    except (DeviceError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    return any(obj.get("signature") for obj in _json_lines(proc.stdout + proc.stderr))
+
+
+def mount_ddi() -> tuple[bool, str]:
+    """Mount the developer image (`ios image auto`). The phone must be UNLOCKED
+    (iOS answers DeviceLocked otherwise); the first mount after an iOS update
+    also needs internet (Apple TSS signs the image). Success is verified by
+    re-probing, not by parsing the mount log."""
+    try:
+        proc = _run(["image", "auto"], timeout=180)
+    except (DeviceError, subprocess.TimeoutExpired) as exc:
+        return False, f"`ios image auto` failed: {exc}"
+    if ddi_mounted():
+        return True, "developer image mounted"
+    out = proc.stdout + proc.stderr
+    if "DeviceLocked" in out:
+        return False, "phone is locked — unlock it, then retry"
+    tail = out.strip().splitlines()[-1] if out.strip() else "no output"
+    return False, f"`ios image auto` did not mount: {tail}"
 
 
 # ---- detached process management ------------------------------------------

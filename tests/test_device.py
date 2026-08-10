@@ -64,6 +64,52 @@ def test_wda_bundle_none_when_empty_list_and_no_cache(monkeypatch, tmp_path):
     assert device.detect_wda_bundle() is None
 
 
+# ---- Developer Disk Image: an iOS update silently unmounts it (bit live
+# 2026-08-10, the 26.6 update) — runwda then dies in dtx channel timeouts.
+# `image list` prints a "signature" line when mounted, msg "none" when not.
+
+
+class _Proc:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+def test_ddi_mounted_sees_signature_line(monkeypatch):
+    out = (
+        '{"level":"INFO","msg":"no udid specified using first device in list"}\n'
+        '{"level":"INFO","msg":"image signature","signature":"28080689ce6e"}\n'
+    )
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+    assert device.ddi_mounted()
+
+
+def test_ddi_mounted_false_on_none(monkeypatch):
+    out = '{"level":"INFO","msg":"none"}\n'
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+    assert not device.ddi_mounted()
+
+
+def test_mount_ddi_names_locked_phone(monkeypatch):
+    # The one mount failure a human can fix on the spot must be named, not
+    # buried in a log tail: DeviceLocked -> "unlock it".
+    out = '{"level":"ERROR","msg":"error mounting image","err":"map[Error:DeviceLocked]"}\n'
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+    monkeypatch.setattr(device, "ddi_mounted", lambda: False)
+    ok, msg = device.mount_ddi()
+    assert not ok
+    assert "unlock" in msg.lower()
+
+
+def test_mount_ddi_verifies_by_reprobe(monkeypatch):
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(""))
+    monkeypatch.setattr(device, "ddi_mounted", lambda: True)
+    ok, msg = device.mount_ddi()
+    assert ok
+    assert "mounted" in msg
+
+
 def test_wda_bundle_no_cache_fallback_when_app_really_absent(monkeypatch, tmp_path):
     # A non-empty list without WDA means genuinely uninstalled: the stale
     # cache must NOT resurrect it.

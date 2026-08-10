@@ -89,3 +89,6 @@ Day-to-day notes:
 - Phone locked? Set `PHONE_PASSCODE` in `.env` (copy `.env.example`), then the
   viewer's **Unlock** button and the agent's `unlock()` helper type it for you.
 - Unplugged the phone? Click **Restart link** in the viewer.
+- Updated iOS? The update silently unmounts the Developer Disk Image, which
+  kills WDA. Unlock the phone and run `phone-harness up` — it re-mounts the
+  image itself (the doctor names this too).

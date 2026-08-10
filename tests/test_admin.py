@@ -129,6 +129,29 @@ def test_stop_check_runs_first():
 # re-sideload the app you installed yesterday".
 
 
+def test_ddi_check_in_doctor_checks():
+    # iOS updates silently unmount the DDI (bit live 2026-08-10); doctor must
+    # name it before the WDA checks so "fix the first FAIL" points at it.
+    names = [name for name, _fn in admin.CHECKS]
+    assert "developer image (DDI)" in names
+    assert names.index("developer image (DDI)") < names.index("WDA responding (input)")
+
+
+def test_ddi_check_fails_when_unmounted(monkeypatch):
+    monkeypatch.setattr(admin.device, "ddi_mounted", lambda: False)
+    ok, detail, fix = admin._check_ddi()
+    assert not ok
+    assert "not mounted" in detail
+    assert "phone-harness up" in fix
+
+
+def test_ddi_check_passes_when_mounted(monkeypatch):
+    monkeypatch.setattr(admin.device, "ddi_mounted", lambda: True)
+    ok, detail, _fix = admin._check_ddi()
+    assert ok
+    assert "mounted" in detail
+
+
 def test_wda_check_passes_via_cache_while_asleep(monkeypatch, tmp_path):
     monkeypatch.setattr(admin.device.config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")

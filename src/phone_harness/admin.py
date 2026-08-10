@@ -63,6 +63,18 @@ def _check_tunnel():
     return False, "Tunnel not running", "Run: phone-harness up   (starts it for you)"
 
 
+def _check_ddi():
+    """iOS updates silently unmount the Developer Disk Image; without it
+    testmanagerd refuses every test session and WDA can never start."""
+    if device.ddi_mounted():
+        return True, "developer image mounted", ""
+    return (
+        False,
+        "developer image not mounted — WDA cannot start (iOS updates unmount it)",
+        "Unlock the phone, then run: phone-harness up (it mounts the image itself).",
+    )
+
+
 def _check_wda_installed():
     try:
         if not device.list_devices():
@@ -297,7 +309,7 @@ def _reminder_installed() -> bool:
         return False
 
 
-def reminder_install() -> int:
+def reminder_install() -> int:  # noqa: vulture
     proc = subprocess.run(
         ["schtasks", "/Create", "/F", "/SC", "DAILY", "/ST", "10:00",
          "/TN", _REMINDER_TASK, "/TR", _reminder_command()],
@@ -313,7 +325,7 @@ def reminder_install() -> int:
     return 1
 
 
-def reminder_uninstall() -> int:
+def reminder_uninstall() -> int:  # noqa: vulture
     proc = subprocess.run(
         ["schtasks", "/Delete", "/F", "/TN", _REMINDER_TASK],
         capture_output=True,
@@ -341,6 +353,7 @@ CHECKS = [
     ("go-ios installed", _check_go_ios),
     ("iPhone on USB", _check_device),
     ("tunnel", _check_tunnel),
+    ("developer image (DDI)", _check_ddi),
     ("perception (view/OCR)", _check_perception),
     ("WDA installed (input)", _check_wda_installed),
     ("WDA responding (input)", _check_wda_responding),
@@ -413,6 +426,14 @@ def _up(wait_seconds: float) -> int:
     else:
         print("OK: tunnel already running")
 
+    if not device.ddi_mounted():
+        print("Developer image not mounted (iOS updates unmount it) — mounting...")
+        ok, msg = device.mount_ddi()
+        if not ok:
+            print(f"FAIL: {msg}\n  fix: unlock the phone, then run: phone-harness up")
+            return 1
+        print("OK: developer image mounted")
+
     bundle = device.detect_wda_bundle()
     if not bundle:
         _, detail, fix = _check_wda_installed()
@@ -439,6 +460,11 @@ def _up(wait_seconds: float) -> int:
     print(device.log_tail("runwda", 10))
     print(
         "Common cause on a free Apple ID: the 7-day signature expired — re-sign in Sideloadly."
+    )
+    print(
+        "Error 103 in the tail = WDA installed without its nested .xctest signed "
+        "(a bare Sideloadly install does this) — run: "
+        "phone-harness fix-input .state/profile.mobileprovision"
     )
     return 1
 

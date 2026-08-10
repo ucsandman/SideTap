@@ -36,6 +36,25 @@ class StubClient:
     def configure_mjpeg(self):
         pass
 
+    battery_info = None  # set to a dict to make battery() succeed
+    locked = None  # set to a bool to make is_locked() succeed
+    app = None  # set to a dict to make active_app() succeed
+
+    def battery(self):
+        if self.battery_info is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.battery_info
+
+    def is_locked(self):
+        if self.locked is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.locked
+
+    def active_app(self):
+        if self.app is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.app
+
 
 @pytest.fixture()
 def base_url():
@@ -95,6 +114,30 @@ def test_lock_endpoint_locks_phone(base_url):
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert "lock" in viewer.Handler.client.calls
+
+
+def test_phone_endpoint_serves_passive_info(base_url):
+    c = viewer.Handler.client
+    c.battery_info = {"level": 0.78, "state": 2}
+    c.locked = False
+    c.app = {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 4242}
+    r = requests.get(base_url + "/api/phone", timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {
+        "battery": {"level": 0.78, "state": 2},
+        "locked": False,
+        "app": {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 4242},
+    }
+
+
+def test_phone_endpoint_degrades_per_field(base_url):
+    # One failing read must not blank the others (spec: strip degrades).
+    c = viewer.Handler.client
+    c.battery_info = None  # battery() raises
+    c.locked = True
+    c.app = None  # active_app() raises
+    r = requests.get(base_url + "/api/phone", timeout=5)
+    assert r.json() == {"battery": None, "locked": True, "app": None}
 
 
 def test_stop_toggle_creates_and_removes_file(base_url, tmp_path, monkeypatch):

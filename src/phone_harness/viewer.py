@@ -41,6 +41,10 @@ _ACTION_LOCK = threading.Lock()
 # timing-sensitive: added latency lets the lock screen fall back asleep).
 _LAST_STATUS: dict | None = None
 
+# Last good /api/phone payload, served while a gesture holds _ACTION_LOCK
+# (same reasoning as _LAST_STATUS).
+_LAST_PHONE: dict | None = None
+
 # LAN exposure, probed in the background (the port probe can take a second) and
 # surfaced as a persistent banner on the phone pane — not only inside the
 # doctor tab. WDA has no auth, so an exposed port must be loud by default.
@@ -242,6 +246,26 @@ class Handler(BaseHTTPRequestHandler):
                             "boot": _BOOT_ID,
                         }
                     )
+            elif path == "/api/phone":
+                global _LAST_PHONE
+                if _ACTION_LOCK.locked() and _LAST_PHONE is not None:
+                    self._json(_LAST_PHONE)
+                    return
+                info: dict = {"battery": None, "locked": None, "app": None}
+                try:
+                    info["battery"] = self.client.battery()
+                except WDAError:
+                    pass
+                try:
+                    info["locked"] = self.client.is_locked()
+                except WDAError:
+                    pass
+                try:
+                    info["app"] = self.client.active_app()
+                except WDAError:
+                    pass
+                _LAST_PHONE = info
+                self._json(info)
             elif path == "/api/doctor":
                 self._json(admin.doctor_results())
             elif path == "/api/fix-input":

@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+[![Website](https://img.shields.io/badge/web-sidetap.io-4493f8.svg)](https://sidetap.io)
 
 ![sidetap driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
 

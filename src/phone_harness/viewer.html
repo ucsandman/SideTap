@@ -231,6 +231,13 @@
   #text-to:focus-visible, #text-msg:focus-visible, #console-in:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
   #text-row { display:flex; gap:var(--s1); align-items:stretch; }
   #text-msg { flex:1; resize:vertical; min-height:38px; }
+  /* Debug console is collapsed by default: the phone pane is the human surface;
+     this card exists to run the agent's own helpers when one misbehaves. */
+  button.sec { background:none; border:0; padding:0; cursor:pointer; text-align:left; }
+  button.sec:hover { background:none; border:0; color:var(--accent); }
+  #debug-blurb { font-size:12.5px; line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+  #debug-body { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow:hidden; }
   #console-row { display:flex; gap:var(--s1); }
   #console-in { flex:1; background:var(--panel); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r1); padding:7px 10px; font-family:var(--mono); font-size:12.5px; }
@@ -331,18 +338,26 @@
         <div class="dim gap-top">Passive reads only — nothing here touches the phone.</div>
       </div>
       <div id="col-console" class="col">
-        <div class="sec">Console</div>
-        <div id="console-row">
-          <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
-          <button id="btn-console-run">Run</button>
+        <button class="sec" id="debug-toggle">Debug ▸</button>
+        <div class="dim" id="debug-blurb">
+          The agent's own helpers, run by hand. Use the phone pane for normal
+          control — open this when a helper misbehaves (see what
+          <code>ocr()</code> sees) or you want copyable output
+          (<code>read_messages("Mom")</code>).
         </div>
-        <div id="console-out" hidden></div>
-        <button id="more-console" class="more-btn" hidden></button>
-        <div class="dim" id="console-hint">
-          Whitelisted helpers only: <code>ocr()</code>, <code>tap_text("…")</code>,
-          <code>open_app("…")</code>, <code>swipe(x1,y1,x2,y2)</code>,
-          <code>send_message("Mom","hi")</code>…
-          Agents get the same helpers from a terminal: <code>phone-harness &lt;&lt;'PY' … PY</code>.
+        <div id="debug-body" hidden>
+          <div id="console-row">
+            <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
+            <button id="btn-console-run">Run</button>
+          </div>
+          <div id="console-out" hidden></div>
+          <button id="more-console" class="more-btn" hidden></button>
+          <div class="dim" id="console-hint">
+            Whitelisted helpers only: <code>ocr()</code>, <code>tap_text("…")</code>,
+            <code>open_app("…")</code>, <code>swipe(x1,y1,x2,y2)</code>,
+            <code>send_message("Mom","hi")</code>…
+            Agents get the same helpers from a terminal: <code>phone-harness &lt;&lt;'PY' … PY</code>.
+          </div>
         </div>
       </div>
     </div>
@@ -1003,7 +1018,17 @@ function updateActionAvail() {
     if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; }
   });
 }
-// ---- Console column ----------------------------------------------------------
+// ---- Debug column (collapsed by default; state persists) ---------------------
+const debugBody = document.getElementById('debug-body');
+function renderDebug(open) {
+  debugBody.hidden = !open;
+  document.getElementById('debug-blurb').hidden = open;
+  document.getElementById('debug-toggle').textContent = open ? 'Debug ▾' : 'Debug ▸';
+  localStorage.setItem('sidetap.debug.open', open ? '1' : '');
+}
+document.getElementById('debug-toggle').onclick = () => renderDebug(debugBody.hidden);
+renderDebug(localStorage.getItem('sidetap.debug.open') === '1');
+
 const consoleIn = document.getElementById('console-in');
 let consoleHist = pins('sidetap.console.hist');
 let histIdx = consoleHist.length;

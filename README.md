@@ -78,7 +78,7 @@ phone-harness notify-expiry --install  :: daily desktop toast before the signatu
 phone-harness down        :: stop background processes
 ```
 
-The side panel is a dashboard: quick actions (text someone, open an app), the agent activity feed, passive phone info, and a console for helper one-liners.
+The side panel is a dashboard: quick actions (text someone, open an app), the agent activity feed, passive phone info, and a collapsed Debug card that runs helper one-liners by hand when a helper misbehaves.
 
 ## Agent usage
 

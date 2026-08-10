@@ -173,6 +173,19 @@
   .sent-row.pending { border-left-color:var(--warn); }
   .sent-row .who { font-weight:600; }
   .sent-row .dim { font-size:11.5px; white-space:nowrap; }
+
+  /* ---- actions tab ------------------------------------------------------ */
+  .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); }
+  .chip { padding:5px 11px; border-radius:99px; font-size:12.5px; }
+  .chip .pin { margin-left:6px; opacity:.5; }
+  .chip.pinned .pin { opacity:1; }
+  .gap-top { margin-top:var(--s4); }
+  #text-to { width:100%; margin-bottom:var(--s1); }
+  #text-to, #text-msg { background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px; }
+  #text-to:focus-visible, #text-msg:focus-visible, #console-in:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  #text-row { display:flex; gap:var(--s1); align-items:stretch; }
+  #text-msg { flex:1; resize:vertical; min-height:38px; }
 </style>
 </head>
 <body>
@@ -238,7 +251,17 @@
       <button class="tab" data-tab="phone">Phone</button>
       <button class="tab" data-tab="console">&gt;_</button>
     </nav>
-    <div id="tab-actions" class="tabpane"></div>
+    <div id="tab-actions" class="tabpane">
+      <div class="sec">Text someone</div>
+      <div id="contact-chips" class="chips"></div>
+      <input id="text-to" placeholder="Contact (as named in Messages)">
+      <div id="text-row">
+        <textarea id="text-msg" rows="2" placeholder="Message"></textarea>
+        <button id="btn-text-send">Send</button>
+      </div>
+      <div class="sec gap-top">Open app</div>
+      <div id="app-chips" class="chips"></div>
+    </div>
     <div id="tab-agent" class="tabpane" hidden>
       <div id="activity" hidden>
         <h2 class="sec">Activity</h2>
@@ -314,6 +337,7 @@ async function loadStatus() {
     document.getElementById('btn-notifs').hidden = !inputEnabled;
     document.getElementById('btn-control').hidden = !inputEnabled;
     document.getElementById('paste-row').hidden = !inputEnabled;
+    updateActionAvail();
     // Loud by default: WDA has no auth, so exposure is a banner, not a tab.
     document.getElementById('lan-banner').hidden = s.lan_exposed !== true;
   } catch (e) {
@@ -353,6 +377,7 @@ document.getElementById('strip-main').onclick = () => {
 async function loadSent() {
   try {
     const recs = await getJSON('/api/actions');
+    sendRecs = recs; renderContactChips();
     const wrap = document.getElementById('sent');
     if (!recs.length) { wrap.hidden = true; return; }
     wrap.hidden = false;
@@ -684,6 +709,93 @@ async function startFixInput() {
 }
 document.getElementById('btn-fix').onclick = startFixInput;
 document.getElementById('btn-sig-fix').onclick = startFixInput;
+
+// ---- Actions tab -----------------------------------------------------------
+function pins(key) {
+  try { return JSON.parse(localStorage.getItem(key)) || []; } catch (e) { return []; }
+}
+function togglePin(key, name, render) {
+  const p = pins(key);
+  const i = p.indexOf(name);
+  if (i < 0) p.push(name); else p.splice(i, 1);
+  localStorage.setItem(key, JSON.stringify(p));
+  render();
+}
+function chip(label, pinned, onUse, onPin) {
+  const b = document.createElement('button');
+  b.className = 'chip' + (pinned ? ' pinned' : '');
+  b.textContent = label;
+  const pin = document.createElement('span');
+  pin.className = 'pin';
+  pin.textContent = pinned ? '★' : '☆';
+  pin.title = pinned ? 'Unpin' : 'Pin';
+  pin.onclick = (ev) => { ev.stopPropagation(); onPin(); };
+  b.appendChild(pin);
+  b.onclick = onUse;
+  return b;
+}
+let sendRecs = [];  // loadSent keeps this fresh
+function renderContactChips() {
+  const wrap = document.getElementById('contact-chips');
+  const pinned = pins('sidetap.pins.contacts');
+  const learned = [...new Set(sendRecs.slice().reverse()
+    .map(r => r.resolved_title || r.contact))].filter(n => !pinned.includes(n));
+  wrap.replaceChildren(...[...pinned, ...learned].slice(0, 10).map(name =>
+    chip(name, pinned.includes(name),
+      () => { document.getElementById('text-to').value = name;
+              document.getElementById('text-msg').focus(); },
+      () => togglePin('sidetap.pins.contacts', name, renderContactChips))));
+}
+let knownApps = [];
+function renderAppChips() {
+  const wrap = document.getElementById('app-chips');
+  const pinned = pins('sidetap.pins.apps');
+  const rest = knownApps.filter(n => !pinned.includes(n));
+  wrap.replaceChildren(...[...pinned, ...rest].map(name =>
+    chip(name, pinned.includes(name),
+      async (ev) => {
+        const b = ev.currentTarget; b.disabled = true;
+        try {
+          const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
+                                                  body: JSON.stringify({name})});
+          const j = await r.json();
+          if (!j.ok) showHint(j.error || 'Could not open ' + name);
+        } catch (e) { showHint('Could not open ' + name); }
+        b.disabled = !inputEnabled;
+      },
+      () => togglePin('sidetap.pins.apps', name, renderAppChips))));
+  updateActionAvail();
+}
+getJSON('/api/apps').then(j => { knownApps = j.known; renderAppChips(); })
+  .catch(() => {});
+document.getElementById('btn-text-send').onclick = async () => {
+  const to = document.getElementById('text-to').value.trim();
+  const message = document.getElementById('text-msg').value;
+  if (!to || !message.trim()) { showHint('Contact and message are both needed.'); return; }
+  const btn = document.getElementById('btn-text-send');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/text', {method:'POST', headers:JSON_HDR,
+                                        body: JSON.stringify({to, message})});
+    const j = await r.json();
+    showHint(j.ok ? 'Sent to ' + to + '.'
+                  : (j.error || 'Send not confirmed — check Recent sends.'));
+    if (j.ok) document.getElementById('text-msg').value = '';
+  } catch (e) { showHint('Send failed.'); }
+  btn.disabled = !inputEnabled; btn.textContent = 'Send';
+  loadSent(); renderContactChips();
+};
+// Action controls need the input driver; grey them out with a reason otherwise.
+function updateActionAvail() {
+  const tip = inputEnabled ? '' : 'Touch input is down — see checks';
+  ['btn-text-send', 'btn-console-run'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = !inputEnabled; el.title = tip; }
+  });
+  document.querySelectorAll('#app-chips .chip').forEach(c => {
+    c.disabled = !inputEnabled; c.title = tip;
+  });
+}
 </script>
 </body>
 </html>

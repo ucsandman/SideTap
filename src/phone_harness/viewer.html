@@ -31,18 +31,24 @@
   ::-webkit-scrollbar-thumb:hover { background:#39434f; }
 
   /* ---- phone pane ---------------------------------------------------- */
-  #phone-pane { flex:0 0 auto; padding:var(--s4); display:flex; flex-direction:column; align-items:center; gap:var(--s2); max-height:100vh; overflow-y:auto; }
+  #phone-pane {
+    flex:0 0 auto; width:clamp(340px, 46vh, 560px);
+    height:100vh; overflow:hidden;              /* was max-height:100vh; overflow-y:auto */
+    padding:var(--s4); display:flex; flex-direction:column; align-items:center; gap:var(--s2);
+  }
+  #lan-banner, #sig-banner, #controls, #click-hint { flex:0 0 auto; }
+  /* The one flexible track: it absorbs whatever banners and controls leave. */
+  #screen-slot { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; width:100%; }
   #screen-wrap {
-    position:relative; border:8px solid #232b34; border-radius:44px; overflow:hidden; background:#000;
+    position:relative; height:100%; max-width:100%;
+    border:8px solid #232b34; border-radius:44px; overflow:hidden; background:#000;
     box-shadow:0 0 0 1px #39434f, 0 26px 60px rgba(0,0,0,.55);
     transition:border-color var(--t), box-shadow var(--t);
-    /* Never let the column flex shrink this: overflow:hidden would silently
-       crop the bottom of the phone (the dock vanished under the bezel). If the
-       pane runs out of room it scrolls instead. */
-    flex-shrink:0;
   }
-  /* 260px = controls + hint + gaps + pane padding on a desktop layout. */
-  #screen { display:block; height:min(100vh - 260px, 1180px); width:auto; background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
+  /* DELETED: #screen-wrap { flex-shrink:0 }  — nothing shrinks it now; the slot does the math.
+     DELETED: #screen { height:min(100vh - 260px, 1180px) } — the magic number that ignored banners. */
+  #screen { display:block; height:100%; width:auto; max-width:100%;
+            background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
   /* Rows below the phone stretch to the phone's width instead of widening the pane. */
@@ -111,24 +117,46 @@
   }
 
   /* ---- side pane ----------------------------------------------------- */
-  #side { flex:1; padding:var(--s4); max-width:520px; height:100vh; overflow-y:auto; }
-  h1 { font-size:22px; font-weight:600; letter-spacing:-.015em; margin-bottom:2px; }
+  #side {
+    flex:1 1 auto; min-width:0; max-width:1400px;   /* was flex:1; max-width:520px */
+    height:100vh; overflow:hidden;                   /* was overflow-y:auto — the 2nd scrollbar */
+    padding:var(--s4); display:flex; flex-direction:column; gap:var(--s3);
+  }
+  h1 { font-size:17px; font-weight:600; letter-spacing:-.015em; }   /* was 22px */
   .dim { color:var(--dim); font-size:13px; }
   .sec { font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin-bottom:var(--s2); }
   #doctor { margin-top:var(--s2); }
-  #strip { display:flex; align-items:center; gap:var(--s2); padding:9px 12px; margin-top:var(--s3);
-           background:var(--panel); border:1px solid var(--line); border-radius:var(--r2); }
-  #strip-main { border:0; background:none; padding:0; font-size:13px; font-weight:600; gap:8px; }
-  #strip-main:hover { background:none; color:var(--text); }
+
+  #dash-header {
+    flex:0 0 auto; display:flex; align-items:center; gap:var(--s3);
+    padding:9px 12px; background:var(--panel); border:1px solid var(--line); border-radius:var(--r2);
+  }
+  #hdr-checks { border:0; background:none; padding:0; font-size:13px; font-weight:600; gap:8px; }
+  #hdr-checks:hover { background:none; color:var(--text); }
+  #checks-dots { display:inline-flex; gap:3px; }
+  #checks-dots .dot { width:7px; height:7px; }        /* .dot / .dot.bad already exist below */
+  #strip-info { margin-left:auto; font-size:12.5px; white-space:nowrap; }   /* unchanged, just re-parented */
   .dot { width:9px; height:9px; border-radius:50%; background:var(--ok); display:inline-block; flex:0 0 auto; }
   .dot.bad { background:var(--bad); }
-  #strip-info { margin-left:auto; font-size:12.5px; white-space:nowrap; }
-  #checks-wrap { margin-top:var(--s2); }
-  #tabs { display:flex; gap:var(--s1); margin-top:var(--s3); border-bottom:1px solid var(--line); }
-  .tab { border:0; background:none; border-radius:var(--r1) var(--r1) 0 0; padding:8px 12px; color:var(--dim); }
-  .tab:hover { background:var(--panel); color:var(--text); }
-  .tab.on { color:var(--text); box-shadow:inset 0 -2px 0 var(--accent); }
-  .tabpane { margin-top:var(--s3); }
+
+  #dash-grid {
+    flex:1 1 auto; min-height:0;                     /* min-height:0 is mandatory: without it a grid
+                                                         item refuses to shrink below content size and
+                                                         silently re-creates the scrollbar */
+    display:grid; gap:var(--s3);
+    grid-template-columns:1.1fr 1fr .9fr;
+    grid-template-rows:auto 1fr;
+    grid-template-areas:"actions agent phone"
+                        "actions agent console";
+  }
+  #col-actions{grid-area:actions} #col-agent{grid-area:agent}
+  #col-phone{grid-area:phone}     #col-console{grid-area:console}
+  .col {
+    min-height:0; min-width:0; overflow:hidden; display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r3); padding:var(--s3);
+  }
+  /* DELETED: #tabs, .tab, .tab:hover, .tab.on, .tabpane, #checks-wrap */
+
   .check {
     display:flex; gap:var(--s2); padding:9px 12px; border-radius:var(--r2);
     background:var(--panel); border:1px solid var(--line); border-left-width:3px;
@@ -145,8 +173,17 @@
   .check .fix { color:var(--warn); font-size:12.5px; margin-top:3px; overflow-wrap:anywhere; }
   code { font-family:var(--mono); background:var(--panel); border:1px solid var(--line); padding:1px 6px; border-radius:var(--r1); font-size:12px; }
 
+  /* one-line PASS rows inside the checks overlay */
+  .check.ok, .check.compact { padding:5px 12px; align-items:center; }
+  .check.ok .body, .check.compact .body { flex-direction:row; gap:var(--s2); align-items:baseline; }
+  .check.ok .detail { color:var(--dim); }
+  /* Bounded card height: real fix strings wrap (a 2-line fix made 10 cards
+     clip the panel silently in the adversarial pass). Clamp, don't clip. */
+  .check .detail { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .check.bad .fix { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+
   /* ---- fix-input panel ----------------------------------------------- */
-  #fix-panel { margin-top:var(--s4); padding:var(--s3); border:1px solid rgba(68,147,248,.45); border-radius:var(--r3); background:var(--panel); }
+  #fix-panel { margin-top:0; padding:0; border:0; background:none; }   /* look lives in #ov-panel now */
   #fix-title { font-weight:600; margin-bottom:var(--s1); }
   #fix-body { margin-top:var(--s1); line-height:1.6; }
   #fix-steps { margin-top:var(--s2); display:flex; flex-direction:column; gap:2px; }
@@ -156,14 +193,11 @@
   .fstep.done { color:var(--ok); }
   .fstep.err { color:var(--warn); }
 
-  /* ---- live activity feed --------------------------------------------- */
-  #activity { margin-top:var(--s4); }
-  #activity-list { max-height:55vh; overflow-y:auto; }
+  /* ---- live activity feed / recent sends (dashboard columns) ---------- */
+  #col-agent #activity, #col-agent #sent { flex:1 1 0; min-height:0; overflow:hidden; display:flex; flex-direction:column; margin-top:0; }
+  #activity-list, #sent-list { flex:1 1 auto; min-height:0; overflow:hidden; }   /* was max-height:55vh; overflow-y:auto */
   .act-row { display:flex; gap:var(--s2); padding:3px 12px; font-size:12.5px; color:var(--text2); }
   .act-row .t { color:var(--dim); font-size:11.5px; flex:0 0 40px; text-align:right; font-family:var(--mono); }
-
-  /* ---- recent sends --------------------------------------------------- */
-  #sent { margin-top:var(--s4); }
   .sent-row {
     padding:7px 12px; border-radius:var(--r2); background:var(--panel);
     border:1px solid var(--line); border-left-width:3px; margin-bottom:var(--s1); font-size:12.5px;
@@ -173,9 +207,15 @@
   .sent-row.pending { border-left-color:var(--warn); }
   .sent-row .who { font-weight:600; }
   .sent-row .dim { font-size:11.5px; white-space:nowrap; }
+  .act-row, .sent-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }  /* constant row height */
+  .sent-row { overflow-wrap:normal; }                                                    /* overrides base rule above */
+  #full-sends .sent-row { white-space:normal; overflow-wrap:anywhere; }  /* overlay: full message text readable */
+  .more-btn { flex:0 0 auto; align-self:flex-start; margin-top:var(--s1); border:0; background:none;
+              padding:2px 0; font-size:12px; color:var(--dim); }
+  .more-btn:hover { background:none; color:var(--accent); }
 
-  /* ---- actions tab ------------------------------------------------------ */
-  .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); }
+  /* ---- actions column -------------------------------------------------- */
+  .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); max-height:150px; overflow:hidden; }
   .chip { padding:5px 11px; border-radius:99px; font-size:12.5px; }
   #app-chips .chip { text-transform:capitalize; }
   .chip .pin { margin-left:6px; opacity:.5; }
@@ -184,6 +224,7 @@
   .prow { display:flex; justify-content:space-between; gap:var(--s2); padding:7px 2px;
           border-bottom:1px solid var(--line); font-size:13px; }
   .prow .k { color:var(--dim); }
+  #phone-rows { flex:0 0 auto; }
   #text-to { width:100%; margin-bottom:var(--s1); }
   #text-to, #text-msg { background:var(--panel); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px; }
@@ -195,9 +236,23 @@
     border-radius:var(--r1); padding:7px 10px; font-family:var(--mono); font-size:12.5px; }
   #console-out { font-family:var(--mono); font-size:12px; background:var(--panel);
     border:1px solid var(--line); border-radius:var(--r2); padding:var(--s2);
-    margin-top:var(--s2); max-height:52vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
-  #console-out > div { padding:4px 0; border-bottom:1px solid var(--line); }
-  #console-hint { margin-top:var(--s2); line-height:1.7; }
+    margin-top:var(--s2); white-space:pre-wrap; overflow-wrap:anywhere;
+    flex:1 1 auto; min-height:0; overflow:hidden; }   /* was max-height:52vh; overflow:auto */
+  #console-out > div { padding:4px 0; border-bottom:1px solid var(--line); max-height:6em; overflow:hidden; }
+  /* One line with ellipsis: reference text must not eat the output's budget. */
+  #console-hint { margin-top:var(--s2); flex:0 0 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  /* ---- overlay shell --------------------------------------------------- */
+  #ov { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+        background:rgba(0,0,0,.55); }
+  #ov-panel { width:min(760px, 86vw); max-height:88vh; overflow:hidden;   /* HIDDEN, not auto */
+              display:flex; flex-direction:column; gap:var(--s2);
+              background:var(--panel); border:1px solid var(--line); border-radius:var(--r3);
+              padding:var(--s4); box-shadow:0 24px 60px rgba(0,0,0,.6); }
+  #ov-head { display:flex; align-items:center; gap:var(--s2); flex:0 0 auto; }
+  #ov-title { font-weight:600; font-size:15px; flex:1; }
+  #ov-body { flex:1 1 auto; min-height:0; overflow:hidden; }
+  #ov-close { border:0; background:none; padding:2px 8px; font-size:16px; }
 </style>
 </head>
 <body>
@@ -210,9 +265,11 @@
       <span id="sig-banner-text">Input signature expires soon.</span>
       <button id="btn-sig-fix">Fix input</button>
     </div>
-    <div id="screen-wrap">
-      <img id="screen" alt="phone screen" src="/api/screenshot">
-      <div id="tap-dot"></div>
+    <div id="screen-slot">
+      <div id="screen-wrap">
+        <img id="screen" alt="phone screen" src="/api/screenshot">
+        <div id="tap-dot"></div>
+      </div>
     </div>
     <div id="controls">
       <button id="btn-stop">■ STOP</button>
@@ -230,77 +287,86 @@
       </div>
       <div id="paste-row" hidden>
         <textarea id="paste-text" rows="1"
-          placeholder="Paste a URL, password, or long text — sends to the focused field"></textarea>
+          placeholder="Paste text — sends to the focused field"></textarea>
         <button id="btn-paste-send">Send text</button>
       </div>
     </div>
     <div class="dim" id="click-hint">Click to tap · drag to swipe · type to send keys.</div>
   </div>
   <div id="side">
-    <h1>phone-harness</h1>
-    <div class="dim">Your iPhone, driven from Windows over USB.</div>
-    <div id="fix-panel" hidden>
-      <div id="fix-title">🔧 Enable touch input</div>
-      <div class="dim" id="fix-body">
-        Touch input needs WebDriverAgent re-signed. Click <b>Fix input</b>, then in
-        Sideloadly load <code>wda/WebDriverAgent.ipa</code> and press Start. It signs
-        the driver locally with your existing Apple ID — no password re-entry.
-      </div>
-      <div id="fix-steps"></div>
-    </div>
-    <div id="strip">
-      <button id="strip-main" title="Show / hide the full checks">
-        <span id="strip-dot" class="dot"></span><span id="strip-text">Checking…</span>
+    <div id="dash-header">
+      <h1 title="Your iPhone, driven from Windows over USB.">phone-harness</h1>
+      <button id="hdr-checks" title="Show all checks">
+        <span id="checks-dots"></span><span id="checks-text">Checking…</span>
       </button>
       <span id="strip-info" class="dim"></span>
     </div>
-    <div id="checks-wrap" hidden>
-      <div id="doctor"><div class="sec">Checks</div><div class="dim">Running checks…</div></div>
-    </div>
-    <nav id="tabs">
-      <button class="tab" data-tab="actions">Actions</button>
-      <button class="tab" data-tab="agent">Agent</button>
-      <button class="tab" data-tab="phone">Phone</button>
-      <button class="tab" data-tab="console">&gt;_</button>
-    </nav>
-    <div id="tab-actions" class="tabpane">
-      <div class="sec">Text someone</div>
-      <div id="contact-chips" class="chips"></div>
-      <input id="text-to" placeholder="Contact (as named in Messages)">
-      <div id="text-row">
-        <textarea id="text-msg" rows="2" placeholder="Message"></textarea>
-        <button id="btn-text-send">Send</button>
+    <div id="dash-grid">
+      <div id="col-actions" class="col">
+        <div class="sec">Text someone</div>
+        <div id="contact-chips" class="chips"></div>
+        <input id="text-to" placeholder="Contact (as named in Messages)">
+        <div id="text-row">
+          <textarea id="text-msg" rows="2" placeholder="Message"></textarea>
+          <button id="btn-text-send">Send</button>
+        </div>
+        <div class="sec gap-top">Open app</div>
+        <div id="app-chips" class="chips"></div>
       </div>
-      <div class="sec gap-top">Open app</div>
-      <div id="app-chips" class="chips"></div>
-    </div>
-    <div id="tab-agent" class="tabpane" hidden>
-      <div id="activity" hidden>
-        <h2 class="sec">Activity</h2>
-        <div id="activity-list"></div>
+      <div id="col-agent" class="col">
+        <div id="activity">
+          <h2 class="sec">Activity</h2>
+          <div id="activity-list"></div>
+          <button id="more-activity" class="more-btn" hidden></button>
+        </div>
+        <div id="sent">
+          <h2 class="sec">Recent sends</h2>
+          <div id="sent-list"></div>
+          <button id="more-sends" class="more-btn" hidden></button>
+        </div>
       </div>
-      <div id="sent" hidden>
-        <h2 class="sec">Recent sends</h2>
-        <div id="sent-list"></div>
+      <div id="col-phone" class="col">
+        <div class="sec">Phone</div>
+        <div id="phone-rows" class="dim">Waiting for phone…</div>
+        <div class="dim gap-top">Passive reads only — nothing here touches the phone.</div>
+      </div>
+      <div id="col-console" class="col">
+        <div class="sec">Console</div>
+        <div id="console-row">
+          <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
+          <button id="btn-console-run">Run</button>
+        </div>
+        <div id="console-out" hidden></div>
+        <button id="more-console" class="more-btn" hidden></button>
+        <div class="dim" id="console-hint">
+          Whitelisted helpers only: <code>ocr()</code>, <code>tap_text("…")</code>,
+          <code>open_app("…")</code>, <code>swipe(x1,y1,x2,y2)</code>,
+          <code>send_message("Mom","hi")</code>…
+          Agents get the same helpers from a terminal: <code>phone-harness &lt;&lt;'PY' … PY</code>.
+        </div>
       </div>
     </div>
-    <div id="tab-phone" class="tabpane" hidden>
-      <div class="sec">Phone</div>
-      <div id="phone-rows" class="dim">Waiting for phone…</div>
-      <div class="dim gap-top">Passive reads only — nothing here touches the phone.</div>
-    </div>
-    <div id="tab-console" class="tabpane" hidden>
-      <div class="sec">Console</div>
-      <div id="console-row">
-        <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
-        <button id="btn-console-run">Run</button>
+  </div>
+  <div id="ov" hidden>
+    <div id="ov-panel">
+      <div id="ov-head">
+        <span id="ov-title"></span>
+        <button id="ov-close">×</button>
       </div>
-      <div id="console-out" hidden></div>
-      <div class="dim" id="console-hint">
-        Whitelisted helpers only: <code>ocr()</code>, <code>tap_text("…")</code>,
-        <code>open_app("…")</code>, <code>swipe(x1,y1,x2,y2)</code>,
-        <code>send_message("Mom","hi")</code>…
-        Agents get the same helpers from a terminal: <code>phone-harness &lt;&lt;'PY' … PY</code>.
+      <div id="ov-body">
+        <div id="doctor" hidden><div class="dim">Running checks…</div></div>
+        <div id="fix-panel" hidden>
+          <div id="fix-title">🔧 Enable touch input</div>
+          <div class="dim" id="fix-body">
+            Touch input needs WebDriverAgent re-signed. Click <b>Fix input</b>, then in
+            Sideloadly load <code>wda/WebDriverAgent.ipa</code> and press Start. It signs
+            the driver locally with your existing Apple ID — no password re-entry.
+          </div>
+          <div id="fix-steps"></div>
+        </div>
+        <div id="full-activity" hidden></div>
+        <div id="full-sends" hidden></div>
+        <div id="full-console" hidden></div>
       </div>
     </div>
   </div>
@@ -360,7 +426,6 @@ async function loadStatus() {
     if (!fixRunning) {
       document.getElementById('btn-fix').hidden = inputEnabled;
       document.getElementById('btn-up').hidden = inputEnabled;
-      document.getElementById('fix-panel').hidden = inputEnabled;
     }
     // Gesture shortcuts and the paste box need the input driver.
     document.getElementById('btn-notifs').hidden = !inputEnabled;
@@ -386,42 +451,65 @@ function escapeHtml(s) {
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// ---- tabs ------------------------------------------------------------------
-function showTab(name) {
-  document.querySelectorAll('#tabs .tab').forEach(b =>
-    b.classList.toggle('on', b.dataset.tab === name));
-  document.querySelectorAll('.tabpane').forEach(p => p.hidden = p.id !== 'tab-' + name);
-  localStorage.setItem('sidetap.tab', name);
+// ---- overlay controller: one shell, five hidden bodies, exactly one visible.
+let ovOpen = null;
+const OV_BODIES = ['doctor','fix-panel','full-activity','full-sends','full-console'];
+function openOverlay(id, title) {
+  OV_BODIES.forEach(b => document.getElementById(b).hidden = b !== id);
+  document.getElementById('ov-title').textContent = title;
+  document.getElementById('ov').hidden = false;
+  ovOpen = id;
+  degradeChecksToFit();
 }
-document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
-{
-  const storedTab = localStorage.getItem('sidetap.tab');
-  const validTabs = ['actions', 'agent', 'phone', 'console'];
-  showTab(validTabs.includes(storedTab) ? storedTab : 'actions');
+// Card height depends on text, so count caps alone can lie (a 2-line fix
+// clipped card 8 in the adversarial pass). This runs ONCE per render/open —
+// not on a poll, so no thrash — and collapses expanded FAIL cards to compact
+// one-liners until the body genuinely fits. Nothing is ever clipped invisibly.
+function degradeChecksToFit() {
+  const body = document.getElementById('ov-body');
+  const doc = document.getElementById('doctor');
+  if (document.getElementById('ov').hidden || doc.hidden) return;
+  let guard = 20;
+  while (body.scrollHeight > body.clientHeight + 1 && guard--) {
+    const exp = doc.querySelectorAll('.check.bad:not(.compact)');
+    if (!exp.length) break;
+    const last = exp[exp.length - 1];
+    last.classList.add('compact');
+    const fix = last.querySelector('.fix');
+    if (fix) fix.remove();
+  }
 }
+function closeOverlay() { document.getElementById('ov').hidden = true; ovOpen = null; }
+document.getElementById('ov-close').onclick = closeOverlay;
+document.getElementById('ov').onclick = (ev) => { if (ev.target.id === 'ov') closeOverlay(); };
 
-// ---- status strip ----------------------------------------------------------
-document.getElementById('strip-main').onclick = () => {
-  const w = document.getElementById('checks-wrap');
-  w.hidden = !w.hidden;
-};
+// ---- dashboard header: click opens the checks overlay -----------------------
+document.getElementById('hdr-checks').onclick = () => openOverlay('doctor', 'Checks');
 
+function sentRowHtml(r) {
+  return `
+      <div class="sent-row ${r.sent ? 'ok' : 'pending'}">
+        <span class="who">${escapeHtml(r.resolved_title || r.contact)}</span>:
+        ${escapeHtml(r.text)}
+        <span class="dim">${r.sent ? '✓ sent' : '… attempted'}</span>
+      </div>`;
+}
 // Show what the agent has texted, so the human sees each send (sec-5 audit log).
 async function loadSent() {
   try {
     const recs = await getJSON('/api/actions');
     sendRecs = recs; renderContactChips();
-    const wrap = document.getElementById('sent');
-    if (!recs.length) { wrap.hidden = true; return; }
-    wrap.hidden = false;
-    document.getElementById('sent-list').innerHTML = recs.slice().reverse().map(r => `
-      <div class="sent-row ${r.sent ? 'ok' : 'pending'}">
-        <span class="who">${escapeHtml(r.resolved_title || r.contact)}</span>:
-        ${escapeHtml(r.text)}
-        <span class="dim">${r.sent ? '✓ sent' : '… attempted'}</span>
-      </div>`).join('');
+    const base = recs.slice(-6).reverse();
+    document.getElementById('sent-list').innerHTML = base.length
+      ? base.map(sentRowHtml).join('')
+      : '<div class="dim">No sends yet.</div>';
+    document.getElementById('full-sends').innerHTML = recs.slice(-14).reverse().map(sentRowHtml).join('');
+    const more = document.getElementById('more-sends');
+    more.hidden = recs.length <= 6;
+    more.textContent = '+' + (recs.length - 6) + ' earlier ▸';
   } catch (e) { /* panel is best-effort */ }
 }
+document.getElementById('more-sends').onclick = () => openOverlay('full-sends', 'Recent sends');
 
 // The whole trust story is "you can see what the agent does" — every action any
 // process sends to the phone lands here (taps, swipes, typing; never key text).
@@ -431,16 +519,26 @@ function ago(ts) {
   if (s < 3600) return Math.floor(s / 60) + 'm';
   return Math.floor(s / 3600) + 'h';
 }
+function activityRowHtml(r) {
+  return `<div class="act-row"><span class="t">${ago(r.ts)}</span><span>${escapeHtml(r.action)}</span></div>`;
+}
 async function loadActivity() {
   try {
     const recs = await getJSON('/api/activity');
-    const wrap = document.getElementById('activity');
-    if (!recs.length) { wrap.hidden = true; return; }
-    wrap.hidden = false;
-    document.getElementById('activity-list').innerHTML = recs.slice().reverse().map(r => `
-      <div class="act-row"><span class="t">${ago(r.ts)}</span><span>${escapeHtml(r.action)}</span></div>`).join('');
+    const base = recs.slice(-10).reverse();
+    document.getElementById('activity-list').innerHTML = base.length
+      ? base.map(activityRowHtml).join('')
+      : '<div class="dim">No actions yet.</div>';
+    const fullRecs = recs.slice(-24).reverse();
+    const notShown = recs.length - 24;
+    document.getElementById('full-activity').innerHTML = fullRecs.map(activityRowHtml).join('') +
+      (notShown > 0 ? `<div class="dim">+${notShown} earlier not shown</div>` : '');
+    const more = document.getElementById('more-activity');
+    more.hidden = recs.length <= 10;
+    more.textContent = '+' + (recs.length - 10) + ' earlier ▸';
   } catch (e) { /* panel is best-effort */ }
 }
+document.getElementById('more-activity').onclick = () => openOverlay('full-activity', 'Activity');
 
 // ---- Phone tab + strip glance info (passive reads only) --------------------
 function appName(app) {
@@ -583,6 +681,10 @@ async function flushKeys() {
   }
 }
 window.addEventListener('keydown', (ev) => {
+  if (ovOpen) {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeOverlay(); }
+    return;
+  }
   if (!inputEnabled) return;
   if (ev.target.closest('input,textarea,button,select,[tabindex]')) return;     // typing in the paste box stays local
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
@@ -642,21 +744,49 @@ function fixCommand(fix) {
   return known ? known[1] : null;
 }
 
+let prevFails = 0;
+let checksAutoOpened = false;
 async function loadDoctor() {
   const el = document.getElementById('doctor');
-  const LABEL = '<div class="sec">Checks</div>';
-  el.innerHTML = LABEL + '<div class="dim">Running checks…</div>';
+  el.innerHTML = '<div class="dim">Running checks…</div>';
   try {
     const results = await getJSON('/api/doctor');
     const cmds = results.map(r => (r.ok ? null : fixCommand(r.fix)));
-    el.innerHTML = LABEL + results.map((r, i) => `
-      <div class="check ${r.ok ? 'ok' : 'bad'}">
-        <span class="mark">${r.ok ? 'PASS' : 'FAIL'}</span>
+    const failing = results.filter(r => !r.ok);
+    const passing = results.filter(r => r.ok);
+    // Fails first (they must never be pushed toward the clipped edge), 5 of
+    // them expanded with fix text, the rest as compact one-liners so every
+    // failure is VISIBLE even in the 10/10 worst case. Line clamps in CSS
+    // bound each card's height, so the 88vh panel provably fits.
+    const CAP = 5;
+    const expanded = failing.slice(0, CAP);
+    const compact = failing.slice(CAP, CAP + 12);
+    const overflowCount = failing.length - expanded.length - compact.length;
+    const failRows = expanded.map(r => {
+      const i = results.indexOf(r);
+      return `
+      <div class="check bad">
+        <span class="mark">FAIL</span>
         <span class="body">
           <span class="name">${r.name}</span>
           <span class="detail">${r.detail}</span>
           ${r.ok || !r.fix ? '' : `<span class="fix">fix: ${r.fix}${cmds[i] ? `<button class="copy-btn" data-i="${i}">⧉ copy</button>` : ''}</span>`}</span>
+      </div>`;
+    }).join('');
+    const compactRows = compact.map(r => `
+      <div class="check bad compact">
+        <span class="mark">FAIL</span>
+        <span class="body"><span class="name">${r.name}</span><span class="detail">${r.detail}</span></span>
       </div>`).join('');
+    const passRows = passing.map(r => `
+      <div class="check ok">
+        <span class="mark">PASS</span>
+        <span class="body"><span class="name">${r.name}</span><span class="detail">${r.detail}</span></span>
+      </div>`).join('');
+    const footer = overflowCount > 0
+      ? `<div class="dim">+${overflowCount} more failing — see \`phone-harness doctor\`</div>`
+      : '';
+    el.innerHTML = failRows + compactRows + passRows + footer;
     el.querySelectorAll('.copy-btn').forEach(b => b.onclick = async () => {
       await navigator.clipboard.writeText(cmds[b.dataset.i]);
       b.textContent = '✓ copied';
@@ -670,16 +800,25 @@ async function loadDoctor() {
     document.getElementById('sig-banner').hidden = !sigBad;
     if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
     lastDoctor = results;
-    const fails = results.filter(r => !r.ok).length;
-    document.getElementById('strip-dot').className = 'dot' + (fails ? ' bad' : '');
-    document.getElementById('strip-text').textContent =
-      fails ? fails + ' check' + (fails > 1 ? 's' : '') + ' failing' : 'All checks pass';
-    if (fails) document.getElementById('checks-wrap').hidden = false;  // auto-expand
+    const fails = failing.length;
+    document.getElementById('checks-dots').innerHTML =
+      results.map(r => '<span class="dot' + (r.ok ? '' : ' bad') + '"></span>').join('');
+    document.getElementById('checks-text').textContent =
+      fails ? fails + ' check' + (fails > 1 ? 's' : '') + ' failing' : 'All ' + results.length + ' checks pass';
+    // Auto-open only on an ok -> fail transition, once per page load, and
+    // never steal the shared overlay from a running fix job.
+    if (fails > 0 && prevFails === 0 && !checksAutoOpened && !fixRunning
+        && document.getElementById('ov').hidden) {
+      checksAutoOpened = true;
+      openOverlay('doctor', 'Checks');
+    }
+    degradeChecksToFit();  // re-render may have restored fix text; re-fit
+    prevFails = fails;
   } catch (e) {
-    el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>';
-    document.getElementById('strip-dot').className = 'dot bad';
-    document.getElementById('strip-text').textContent = 'viewer unreachable';
-    document.getElementById('checks-wrap').hidden = false;
+    el.innerHTML = '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>';
+    document.getElementById('checks-dots').innerHTML = '<span class="dot bad"></span>';
+    document.getElementById('checks-text').textContent = 'viewer unreachable';
+    prevFails = 1;
   }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
@@ -768,14 +907,14 @@ async function startFixInput() {
   fixRunning = true;
   document.getElementById('btn-fix').disabled = true;
   document.getElementById('btn-sig-fix').disabled = true;
-  document.getElementById('fix-panel').hidden = false;
+  openOverlay('fix-panel', '🔧 Enable touch input');
   await fetch('/api/fix-input', {method:'POST', headers:JSON_HDR, body:'{}'});
   pollFix();
 }
 document.getElementById('btn-fix').onclick = startFixInput;
 document.getElementById('btn-sig-fix').onclick = startFixInput;
 
-// ---- Actions tab -----------------------------------------------------------
+// ---- Actions column ---------------------------------------------------------
 function pins(key) {
   try {
     const v = JSON.parse(localStorage.getItem(key));
@@ -864,7 +1003,7 @@ function updateActionAvail() {
     if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; }
   });
 }
-// ---- Console tab -----------------------------------------------------------
+// ---- Console column ----------------------------------------------------------
 const consoleIn = document.getElementById('console-in');
 let consoleHist = pins('sidetap.console.hist');
 let histIdx = consoleHist.length;
@@ -881,6 +1020,11 @@ async function runConsole() {
   const entry = document.createElement('div');
   entry.textContent = '> ' + line + '\n…';
   out.prepend(entry);
+  while (out.children.length > 3) out.lastElementChild.remove();
+  const full = document.getElementById('full-console');
+  const fullEntry = entry.cloneNode(true);
+  full.prepend(fullEntry);
+  while (full.children.length > 6) full.lastElementChild.remove();
   consoleIn.value = '';
   const runBtn = document.getElementById('btn-console-run');
   runBtn.disabled = true; runBtn.dataset.busy = '1';
@@ -888,13 +1032,24 @@ async function runConsole() {
     const r = await fetch('/api/console', {method:'POST', headers:JSON_HDR,
                                            body: JSON.stringify({line})});
     const j = await r.json();
-    entry.textContent = '> ' + line + '\n' +
+    entry.textContent = fullEntry.textContent = '> ' + line + '\n' +
       (j.ok ? JSON.stringify(j.result === undefined ? null : j.result, null, 1)
             : '✗ ' + j.error);
-  } catch (e) { entry.textContent = '> ' + line + '\n✗ ' + e; }
-  finally { delete runBtn.dataset.busy; runBtn.disabled = !inputEnabled; }
+  } catch (e) { entry.textContent = fullEntry.textContent = '> ' + line + '\n✗ ' + e; }
+  finally {
+    delete runBtn.dataset.busy; runBtn.disabled = !inputEnabled;
+    // Entry heights are text-dependent, so the count cap alone can clip the
+    // oldest entry invisibly in a short column. Drop old entries (keeping the
+    // newest) until the box genuinely fits — render-once, no polling.
+    while (out.children.length > 1 && out.scrollHeight > out.clientHeight + 1)
+      out.lastElementChild.remove();
+    const more = document.getElementById('more-console');
+    more.hidden = full.children.length <= out.children.length;
+    more.textContent = '+' + (full.children.length - out.children.length) + ' earlier ▸';
+  }
 }
 document.getElementById('btn-console-run').onclick = runConsole;
+document.getElementById('more-console').onclick = () => openOverlay('full-console', 'Console output');
 consoleIn.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') runConsole();
   else if (ev.key === 'ArrowUp') {

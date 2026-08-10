@@ -7,6 +7,7 @@ their pids and logs kept in .state/ so `up` and `down` can manage them.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,14 @@ PROCS = ("tunnel", "runwda", "forward8100", "forward9100")
 
 
 def ios_path() -> str | None:
-    return shutil.which("ios")
+    found = shutil.which("ios")
+    if found:
+        return found
+    # Windows truncates a registry PATH past ~4095 chars when it builds the
+    # logon environment, so shortcut/Startup launches can miss the npm global
+    # dir even though terminals (which rebuild PATH in shell profiles) see it.
+    npm_exe = Path(os.environ.get("APPDATA", "")) / "npm" / "ios.exe"
+    return str(npm_exe) if npm_exe.is_file() else None
 
 
 def _run(args: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:

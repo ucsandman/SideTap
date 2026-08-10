@@ -127,6 +127,7 @@ def test_phone_endpoint_serves_passive_info(base_url):
         "battery": {"level": 0.78, "state": 2},
         "locked": False,
         "app": {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 4242},
+        "session": "stub-session",
     }
 
 
@@ -137,7 +138,12 @@ def test_phone_endpoint_degrades_per_field(base_url):
     c.locked = True
     c.app = None  # active_app() raises
     r = requests.get(base_url + "/api/phone", timeout=5)
-    assert r.json() == {"battery": None, "locked": True, "app": None}
+    assert r.json() == {
+        "battery": None,
+        "locked": True,
+        "app": None,
+        "session": "stub-session",
+    }
 
 
 def test_stop_toggle_creates_and_removes_file(base_url, tmp_path, monkeypatch):
@@ -352,6 +358,15 @@ def test_console_endpoint_rejects_unhashable_dict_key(base_url):
     )
     assert r.status_code == 400
     assert r.json()["ok"] is False
+
+
+def test_console_endpoint_non_dict_body_returns_500(base_url):
+    # A JSON array body has no .get(): payload.get("line", ...) used to raise
+    # AttributeError with no except clause, dropping the connection instead
+    # of answering. The generic Exception -> 500 fallback must catch it.
+    r = requests.post(base_url + "/api/console", json=[1, 2], timeout=5)
+    assert r.status_code == 500
+    assert "error" in r.json()
 
 
 def test_console_endpoint_surfaces_helper_error(base_url, monkeypatch):

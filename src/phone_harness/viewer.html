@@ -177,6 +177,7 @@
   /* ---- actions tab ------------------------------------------------------ */
   .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); }
   .chip { padding:5px 11px; border-radius:99px; font-size:12.5px; }
+  #app-chips .chip { text-transform:capitalize; }
   .chip .pin { margin-left:6px; opacity:.5; }
   .chip.pinned .pin { opacity:1; }
   .gap-top { margin-top:var(--s4); }
@@ -393,7 +394,11 @@ function showTab(name) {
   localStorage.setItem('sidetap.tab', name);
 }
 document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
-showTab(localStorage.getItem('sidetap.tab') || 'actions');
+{
+  const storedTab = localStorage.getItem('sidetap.tab');
+  const validTabs = ['actions', 'agent', 'phone', 'console'];
+  showTab(validTabs.includes(storedTab) ? storedTab : 'actions');
+}
 
 // ---- status strip ----------------------------------------------------------
 document.getElementById('strip-main').onclick = () => {
@@ -459,6 +464,7 @@ async function loadPhone() {
         : (p.locked ? 'Locked' : 'Unlocked') + ' (display-only)'],
       ['Front app', p.app ? appName(p.app) + ' · ' + (p.app.bundleId || '') : '—'],
       ['Screen', points ? points.width + ' × ' + points.height + ' pt' : '—'],
+      ['Session', p.session ? String(p.session).slice(0, 8) : '—'],
       ['Input signature', sig ? sig.detail : '—'],
     ];
     document.getElementById('phone-rows').innerHTML = rows.map(([k, v]) =>
@@ -469,6 +475,7 @@ async function loadPhone() {
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
   loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity(); loadPhone();
+  getJSON('/api/apps').then(j => { knownApps = j.known; renderAppChips(); }).catch(() => {});
   poll();
   setInterval(loadStatus, 5000);
   setInterval(loadSent, 5000);
@@ -577,7 +584,7 @@ async function flushKeys() {
 }
 window.addEventListener('keydown', (ev) => {
   if (!inputEnabled) return;
-  if (ev.target.closest('input,textarea')) return;     // typing in the paste box stays local
+  if (ev.target.closest('input,textarea,button,select,[tabindex]')) return;     // typing in the paste box stays local
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
   let ch = null;
   if (ev.key === 'Enter') ch = '\n';
@@ -770,7 +777,10 @@ document.getElementById('btn-sig-fix').onclick = startFixInput;
 
 // ---- Actions tab -----------------------------------------------------------
 function pins(key) {
-  try { return JSON.parse(localStorage.getItem(key)) || []; } catch (e) { return []; }
+  try {
+    const v = JSON.parse(localStorage.getItem(key));
+    return Array.isArray(v) ? v : [];
+  } catch (e) { return []; }
 }
 function togglePin(key, name, render) {
   const p = pins(key);
@@ -809,7 +819,7 @@ function renderAppChips() {
   const wrap = document.getElementById('app-chips');
   const pinned = pins('sidetap.pins.apps');
   const rest = knownApps.filter(n => !pinned.includes(n));
-  wrap.replaceChildren(...[...pinned, ...rest].map(name =>
+  wrap.replaceChildren(...[...pinned, ...rest].slice(0, 12).map(name =>
     chip(name, pinned.includes(name),
       async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.dataset.busy = '1';
@@ -824,8 +834,6 @@ function renderAppChips() {
       () => togglePin('sidetap.pins.apps', name, renderAppChips))));
   updateActionAvail();
 }
-getJSON('/api/apps').then(j => { knownApps = j.known; renderAppChips(); })
-  .catch(() => {});
 document.getElementById('btn-text-send').onclick = async () => {
   const to = document.getElementById('text-to').value.trim();
   const message = document.getElementById('text-msg').value;
@@ -861,6 +869,7 @@ const consoleIn = document.getElementById('console-in');
 let consoleHist = pins('sidetap.console.hist');
 let histIdx = consoleHist.length;
 async function runConsole() {
+  if (document.getElementById('btn-console-run').dataset.busy) return;
   const line = consoleIn.value.trim();
   if (!line) return;
   consoleHist.push(line);

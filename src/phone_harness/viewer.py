@@ -339,6 +339,7 @@ class Handler(BaseHTTPRequestHandler):
                     info["app"] = self.client.active_app()
                 except WDAError:
                     pass
+                info["session"] = self.client.session_id
                 _LAST_PHONE = info
                 self._json(info)
             elif path == "/api/doctor":
@@ -362,6 +363,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, 502)
         except (ConnectionAbortedError, BrokenPipeError):
             pass
+        except Exception as exc:
+            self._json({"error": str(exc)}, 500)
 
     def do_POST(self):  # noqa: vulture
         if not self._allowed():
@@ -445,7 +448,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)})
                     return
-                self._json({"ok": bool(result.get("sent")), "result": result})
+                body = json.dumps(
+                    {
+                        "ok": bool(result.get("sent"))
+                        if isinstance(result, dict)
+                        else False,
+                        "result": result,
+                    },
+                    default=repr,
+                )
+                self._send(200, body.encode(), "application/json")
             elif path == "/api/open-app":
                 from . import helpers
 
@@ -486,6 +498,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, 502)
         except (ConnectionAbortedError, BrokenPipeError):
             pass
+        except Exception as exc:
+            self._json({"error": str(exc)}, 500)
 
 
 class _Server(ThreadingHTTPServer):

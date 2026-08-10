@@ -754,14 +754,14 @@ function renderAppChips() {
   wrap.replaceChildren(...[...pinned, ...rest].map(name =>
     chip(name, pinned.includes(name),
       async (ev) => {
-        const b = ev.currentTarget; b.disabled = true;
+        const b = ev.currentTarget; b.disabled = true; b.dataset.busy = '1';
         try {
           const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
                                                   body: JSON.stringify({name})});
           const j = await r.json();
           if (!j.ok) showHint(j.error || 'Could not open ' + name);
         } catch (e) { showHint('Could not open ' + name); }
-        b.disabled = !inputEnabled;
+        finally { delete b.dataset.busy; b.disabled = !inputEnabled; }
       },
       () => togglePin('sidetap.pins.apps', name, renderAppChips))));
   updateActionAvail();
@@ -773,7 +773,7 @@ document.getElementById('btn-text-send').onclick = async () => {
   const message = document.getElementById('text-msg').value;
   if (!to || !message.trim()) { showHint('Contact and message are both needed.'); return; }
   const btn = document.getElementById('btn-text-send');
-  btn.disabled = true; btn.textContent = 'Sending…';
+  btn.disabled = true; btn.textContent = 'Sending…'; btn.dataset.busy = '1';
   try {
     const r = await fetch('/api/text', {method:'POST', headers:JSON_HDR,
                                         body: JSON.stringify({to, message})});
@@ -782,18 +782,20 @@ document.getElementById('btn-text-send').onclick = async () => {
                   : (j.error || 'Send not confirmed — check Recent sends.'));
     if (j.ok) document.getElementById('text-msg').value = '';
   } catch (e) { showHint('Send failed.'); }
-  btn.disabled = !inputEnabled; btn.textContent = 'Send';
+  finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; btn.textContent = 'Send'; }
   loadSent(); renderContactChips();
 };
 // Action controls need the input driver; grey them out with a reason otherwise.
 function updateActionAvail() {
   const tip = inputEnabled ? '' : 'Touch input is down — see checks';
+  // A send/open in flight owns its own disabled state until it finishes —
+  // the 5s status poll must not re-enable a button mid-request (double-send risk).
   ['btn-text-send', 'btn-console-run'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { el.disabled = !inputEnabled; el.title = tip; }
+    if (el && !el.dataset.busy) { el.disabled = !inputEnabled; el.title = tip; }
   });
   document.querySelectorAll('#app-chips .chip').forEach(c => {
-    c.disabled = !inputEnabled; c.title = tip;
+    if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; }
   });
 }
 </script>

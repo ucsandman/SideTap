@@ -39,6 +39,10 @@ class StubClient:
     battery_info = None  # set to a dict to make battery() succeed
     locked = None  # set to a bool to make is_locked() succeed
     app = None  # set to a dict to make active_app() succeed
+    up = True  # set False to simulate WDA not answering
+
+    def is_up(self):
+        return self.up
 
     def battery(self):
         if self.battery_info is None:
@@ -377,3 +381,43 @@ def test_console_endpoint_surfaces_helper_error(base_url, monkeypatch):
     r = requests.post(base_url + "/api/console", json={"line": "ocr()"}, timeout=5)
     assert r.status_code == 200
     assert r.json() == {"ok": False, "error": "no text 'X' on screen"}
+
+
+# ---- self-healing link: deep sleep kills WDA (iOS killed the test runner,
+# seen live 2026-08-10) and nothing over USB can wake the phone. The watchdog
+# waits for the human to wake it (lockdown answers again) and reruns up().
+
+
+def test_should_heal_only_when_woken_and_down(monkeypatch):
+    monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
+    heal = viewer._should_heal
+    assert heal(100.0, wda_up=False, lockdown_ok=True, stopped=False)
+    assert not heal(100.0, wda_up=True, lockdown_ok=True, stopped=False)
+    assert not heal(
+        100.0, wda_up=False, lockdown_ok=False, stopped=False
+    )  # still asleep
+    assert not heal(100.0, wda_up=False, lockdown_ok=True, stopped=True)  # kill switch
+
+
+def test_should_heal_honors_cooldown(monkeypatch):
+    monkeypatch.setitem(viewer._HEAL, "cooldown_until", 500.0)
+    assert not viewer._should_heal(499.0, wda_up=False, lockdown_ok=True, stopped=False)
+    assert viewer._should_heal(500.0, wda_up=False, lockdown_ok=True, stopped=False)
+
+
+def test_unlock_endpoint_names_the_fix_when_link_down(base_url, monkeypatch):
+    # Unlock's wake/swipe goes THROUGH WDA; with WDA dead the button used to
+    # time out silently. It must say what to actually do instead.
+    def _no_unlock(*a, **k):
+        raise AssertionError("unlock must not run while the link is down")
+
+    monkeypatch.setattr("phone_harness.helpers.unlock", _no_unlock)
+    viewer.Handler.client.up = False
+    try:
+        r = requests.post(base_url + "/api/unlock", json={}, timeout=5)
+    finally:
+        viewer.Handler.client.up = True
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert "wake" in j["error"].lower()

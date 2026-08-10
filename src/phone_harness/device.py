@@ -99,19 +99,50 @@ def list_apps() -> list[dict]:
     return apps
 
 
+def _wda_cache_file() -> Path:
+    return config.STATE_DIR / "wda_bundle"
+
+
 def detect_wda_bundle() -> str | None:
-    """Find the installed WebDriverAgent runner. .env WDA_BUNDLE_ID wins."""
+    """Find the installed WebDriverAgent runner. .env WDA_BUNDLE_ID wins.
+
+    Deep sleep gates the app list (`ios apps --list` comes back EMPTY while
+    the app is still installed — seen live 2026-08-10), so a successful live
+    detection is cached in .state/wda_bundle and an empty list falls back to
+    that cache. A NON-empty list without WDA means genuinely uninstalled and
+    ignores the cache.
+    """
     if config.WDA_BUNDLE_ID:
         return config.WDA_BUNDLE_ID
     try:
         apps = list_apps()
     except (DeviceError, subprocess.TimeoutExpired):
-        return None
+        apps = []
     for app in apps:
         bid = app["bundle_id"].lower()
         if "webdriveragent" in bid or bid.endswith(".xctrunner"):
+            try:
+                config.STATE_DIR.mkdir(exist_ok=True)
+                _wda_cache_file().write_text(app["bundle_id"], encoding="utf-8")
+            except OSError:
+                pass
             return app["bundle_id"]
+    if not apps:
+        try:
+            return _wda_cache_file().read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
     return None
+
+
+def lockdown_ready() -> bool:
+    """Can we talk lockdown right now? Deep sleep gates it (ReadPair errors,
+    exit 1) while tunnel services like screenshot keep working — so this is
+    the cheap "has the human woken the phone yet" probe."""
+    try:
+        return _run(["date"], timeout=10).returncode == 0
+    except (DeviceError, subprocess.TimeoutExpired):
+        return False
 
 
 def tunnel_running() -> bool:

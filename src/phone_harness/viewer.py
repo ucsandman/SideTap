@@ -19,7 +19,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import admin, capture, config
+from . import admin, capture, config, device
 from .wda_client import WDAClient, WDAError, stop_engaged, stop_file
 
 _HTML = Path(__file__).with_name("viewer.html")
@@ -45,6 +45,43 @@ _LAST_STATUS: dict | None = None
 # Last good /api/phone payload, served while a gesture holds _ACTION_LOCK
 # (same reasoning as _LAST_STATUS).
 _LAST_PHONE: dict | None = None
+
+# Self-healing link. Deep sleep kills WDA (iOS kills the test runner ~15min
+# after the screen goes dark; watched it die live 2026-08-10) and NOTHING over
+# USB can wake the phone — lockdown itself is gated while it sleeps (ReadPair
+# errors) even though tunnel services keep working. So the watchdog waits for
+# the human to wake the phone (lockdown answers again) and then reruns up()
+# with zero clicks. The cool-down keeps a genuinely broken link (e.g. expired
+# signature) from being up()'ed in a loop.
+_HEAL = {"cooldown_until": 0.0}
+_HEAL_POLL = 20.0  # seconds between watchdog looks
+_HEAL_COOLDOWN = 300.0  # after a failed up(): don't thrash a broken link
+
+
+def _should_heal(now: float, *, wda_up: bool, lockdown_ok: bool, stopped: bool) -> bool:
+    if stopped or wda_up or not lockdown_ok:
+        return False
+    return now >= _HEAL["cooldown_until"]
+
+
+def _heal_loop() -> None:
+    probe = WDAClient(timeout=3)
+    while True:
+        time.sleep(_HEAL_POLL)
+        try:
+            if _should_heal(
+                time.monotonic(),
+                wda_up=probe.is_up(),
+                lockdown_ok=device.lockdown_ready(),
+                stopped=stop_engaged(),
+            ):
+                ok = admin.up() == 0
+                _HEAL["cooldown_until"] = time.monotonic() + (
+                    60.0 if ok else _HEAL_COOLDOWN
+                )
+        except Exception:
+            _HEAL["cooldown_until"] = time.monotonic() + _HEAL_COOLDOWN
+
 
 # LAN exposure, probed in the background (the port probe can take a second) and
 # surfaced as a persistent banner on the phone pane — not only inside the
@@ -406,6 +443,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/unlock":
                 from . import helpers
 
+                # Unlock's wake/swipe goes THROUGH WDA. When deep sleep killed
+                # WDA the button used to time out silently — say what to do.
+                if not self.client.is_up():
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": (
+                                "Phone link is down (deep sleep kills it). Wake "
+                                "the phone with its side button — the link "
+                                "reconnects automatically, then Unlock works."
+                            ),
+                        }
+                    )
+                    return
                 with _ACTION_LOCK:
                     # Reuse the viewer's client: unlock is timing-sensitive,
                     # and a fresh client would redo session discovery mid-wake.
@@ -530,6 +581,7 @@ def _kill_stale_viewer() -> None:
 def serve(open_browser: bool = True) -> int:  # noqa: vulture
     _kill_stale_viewer()
     _refresh_lan_state()
+    threading.Thread(target=_heal_loop, daemon=True).start()
     server = _Server(("127.0.0.1", config.VIEWER_PORT), Handler)
     url = f"http://127.0.0.1:{config.VIEWER_PORT}"
     print(f"Viewer: {url}  (Ctrl+C to stop)")

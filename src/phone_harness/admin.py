@@ -80,6 +80,21 @@ def _check_wda_installed():
     bundle = device.detect_wda_bundle()
     if bundle:
         return True, f"WebDriverAgent installed: {bundle}", ""
+    # No bundle: separate "phone asleep (empty app list)" from "really absent".
+    # Deep sleep empties the list while the app is still installed (2026-08-10).
+    try:
+        apps = device.list_apps()
+    except Exception:
+        apps = []
+    if not apps:
+        return (
+            False,
+            "cannot list apps — phone asleep or locked?",
+            (
+                "Wake the phone (side button). The viewer restarts the link "
+                "automatically; or run: phone-harness up"
+            ),
+        )
     return (
         False,
         "WebDriverAgent app not found on the phone",
@@ -112,8 +127,9 @@ def _check_wda_responding():
         False,
         f"WDA not answering at {config.WDA_URL}",
         (
-            "Click 'Restart link' in the viewer (or run: phone-harness up) - this is "
-            "the fix after a replug. If it fails right after a working week, the "
+            "If the phone was asleep, wake it (side button) - the viewer restarts "
+            "the link automatically. After a replug: click 'Restart link' (or run: "
+            "phone-harness up). If it fails right after a working week, the "
             "free-ID signature likely expired (7 days) - re-sign WDA in Sideloadly."
         ),
     )

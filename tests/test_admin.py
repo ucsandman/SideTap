@@ -122,3 +122,46 @@ def test_stop_check_runs_first():
     # Doctor's advice is "fix the first FAIL"; a forgotten kill switch must be
     # the first thing named, not buried under infra checks.
     assert admin.CHECKS[0][1] is admin._check_stop_engaged
+
+
+# ---- WDA-installed check: deep sleep empties the app list (seen live
+# 2026-08-10). "Empty list" must read as "phone asleep", never as "go
+# re-sideload the app you installed yesterday".
+
+
+def test_wda_check_passes_via_cache_while_asleep(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")
+    monkeypatch.setattr(admin.device, "list_devices", lambda: ["00008150-X"])
+    monkeypatch.setattr(admin.device, "list_apps", lambda: [])
+    (tmp_path / "wda_bundle").write_text("com.x.cached.xctrunner", encoding="utf-8")
+    ok, detail, _fix = admin._check_wda_installed()
+    assert ok
+    assert "com.x.cached.xctrunner" in detail
+
+
+def test_wda_check_names_sleep_when_list_empty_and_no_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")
+    monkeypatch.setattr(admin.device, "list_devices", lambda: ["00008150-X"])
+    monkeypatch.setattr(admin.device, "list_apps", lambda: [])
+    ok, detail, fix = admin._check_wda_installed()
+    assert not ok
+    assert "asleep" in detail.lower() or "locked" in detail.lower()
+    assert "wake" in fix.lower()
+    assert "sideload" not in fix.lower()
+
+
+def test_wda_check_still_fails_when_really_uninstalled(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")
+    monkeypatch.setattr(admin.device, "list_devices", lambda: ["00008150-X"])
+    monkeypatch.setattr(
+        admin.device,
+        "list_apps",
+        lambda: [{"bundle_id": "com.apple.mobilesafari", "name": ""}],
+    )
+    ok, detail, fix = admin._check_wda_installed()
+    assert not ok
+    assert "not found" in detail
+    assert "Sideload" in fix

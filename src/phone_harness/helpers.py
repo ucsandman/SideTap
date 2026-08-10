@@ -347,9 +347,16 @@ def _go_back() -> bool:
     """Tap the nav back button; wait until the thread header is gone.
 
     Polling matters: a second tap issued mid-animation lands on the list's
-    profile button and opens its menu (seen on device 2026-08-09).
+    profile button and opens its menu (seen on device 2026-08-09). Same trap
+    when no thread is open at all: the list's profile button passes the
+    geometry test too, so back out only when a compose bar proves a thread is
+    actually on screen (bit live 2026-08-10 — a missed row tap ended with the
+    profile menu open).
     """
-    back = _nav_back_button(ui_tree())
+    tree = ui_tree()
+    if not any(e["type"] == "TextField" for e in collect_texts(tree)):
+        return False  # no compose bar: not in a thread — nothing to back out of
+    back = _nav_back_button(tree)
     if back is None:
         return False
     tap(back["x"], back["y"])
@@ -360,16 +367,37 @@ def _go_back() -> bool:
     return True
 
 
+def _conversation_cells(tree: dict, contact: str) -> list[dict]:
+    """Conversation candidates in Messages search results. Pure (unit-tested).
+
+    Search results name conversations with bare Cells ('Wes Sander' — none of
+    the preview/date chrome list rows carry; verified on device 2026-08-10).
+    The 'Messages with: <name>' filter row is chrome, and message-content hits
+    are not Cells, so a Cell that clears _title_matches/_leads_with is a
+    conversation. Ordered exact-name first, like find_text.
+    """
+    needle = contact.strip().lower()
+    out = []
+    for el in collect_texts(tree):
+        label = el["text"].strip()
+        if el["type"] != "Cell" or label.lower().startswith("messages with:"):
+            continue
+        if _title_matches(label, contact) or _leads_with(label, contact):
+            out.append(el)
+    out.sort(key=lambda e: e["text"].strip().lower() != needle)
+    return out
+
+
 def _open_thread(contact: str) -> str | None:
     """Open the Messages conversation for `contact`; return the thread title.
 
-    Group labels make list rows unparseable ('Mom & Elissa, …' vs
-    'Elissa, <preview>'), so candidates are verified by OPENING them: the
-    thread header names 1:1 threads exactly; a wrong thread is backed out of
-    and the next candidate tried (near misses get marked read on the phone —
-    the price of verifying by opening). Returns None when an unnameable
-    (group) thread was opened via a row that leads with `contact`. Handles
-    Messages resuming mid-thread and rows scrolled off screen (bounded).
+    Finds the thread by TYPING the name into the list's search field — the
+    old scroll-the-list hunt tapped rows mid-settle and missed (bit live
+    2026-08-10). Candidates are still verified by OPENING them: the thread
+    header names 1:1 threads exactly; a wrong thread is backed out of (back
+    lands on the still-filtered results) and the next candidate tried.
+    Returns None when an unnameable (group) thread was opened via a cell that
+    leads with `contact`. Handles Messages resuming mid-thread or mid-search.
     """
     open_app("messages")
     wait_stable(timeout=8)
@@ -385,44 +413,62 @@ def _open_thread(contact: str) -> str | None:
         if not _go_back():
             break  # cannot navigate out; the loud failures below take over
 
-    if not find_text(contact):  # the row may be above or below the fold
-        for direction in ("up", "up", "down", "down", "down"):
-            scroll(direction, 0.6)
-            if find_text(contact):
-                break
+    fields = [e for e in ocr() if e["type"] == "SearchField"]
+    if not fields:
+        raise WDAError(
+            "Messages search field not found — is the conversation list on "
+            "screen? Call ocr() to check."
+        )
+    tap(fields[0]["x"], fields[0]["y"])
+    time.sleep(0.8)  # keyboard slide-up
+    # Messages can resume mid-search with a stale query; clear it before typing.
+    stale = [e for e in ocr() if e["type"] == "Button" and e["text"] == "Clear text"]
+    if stale:
+        tap(stale[0]["x"], stale[0]["y"])
+    type_text(contact)
+
+    # Poll for result cells: the caret blink defeats wait_stable here. Be
+    # patient — /source takes ~3s on a busy screen, so a short window only
+    # fits 2 reads and a just-woken phone missed it (bit live 2026-08-10).
+    deadline = time.monotonic() + 20
+    while not _conversation_cells(ui_tree(), contact):
+        if time.monotonic() >= deadline:
+            raise WDAError(
+                f"No conversation named {contact!r} in Messages search. "
+                "Check the name, or open the conversation by hand."
+            )
+        time.sleep(0.5)
+        _invalidate_tree()
 
     tried: set[str] = set()
     for _ in range(3):
-        rows = [
-            r
-            for r in _dedup_rows(find_text(contact))
-            if r["text"].strip().lower() not in tried
+        cells = [
+            c
+            for c in _dedup_rows(_conversation_cells(ui_tree(), contact))
+            if c["text"].strip().lower() not in tried
         ]
-        if not rows:
+        if not cells:
             raise WDAError(
-                f"Contact {contact!r} not found in the Messages list (or every "
-                "match opened the wrong thread). Scroll to the conversation or "
-                "open it by hand, then retry."
+                f"Every search match for {contact!r} opened the wrong thread. "
+                "Open the conversation by hand, then retry."
             )
-        # find_text orders exact-first; prefer rows that lead with the name.
-        rows.sort(key=lambda r: not _leads_with(r["text"], contact))
-        row = rows[0]
-        sole = len(rows) == 1
-        tried.add(row["text"].strip().lower())
-        tap(row["x"], row["y"])
+        cell = cells[0]
+        sole = len(cells) == 1
+        tried.add(cell["text"].strip().lower())
+        tap(cell["x"], cell["y"])
         wait_stable(timeout=8)
         title = _thread_title(ui_tree())
         if title is not None and _title_matches(title, contact):
             return title
-        if title is None and sole and _leads_with(row["text"], contact):
-            return None  # a group thread opened via its own leading row
+        if title is None and sole and _leads_with(cell["text"], contact):
+            return None  # a group thread opened via its own leading cell
         if not _go_back():
             raise WDAError(
                 f"Opened thread is {title!r}, expected {contact!r} — aborting."
             )
     raise WDAError(
-        f"Contact {contact!r} is ambiguous in the Messages list — no candidate "
-        "row opened a matching thread. Open the conversation by hand."
+        f"Contact {contact!r} is ambiguous in Messages search — no candidate "
+        "opened a matching thread. Open the conversation by hand."
     )
 
 

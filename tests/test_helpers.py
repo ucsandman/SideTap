@@ -609,3 +609,62 @@ def test_load_env(tmp_path):
 
 def test_load_env_missing_file(tmp_path):
     assert _load_env(tmp_path / "nope.env") == {}
+
+
+def _search_tree(*children):
+    return {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+        "children": list(children),
+    }
+
+
+def _search_cell(label, x=16, y=126):
+    """A Messages search-result cell: bare conversation name, no preview
+    chrome (real device structure, iOS 18, 2026-08-10)."""
+    return {
+        "type": "Cell",
+        "label": label,
+        "isVisible": "1",
+        "rect": {"x": x, "y": y, "width": 102, "height": 88},
+    }
+
+
+def test_conversation_cells_real_search_structure():
+    tree = _search_tree(
+        _search_cell("Wes Sander"),
+        _search_cell("Messages with: Wes Sander", y=233),  # filter row: chrome
+        {  # message-content hit: not a Cell, never a candidate
+            "type": "StaticText",
+            "label": "Wes Sander",
+            "isVisible": "1",
+            "rect": {"x": 16, "y": 331, "width": 67, "height": 14},
+        },
+        {  # the search field echoes the typed name; not a Cell either
+            "type": "SearchField",
+            "label": "wes sander",
+            "isVisible": "1",
+            "rect": {"x": 16, "y": 583, "width": 347, "height": 38},
+        },
+    )
+    cells = helpers._conversation_cells(tree, "wes sander")
+    assert [c["text"] for c in cells] == ["Wes Sander"]
+
+
+def test_conversation_cells_group_never_matches_single_contact():
+    # 'Kirk & Alex' must not be a candidate for contact 'Alex' — that is how
+    # a send lands in a group chat.
+    tree = _search_tree(_search_cell("Kirk & Alex"))
+    assert helpers._conversation_cells(tree, "Alex") == []
+    assert [c["text"] for c in helpers._conversation_cells(tree, "Kirk & Alex")] == [
+        "Kirk & Alex"
+    ]
+
+
+def test_conversation_cells_exact_name_ordered_first():
+    tree = _search_tree(
+        _search_cell("Wes Sander Jr", x=16),
+        _search_cell("Wes Sander", x=130),
+    )
+    cells = helpers._conversation_cells(tree, "Wes Sander")
+    assert [c["text"] for c in cells] == ["Wes Sander", "Wes Sander Jr"]

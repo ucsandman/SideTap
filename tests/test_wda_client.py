@@ -325,6 +325,12 @@ def test_actions_land_in_activity_feed(wda, tmp_path, monkeypatch):
     assert actions == ["tap (10, 20)", "type (6 chars)"]
 
 
+def test_activity_feed_says_one_char_not_one_chars(wda, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    wda.type_text("x")
+    assert [r["action"] for r in _feed_lines(tmp_path)] == ["type (1 char)"]
+
+
 def test_activity_feed_never_records_typed_text(wda, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     wda.type_text("hunter2")

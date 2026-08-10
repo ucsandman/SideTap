@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>phone-harness viewer</title>
+<title>sidetap</title>
 <style>
   :root {
     --bg:#101418; --panel:#1a2129; --panel2:#222b36; --line:#313b46;
@@ -265,7 +265,7 @@
 <body>
   <div id="phone-pane">
     <div id="lan-banner" hidden>
-      <span>⚠ Phone control ports are open to your network — WDA has no auth.</span>
+      <span>⚠ Phone control ports are open to your network. WDA has no auth.</span>
       <button id="btn-lan-lock">Lock ports</button>
     </div>
     <div id="sig-banner" hidden>
@@ -294,7 +294,7 @@
       </div>
       <div id="paste-row" hidden>
         <textarea id="paste-text" rows="1"
-          placeholder="Paste text — sends to the focused field"></textarea>
+          placeholder="Paste text. Sends to the focused field"></textarea>
         <button id="btn-paste-send">Send text</button>
       </div>
     </div>
@@ -302,7 +302,7 @@
   </div>
   <div id="side">
     <div id="dash-header">
-      <h1 title="Your iPhone, driven from Windows over USB.">phone-harness</h1>
+      <h1 title="Your iPhone, driven from Windows over USB.">sidetap</h1>
       <button id="hdr-checks" title="Show all checks">
         <span id="checks-dots"></span><span id="checks-text">Checking…</span>
       </button>
@@ -335,19 +335,18 @@
       <div id="col-phone" class="col">
         <div class="sec">Phone</div>
         <div id="phone-rows" class="dim">Waiting for phone…</div>
-        <div class="dim gap-top">Passive reads only — nothing here touches the phone.</div>
+        <div class="dim gap-top">Passive reads only. Nothing here touches the phone.</div>
       </div>
       <div id="col-console" class="col">
         <button class="sec" id="debug-toggle">Debug ▸</button>
         <div class="dim" id="debug-blurb">
           The agent's own helpers, run by hand. Use the phone pane for normal
-          control — open this when a helper misbehaves (see what
-          <code>ocr()</code> sees) or you want copyable output
-          (<code>read_messages("Mom")</code>).
+          control. Open this when a helper misbehaves: see what
+          <code>ocr()</code> sees, or get copyable output.
         </div>
         <div id="debug-body" hidden>
           <div id="console-row">
-            <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
+            <input id="console-in" placeholder='tap_text("General") · Enter runs, ↑ history' spellcheck="false">
             <button id="btn-console-run">Run</button>
           </div>
           <div id="console-out" hidden></div>
@@ -375,7 +374,7 @@
           <div class="dim" id="fix-body">
             Touch input needs WebDriverAgent re-signed. Click <b>Fix input</b>, then in
             Sideloadly load <code>wda/WebDriverAgent.ipa</code> and press Start. It signs
-            the driver locally with your existing Apple ID — no password re-entry.
+            the driver locally with your existing Apple ID. No password re-entry.
           </div>
           <div id="fix-steps"></div>
         </div>
@@ -799,7 +798,7 @@ async function loadDoctor() {
         <span class="body"><span class="name">${r.name}</span><span class="detail">${r.detail}</span></span>
       </div>`).join('');
     const footer = overflowCount > 0
-      ? `<div class="dim">+${overflowCount} more failing — see \`phone-harness doctor\`</div>`
+      ? `<div class="dim">+${overflowCount} more failing. Run \`phone-harness doctor\`</div>`
       : '';
     el.innerHTML = failRows + compactRows + passRows + footer;
     el.querySelectorAll('.copy-btn').forEach(b => b.onclick = async () => {
@@ -843,8 +842,8 @@ document.getElementById('btn-up').onclick = async () => {
   try {
     const r = await fetch('/api/up', {method:'POST', headers:JSON_HDR, body:'{}'});
     const j = await r.json();
-    showHint(j.ok ? 'Link is up.' : 'Restart failed — see checks.');
-  } catch (e) { showHint('Restart failed — see checks.'); }
+    showHint(j.ok ? 'Link is up.' : 'Restart failed. See checks.');
+  } catch (e) { showHint('Restart failed. See checks.'); }
   btn.disabled = false; btn.textContent = 'Restart link';
   loadDoctor();
 };
@@ -882,7 +881,7 @@ document.getElementById('btn-paste-send').onclick = async () => {
     const r = await fetch('/api/type', {method:'POST', headers:JSON_HDR,
                                         body: JSON.stringify({text})});
     if (r.ok) box.value = '';
-    else showHint('Send failed — is a text field focused?');
+    else showHint('Send failed. Is a text field focused?');
   } finally { btn.disabled = false; }
 };
 
@@ -904,7 +903,7 @@ function renderFix(job) {
     if (i < cur || job.step === 'done') cls += ' done';
     else if (i === cur) cls += ' on';
     const mark = (i < cur || job.step === 'done') ? '✓' : (i === cur ? '▶' : '·');
-    return `<div class="${cls}"><span class="m">${mark}</span><span>${label}${i === cur && job.message ? ' — ' + job.message : ''}</span></div>`;
+    return `<div class="${cls}"><span class="m">${mark}</span><span>${label}${i === cur && job.message ? ' · ' + job.message : ''}</span></div>`;
   }).join('');
   const err = job.step === 'error' ? `<div class="fstep err"><span class="m">✗</span><span>${job.message}</span></div>` : '';
   document.getElementById('fix-steps').innerHTML = html + err;

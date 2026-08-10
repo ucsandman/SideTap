@@ -78,7 +78,8 @@ def _activity_summary(path: str, payload: dict | None) -> str | None:
     if path == "/wda/unlock":
         return "wake"
     if path.endswith("/wda/keys"):
-        return f"type ({len(payload.get('value') or [])} chars)"
+        n = len(payload.get("value") or [])
+        return f"type ({n} char{'' if n == 1 else 's'})"
     if path.endswith("/wda/pressButton"):
         return f"button: {payload.get('name', '?')}"
     if path.endswith("/wda/apps/launch"):

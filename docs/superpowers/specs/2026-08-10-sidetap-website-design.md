@@ -31,10 +31,13 @@ jailbreak. Kill switch included.").
   Apple sign-in server-side skirts Apple ToS and holds user credentials; hard no.
   **Sponsorware alone** — keeps goodwill, earns approximately nothing.
 - The wedge is the sharpest recurring pain: **free Apple ID signatures die every 7
-  days**. Pro = "never re-sign again": fully automated local renewal, multi-device
-  support, priority support. Price hypothesis **$49/yr** (below one month of any
-  device-farm service; well below the $99/yr Apple developer account it substitutes
-  for).
+  days**. Revised 2026-08-10 after a ToS review: automating the free-ID renewal
+  (AltStore-style Apple-auth emulation) is gray-to-violating under the Apple
+  developer agreement, can be broken by Apple at any time, and means handling
+  customer Apple credentials. Not a paid product. Pro instead sells the honest
+  fixes: **multi-device** (2+ iPhones from one PC, purely local, no ToS exposure),
+  **guided 1-year signing** using the customer's own $99/yr Apple developer
+  account, and priority support. Price hypothesis **$49/yr**.
 - Validation first: the site ships a **waitlist** (email capture → Resend →
   wes@practicalsystems.io). Stripe products/prices are created only after explicit
   approval, once the waitlist shows demand. This respects the billing-approval rule

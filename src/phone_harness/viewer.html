@@ -180,6 +180,9 @@
   .chip .pin { margin-left:6px; opacity:.5; }
   .chip.pinned .pin { opacity:1; }
   .gap-top { margin-top:var(--s4); }
+  .prow { display:flex; justify-content:space-between; gap:var(--s2); padding:7px 2px;
+          border-bottom:1px solid var(--line); font-size:13px; }
+  .prow .k { color:var(--dim); }
   #text-to { width:100%; margin-bottom:var(--s1); }
   #text-to, #text-msg { background:var(--panel); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px; }
@@ -280,7 +283,11 @@
         <div id="sent-list"></div>
       </div>
     </div>
-    <div id="tab-phone" class="tabpane" hidden></div>
+    <div id="tab-phone" class="tabpane" hidden>
+      <div class="sec">Phone</div>
+      <div id="phone-rows" class="dim">Waiting for phone…</div>
+      <div class="dim gap-top">Passive reads only — nothing here touches the phone.</div>
+    </div>
     <div id="tab-console" class="tabpane" hidden>
       <div class="sec">Console</div>
       <div id="console-row">
@@ -430,14 +437,44 @@ async function loadActivity() {
   } catch (e) { /* panel is best-effort */ }
 }
 
+// ---- Phone tab + strip glance info (passive reads only) --------------------
+function appName(app) {
+  return (app && (app.name || String(app.bundleId || '').split('.').pop())) || '?';
+}
+async function loadPhone() {
+  try {
+    const p = await getJSON('/api/phone');
+    const bits = [];
+    if (p.battery && p.battery.level != null)
+      bits.push('🔋' + Math.round(p.battery.level * 100) + '%');
+    if (p.locked != null) bits.push(p.locked ? '🔒' : '🔓');
+    if (p.app) bits.push(appName(p.app));
+    document.getElementById('strip-info').textContent = bits.join('  ');
+    const sig = lastDoctor.find(r => r.name === 'input signature (7-day)');
+    const rows = [
+      ['Battery', p.battery && p.battery.level != null
+        ? Math.round(p.battery.level * 100) + '%' + (p.battery.state === 2 ? ' · charging' : '')
+        : '—'],
+      ['Lock state', p.locked == null ? '—'
+        : (p.locked ? 'Locked' : 'Unlocked') + ' (display-only)'],
+      ['Front app', p.app ? appName(p.app) + ' · ' + (p.app.bundleId || '') : '—'],
+      ['Screen', points ? points.width + ' × ' + points.height + ' pt' : '—'],
+      ['Input signature', sig ? sig.detail : '—'],
+    ];
+    document.getElementById('phone-rows').innerHTML = rows.map(([k, v]) =>
+      `<div class="prow"><span class="k">${k}</span><span>${escapeHtml(v)}</span></div>`).join('');
+  } catch (e) { /* passive info is best-effort */ }
+}
+
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
-  loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity();
+  loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity(); loadPhone();
   poll();
   setInterval(loadStatus, 5000);
   setInterval(loadSent, 5000);
   setInterval(loadStop, 5000);
   setInterval(loadActivity, 3000);
+  setInterval(loadPhone, 10000);
 });
 
 // ---- kill switch: blocks all agent actions until resumed -------------------

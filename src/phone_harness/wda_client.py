@@ -273,9 +273,14 @@ class WDAClient:
     def active_app(self) -> dict:
         return self._session_request("GET", "/wda/activeAppInfo")
 
-    # Kept but unused on purpose: /wda/locked can report unlocked with the
-    # passcode pad on screen (a test pins that unlock() never consults it).
-    def is_locked(self) -> bool:  # noqa: vulture
+    def battery(self) -> dict:
+        """Raw WDA battery info: {level: 0..1, state: int} (state 2 = charging)."""
+        return self._session_request("GET", "/wda/batteryInfo")
+
+    # DISPLAY-ONLY: /wda/locked can report unlocked with the passcode pad on
+    # screen (a test pins that unlock() never consults it). The viewer's status
+    # strip shows it; nothing may act on it.
+    def is_locked(self) -> bool:
         return bool(self._request("GET", "/wda/locked"))
 
     # ---- action ------------------------------------------------------------

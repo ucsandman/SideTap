@@ -115,7 +115,20 @@
   h1 { font-size:22px; font-weight:600; letter-spacing:-.015em; margin-bottom:2px; }
   .dim { color:var(--dim); font-size:13px; }
   .sec { font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin-bottom:var(--s2); }
-  #doctor { margin-top:var(--s5); }
+  #doctor { margin-top:var(--s2); }
+  #strip { display:flex; align-items:center; gap:var(--s2); padding:9px 12px; margin-top:var(--s3);
+           background:var(--panel); border:1px solid var(--line); border-radius:var(--r2); }
+  #strip-main { border:0; background:none; padding:0; font-size:13px; font-weight:600; gap:8px; }
+  #strip-main:hover { background:none; color:var(--text); }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--ok); display:inline-block; flex:0 0 auto; }
+  .dot.bad { background:var(--bad); }
+  #strip-info { margin-left:auto; font-size:12.5px; white-space:nowrap; }
+  #checks-wrap { margin-top:var(--s2); }
+  #tabs { display:flex; gap:var(--s1); margin-top:var(--s3); border-bottom:1px solid var(--line); }
+  .tab { border:0; background:none; border-radius:var(--r1) var(--r1) 0 0; padding:8px 12px; color:var(--dim); }
+  .tab:hover { background:var(--panel); color:var(--text); }
+  .tab.on { color:var(--text); box-shadow:inset 0 -2px 0 var(--accent); }
+  .tabpane { margin-top:var(--s3); }
   .check {
     display:flex; gap:var(--s2); padding:9px 12px; border-radius:var(--r2);
     background:var(--panel); border:1px solid var(--line); border-left-width:3px;
@@ -130,7 +143,6 @@
   .check.bad { border-left-color:var(--warn); }
   .check.bad .mark { color:var(--warn); }
   .check .fix { color:var(--warn); font-size:12.5px; margin-top:3px; overflow-wrap:anywhere; }
-  #hint { margin-top:var(--s4); padding-top:var(--s3); border-top:1px solid var(--line); line-height:1.7; }
   code { font-family:var(--mono); background:var(--panel); border:1px solid var(--line); padding:1px 6px; border-radius:var(--r1); font-size:12px; }
 
   /* ---- fix-input panel ----------------------------------------------- */
@@ -146,7 +158,7 @@
 
   /* ---- live activity feed --------------------------------------------- */
   #activity { margin-top:var(--s4); }
-  #activity-list { max-height:220px; overflow-y:auto; }
+  #activity-list { max-height:55vh; overflow-y:auto; }
   .act-row { display:flex; gap:var(--s2); padding:3px 12px; font-size:12.5px; color:var(--text2); }
   .act-row .t { color:var(--dim); font-size:11.5px; flex:0 0 40px; text-align:right; font-family:var(--mono); }
 
@@ -161,6 +173,31 @@
   .sent-row.pending { border-left-color:var(--warn); }
   .sent-row .who { font-weight:600; }
   .sent-row .dim { font-size:11.5px; white-space:nowrap; }
+
+  /* ---- actions tab ------------------------------------------------------ */
+  .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); }
+  .chip { padding:5px 11px; border-radius:99px; font-size:12.5px; }
+  #app-chips .chip { text-transform:capitalize; }
+  .chip .pin { margin-left:6px; opacity:.5; }
+  .chip.pinned .pin { opacity:1; }
+  .gap-top { margin-top:var(--s4); }
+  .prow { display:flex; justify-content:space-between; gap:var(--s2); padding:7px 2px;
+          border-bottom:1px solid var(--line); font-size:13px; }
+  .prow .k { color:var(--dim); }
+  #text-to { width:100%; margin-bottom:var(--s1); }
+  #text-to, #text-msg { background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px; }
+  #text-to:focus-visible, #text-msg:focus-visible, #console-in:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  #text-row { display:flex; gap:var(--s1); align-items:stretch; }
+  #text-msg { flex:1; resize:vertical; min-height:38px; }
+  #console-row { display:flex; gap:var(--s1); }
+  #console-in { flex:1; background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:var(--r1); padding:7px 10px; font-family:var(--mono); font-size:12.5px; }
+  #console-out { font-family:var(--mono); font-size:12px; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--r2); padding:var(--s2);
+    margin-top:var(--s2); max-height:52vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #console-out > div { padding:4px 0; border-bottom:1px solid var(--line); }
+  #console-hint { margin-top:var(--s2); line-height:1.7; }
 </style>
 </head>
 <body>
@@ -211,18 +248,60 @@
       </div>
       <div id="fix-steps"></div>
     </div>
-    <div id="doctor"><div class="sec">Checks</div><div class="dim">Running checks…</div></div>
-    <div id="hint" class="dim">
-      Agents drive it from a terminal:<br>
-      <code>phone-harness &lt;&lt;'PY' … PY</code> with helpers like <code>tap_text("General")</code> pre-imported.
+    <div id="strip">
+      <button id="strip-main" title="Show / hide the full checks">
+        <span id="strip-dot" class="dot"></span><span id="strip-text">Checking…</span>
+      </button>
+      <span id="strip-info" class="dim"></span>
     </div>
-    <div id="activity" hidden>
-      <h2 class="sec">Activity</h2>
-      <div id="activity-list"></div>
+    <div id="checks-wrap" hidden>
+      <div id="doctor"><div class="sec">Checks</div><div class="dim">Running checks…</div></div>
     </div>
-    <div id="sent" hidden>
-      <h2 class="sec">Recent sends</h2>
-      <div id="sent-list"></div>
+    <nav id="tabs">
+      <button class="tab" data-tab="actions">Actions</button>
+      <button class="tab" data-tab="agent">Agent</button>
+      <button class="tab" data-tab="phone">Phone</button>
+      <button class="tab" data-tab="console">&gt;_</button>
+    </nav>
+    <div id="tab-actions" class="tabpane">
+      <div class="sec">Text someone</div>
+      <div id="contact-chips" class="chips"></div>
+      <input id="text-to" placeholder="Contact (as named in Messages)">
+      <div id="text-row">
+        <textarea id="text-msg" rows="2" placeholder="Message"></textarea>
+        <button id="btn-text-send">Send</button>
+      </div>
+      <div class="sec gap-top">Open app</div>
+      <div id="app-chips" class="chips"></div>
+    </div>
+    <div id="tab-agent" class="tabpane" hidden>
+      <div id="activity" hidden>
+        <h2 class="sec">Activity</h2>
+        <div id="activity-list"></div>
+      </div>
+      <div id="sent" hidden>
+        <h2 class="sec">Recent sends</h2>
+        <div id="sent-list"></div>
+      </div>
+    </div>
+    <div id="tab-phone" class="tabpane" hidden>
+      <div class="sec">Phone</div>
+      <div id="phone-rows" class="dim">Waiting for phone…</div>
+      <div class="dim gap-top">Passive reads only — nothing here touches the phone.</div>
+    </div>
+    <div id="tab-console" class="tabpane" hidden>
+      <div class="sec">Console</div>
+      <div id="console-row">
+        <input id="console-in" placeholder='tap_text("General") — Enter runs, ↑ history' spellcheck="false">
+        <button id="btn-console-run">Run</button>
+      </div>
+      <div id="console-out" hidden></div>
+      <div class="dim" id="console-hint">
+        Whitelisted helpers only: <code>ocr()</code>, <code>tap_text("…")</code>,
+        <code>open_app("…")</code>, <code>swipe(x1,y1,x2,y2)</code>,
+        <code>send_message("Mom","hi")</code>…
+        Agents get the same helpers from a terminal: <code>phone-harness &lt;&lt;'PY' … PY</code>.
+      </div>
     </div>
   </div>
 <script>
@@ -239,6 +318,7 @@ async function getJSON(url, opts) {
 let inputEnabled = false;
 let streaming = false;
 let bootSeen = null;  // viewer process id; a change means stale JS — reload
+let lastDoctor = [];
 
 // Button feedback ("Locked.", "Unlocked.") lives in the same hint line the
 // status poll rewrites every 5s; hold fresh feedback so the poll can't wipe
@@ -286,6 +366,7 @@ async function loadStatus() {
     document.getElementById('btn-notifs').hidden = !inputEnabled;
     document.getElementById('btn-control').hidden = !inputEnabled;
     document.getElementById('paste-row').hidden = !inputEnabled;
+    updateActionAvail();
     // Loud by default: WDA has no auth, so exposure is a banner, not a tab.
     document.getElementById('lan-banner').hidden = s.lan_exposed !== true;
   } catch (e) {
@@ -305,10 +386,31 @@ function escapeHtml(s) {
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// ---- tabs ------------------------------------------------------------------
+function showTab(name) {
+  document.querySelectorAll('#tabs .tab').forEach(b =>
+    b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.tabpane').forEach(p => p.hidden = p.id !== 'tab-' + name);
+  localStorage.setItem('sidetap.tab', name);
+}
+document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+{
+  const storedTab = localStorage.getItem('sidetap.tab');
+  const validTabs = ['actions', 'agent', 'phone', 'console'];
+  showTab(validTabs.includes(storedTab) ? storedTab : 'actions');
+}
+
+// ---- status strip ----------------------------------------------------------
+document.getElementById('strip-main').onclick = () => {
+  const w = document.getElementById('checks-wrap');
+  w.hidden = !w.hidden;
+};
+
 // Show what the agent has texted, so the human sees each send (sec-5 audit log).
 async function loadSent() {
   try {
     const recs = await getJSON('/api/actions');
+    sendRecs = recs; renderContactChips();
     const wrap = document.getElementById('sent');
     if (!recs.length) { wrap.hidden = true; return; }
     wrap.hidden = false;
@@ -340,14 +442,46 @@ async function loadActivity() {
   } catch (e) { /* panel is best-effort */ }
 }
 
+// ---- Phone tab + strip glance info (passive reads only) --------------------
+function appName(app) {
+  return (app && (app.name || String(app.bundleId || '').split('.').pop())) || '?';
+}
+async function loadPhone() {
+  try {
+    const p = await getJSON('/api/phone');
+    const bits = [];
+    if (p.battery && p.battery.level != null)
+      bits.push('🔋' + Math.round(p.battery.level * 100) + '%');
+    if (p.locked != null) bits.push(p.locked ? '🔒' : '🔓');
+    if (p.app) bits.push(appName(p.app));
+    document.getElementById('strip-info').textContent = bits.join('  ');
+    const sig = lastDoctor.find(r => r.name === 'input signature (7-day)');
+    const rows = [
+      ['Battery', p.battery && p.battery.level != null
+        ? Math.round(p.battery.level * 100) + '%' + (p.battery.state === 2 ? ' · charging' : '')
+        : '—'],
+      ['Lock state', p.locked == null ? '—'
+        : (p.locked ? 'Locked' : 'Unlocked') + ' (display-only)'],
+      ['Front app', p.app ? appName(p.app) + ' · ' + (p.app.bundleId || '') : '—'],
+      ['Screen', points ? points.width + ' × ' + points.height + ' pt' : '—'],
+      ['Session', p.session ? String(p.session).slice(0, 8) : '—'],
+      ['Input signature', sig ? sig.detail : '—'],
+    ];
+    document.getElementById('phone-rows').innerHTML = rows.map(([k, v]) =>
+      `<div class="prow"><span class="k">${k}</span><span>${escapeHtml(v)}</span></div>`).join('');
+  } catch (e) { /* passive info is best-effort */ }
+}
+
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
-  loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity();
+  loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity(); loadPhone();
+  getJSON('/api/apps').then(j => { knownApps = j.known; renderAppChips(); }).catch(() => {});
   poll();
   setInterval(loadStatus, 5000);
   setInterval(loadSent, 5000);
   setInterval(loadStop, 5000);
   setInterval(loadActivity, 3000);
+  setInterval(loadPhone, 10000);
 });
 
 // ---- kill switch: blocks all agent actions until resumed -------------------
@@ -450,7 +584,7 @@ async function flushKeys() {
 }
 window.addEventListener('keydown', (ev) => {
   if (!inputEnabled) return;
-  if (ev.target.closest('input,textarea')) return;     // typing in the paste box stays local
+  if (ev.target.closest('input,textarea,button,select,[tabindex]')) return;     // typing in the paste box stays local
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
   let ch = null;
   if (ev.key === 'Enter') ch = '\n';
@@ -535,7 +669,18 @@ async function loadDoctor() {
     const sigBad = !!sig && !sig.ok;
     document.getElementById('sig-banner').hidden = !sigBad;
     if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
-  } catch (e) { el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>'; }
+    lastDoctor = results;
+    const fails = results.filter(r => !r.ok).length;
+    document.getElementById('strip-dot').className = 'dot' + (fails ? ' bad' : '');
+    document.getElementById('strip-text').textContent =
+      fails ? fails + ' check' + (fails > 1 ? 's' : '') + ' failing' : 'All checks pass';
+    if (fails) document.getElementById('checks-wrap').hidden = false;  // auto-expand
+  } catch (e) {
+    el.innerHTML = LABEL + '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>';
+    document.getElementById('strip-dot').className = 'dot bad';
+    document.getElementById('strip-text').textContent = 'viewer unreachable';
+    document.getElementById('checks-wrap').hidden = false;
+  }
 }
 document.getElementById('btn-refresh').onclick = loadDoctor;
 document.getElementById('btn-up').onclick = async () => {
@@ -629,6 +774,138 @@ async function startFixInput() {
 }
 document.getElementById('btn-fix').onclick = startFixInput;
 document.getElementById('btn-sig-fix').onclick = startFixInput;
+
+// ---- Actions tab -----------------------------------------------------------
+function pins(key) {
+  try {
+    const v = JSON.parse(localStorage.getItem(key));
+    return Array.isArray(v) ? v : [];
+  } catch (e) { return []; }
+}
+function togglePin(key, name, render) {
+  const p = pins(key);
+  const i = p.indexOf(name);
+  if (i < 0) p.push(name); else p.splice(i, 1);
+  localStorage.setItem(key, JSON.stringify(p));
+  render();
+}
+function chip(label, pinned, onUse, onPin) {
+  const b = document.createElement('button');
+  b.className = 'chip' + (pinned ? ' pinned' : '');
+  b.textContent = label;
+  const pin = document.createElement('span');
+  pin.className = 'pin';
+  pin.textContent = pinned ? '★' : '☆';
+  pin.title = pinned ? 'Unpin' : 'Pin';
+  pin.onclick = (ev) => { ev.stopPropagation(); onPin(); };
+  b.appendChild(pin);
+  b.onclick = onUse;
+  return b;
+}
+let sendRecs = [];  // loadSent keeps this fresh
+function renderContactChips() {
+  const wrap = document.getElementById('contact-chips');
+  const pinned = pins('sidetap.pins.contacts');
+  const learned = [...new Set(sendRecs.slice().reverse()
+    .map(r => r.resolved_title || r.contact))].filter(n => !pinned.includes(n));
+  wrap.replaceChildren(...[...pinned, ...learned].slice(0, 10).map(name =>
+    chip(name, pinned.includes(name),
+      () => { document.getElementById('text-to').value = name;
+              document.getElementById('text-msg').focus(); },
+      () => togglePin('sidetap.pins.contacts', name, renderContactChips))));
+}
+let knownApps = [];
+function renderAppChips() {
+  const wrap = document.getElementById('app-chips');
+  const pinned = pins('sidetap.pins.apps');
+  const rest = knownApps.filter(n => !pinned.includes(n));
+  wrap.replaceChildren(...[...pinned, ...rest].slice(0, 12).map(name =>
+    chip(name, pinned.includes(name),
+      async (ev) => {
+        const b = ev.currentTarget; b.disabled = true; b.dataset.busy = '1';
+        try {
+          const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
+                                                  body: JSON.stringify({name})});
+          const j = await r.json();
+          if (!j.ok) showHint(j.error || 'Could not open ' + name);
+        } catch (e) { showHint('Could not open ' + name); }
+        finally { delete b.dataset.busy; b.disabled = !inputEnabled; }
+      },
+      () => togglePin('sidetap.pins.apps', name, renderAppChips))));
+  updateActionAvail();
+}
+document.getElementById('btn-text-send').onclick = async () => {
+  const to = document.getElementById('text-to').value.trim();
+  const message = document.getElementById('text-msg').value;
+  if (!to || !message.trim()) { showHint('Contact and message are both needed.'); return; }
+  const btn = document.getElementById('btn-text-send');
+  btn.disabled = true; btn.textContent = 'Sending…'; btn.dataset.busy = '1';
+  try {
+    const r = await fetch('/api/text', {method:'POST', headers:JSON_HDR,
+                                        body: JSON.stringify({to, message})});
+    const j = await r.json();
+    showHint(j.ok ? 'Sent to ' + to + '.'
+                  : (j.error || 'Send not confirmed — check Recent sends.'));
+    if (j.ok) document.getElementById('text-msg').value = '';
+  } catch (e) { showHint('Send failed.'); }
+  finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; btn.textContent = 'Send'; }
+  loadSent(); renderContactChips();
+};
+// Action controls need the input driver; grey them out with a reason otherwise.
+function updateActionAvail() {
+  const tip = inputEnabled ? '' : 'Touch input is down — see checks';
+  // A send/open in flight owns its own disabled state until it finishes —
+  // the 5s status poll must not re-enable a button mid-request (double-send risk).
+  ['btn-text-send', 'btn-console-run'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !el.dataset.busy) { el.disabled = !inputEnabled; el.title = tip; }
+  });
+  document.querySelectorAll('#app-chips .chip').forEach(c => {
+    if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; }
+  });
+}
+// ---- Console tab -----------------------------------------------------------
+const consoleIn = document.getElementById('console-in');
+let consoleHist = pins('sidetap.console.hist');
+let histIdx = consoleHist.length;
+async function runConsole() {
+  if (document.getElementById('btn-console-run').dataset.busy) return;
+  const line = consoleIn.value.trim();
+  if (!line) return;
+  consoleHist.push(line);
+  if (consoleHist.length > 50) consoleHist.shift();
+  localStorage.setItem('sidetap.console.hist', JSON.stringify(consoleHist));
+  histIdx = consoleHist.length;
+  const out = document.getElementById('console-out');
+  out.hidden = false;
+  const entry = document.createElement('div');
+  entry.textContent = '> ' + line + '\n…';
+  out.prepend(entry);
+  consoleIn.value = '';
+  const runBtn = document.getElementById('btn-console-run');
+  runBtn.disabled = true; runBtn.dataset.busy = '1';
+  try {
+    const r = await fetch('/api/console', {method:'POST', headers:JSON_HDR,
+                                           body: JSON.stringify({line})});
+    const j = await r.json();
+    entry.textContent = '> ' + line + '\n' +
+      (j.ok ? JSON.stringify(j.result === undefined ? null : j.result, null, 1)
+            : '✗ ' + j.error);
+  } catch (e) { entry.textContent = '> ' + line + '\n✗ ' + e; }
+  finally { delete runBtn.dataset.busy; runBtn.disabled = !inputEnabled; }
+}
+document.getElementById('btn-console-run').onclick = runConsole;
+consoleIn.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') runConsole();
+  else if (ev.key === 'ArrowUp') {
+    if (histIdx > 0) { histIdx--; consoleIn.value = consoleHist[histIdx]; }
+    ev.preventDefault();
+  } else if (ev.key === 'ArrowDown') {
+    histIdx = Math.min(histIdx + 1, consoleHist.length);
+    consoleIn.value = consoleHist[histIdx] || '';
+    ev.preventDefault();
+  }
+});
 </script>
 </body>
 </html>

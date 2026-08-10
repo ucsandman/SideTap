@@ -78,6 +78,8 @@ phone-harness notify-expiry --install  :: daily desktop toast before the signatu
 phone-harness down        :: stop background processes
 ```
 
+The side panel is a dashboard: quick actions (text someone, open an app), the agent activity feed, passive phone info, and a console for helper one-liners.
+
 ## Agent usage
 
 Pipe Python to stdin. Helpers are pre-imported:

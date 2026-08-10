@@ -36,6 +36,25 @@ class StubClient:
     def configure_mjpeg(self):
         pass
 
+    battery_info = None  # set to a dict to make battery() succeed
+    locked = None  # set to a bool to make is_locked() succeed
+    app = None  # set to a dict to make active_app() succeed
+
+    def battery(self):
+        if self.battery_info is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.battery_info
+
+    def is_locked(self):
+        if self.locked is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.locked
+
+    def active_app(self):
+        if self.app is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.app
+
 
 @pytest.fixture()
 def base_url():
@@ -95,6 +114,36 @@ def test_lock_endpoint_locks_phone(base_url):
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert "lock" in viewer.Handler.client.calls
+
+
+def test_phone_endpoint_serves_passive_info(base_url):
+    c = viewer.Handler.client
+    c.battery_info = {"level": 0.78, "state": 2}
+    c.locked = False
+    c.app = {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 4242}
+    r = requests.get(base_url + "/api/phone", timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {
+        "battery": {"level": 0.78, "state": 2},
+        "locked": False,
+        "app": {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 4242},
+        "session": "stub-session",
+    }
+
+
+def test_phone_endpoint_degrades_per_field(base_url):
+    # One failing read must not blank the others (spec: strip degrades).
+    c = viewer.Handler.client
+    c.battery_info = None  # battery() raises
+    c.locked = True
+    c.app = None  # active_app() raises
+    r = requests.get(base_url + "/api/phone", timeout=5)
+    assert r.json() == {
+        "battery": None,
+        "locked": True,
+        "app": None,
+        "session": "stub-session",
+    }
 
 
 def test_stop_toggle_creates_and_removes_file(base_url, tmp_path, monkeypatch):
@@ -204,3 +253,127 @@ def test_activity_endpoint_serves_feed(base_url, tmp_path, monkeypatch):
     )
     r = requests.get(base_url + "/api/activity", timeout=5)
     assert r.json() == [{"ts": 1.0, "action": "tap (10, 20)"}]
+
+
+def test_text_endpoint_sends_message(base_url, monkeypatch):
+    sent = {}
+
+    def fake_send(contact, text):
+        sent["args"] = (contact, text)
+        return {"sent": True, "contact": contact}
+
+    monkeypatch.setattr("phone_harness.helpers.send_message", fake_send)
+    r = requests.post(
+        base_url + "/api/text", json={"to": "Mom", "message": "hi"}, timeout=5
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert sent["args"] == ("Mom", "hi")
+
+
+def test_text_endpoint_validates_fields(base_url):
+    r = requests.post(base_url + "/api/text", json={"to": "  "}, timeout=5)
+    assert r.status_code == 400
+    assert "required" in r.json()["error"]
+
+
+def test_text_endpoint_surfaces_helper_error(base_url, monkeypatch):
+    def boom(contact, text):
+        raise RuntimeError("thread not found")
+
+    monkeypatch.setattr("phone_harness.helpers.send_message", boom)
+    r = requests.post(
+        base_url + "/api/text", json={"to": "Mom", "message": "hi"}, timeout=5
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "thread not found"}
+
+
+def test_open_app_endpoint(base_url, monkeypatch):
+    opened = []
+    monkeypatch.setattr("phone_harness.helpers.open_app", opened.append)
+    r = requests.post(base_url + "/api/open-app", json={"name": "Safari"}, timeout=5)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert opened == ["Safari"]
+    r = requests.post(base_url + "/api/open-app", json={}, timeout=5)
+    assert r.status_code == 400
+
+
+def test_apps_endpoint_lists_known_names(base_url):
+    r = requests.get(base_url + "/api/apps", timeout=5)
+    names = r.json()["known"]
+    assert "settings" in names and names == sorted(names)
+
+
+def test_parse_console_accepts_literal_call():
+    name, args, kwargs = viewer._parse_console('tap_text("General", exact=True)')
+    assert (name, args, kwargs) == ("tap_text", ["General"], {"exact": True})
+    assert viewer._parse_console("swipe(10, -20, 10.5, 400)")[1] == [10, -20, 10.5, 400]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "os.system('calc')",  # attribute call
+        "__import__('os')",  # not whitelisted
+        "screenshot()",  # deliberately excluded
+        "tap(1+2, 3)",  # non-literal arg
+        "tap_text(open('x'))",  # call as arg
+        "tap(1); tap(2)",  # not a single expression
+        "ocr",  # not a call
+        "send_message(**{'contact': 'Mom'})",  # **kwargs
+        "tap({[1, 2]: 3})",  # unhashable dict key (list)
+        "tap({(1, 2): 3})",  # unhashable dict key (tuple, still literal)
+        "",
+    ],
+)
+def test_parse_console_rejects(line):
+    with pytest.raises(ValueError):
+        viewer._parse_console(line)
+
+
+def test_console_endpoint_runs_whitelisted_helper(base_url, monkeypatch):
+    monkeypatch.setattr(
+        "phone_harness.helpers.ocr", lambda: [{"text": "General", "x": 1, "y": 2}]
+    )
+    r = requests.post(base_url + "/api/console", json={"line": "ocr()"}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "result": [{"text": "General", "x": 1, "y": 2}]}
+
+
+def test_console_endpoint_rejects_bad_line(base_url):
+    r = requests.post(
+        base_url + "/api/console", json={"line": "__import__('os')"}, timeout=5
+    )
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_console_endpoint_rejects_unhashable_dict_key(base_url):
+    # Regression: _console_literal used to let a TypeError (unhashable dict
+    # key) escape _parse_console instead of the documented ValueError, which
+    # skipped the 400 branch and dropped the connection.
+    r = requests.post(
+        base_url + "/api/console", json={"line": "tap({[1, 2]: 3})"}, timeout=5
+    )
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_console_endpoint_non_dict_body_returns_500(base_url):
+    # A JSON array body has no .get(): payload.get("line", ...) used to raise
+    # AttributeError with no except clause, dropping the connection instead
+    # of answering. The generic Exception -> 500 fallback must catch it.
+    r = requests.post(base_url + "/api/console", json=[1, 2], timeout=5)
+    assert r.status_code == 500
+    assert "error" in r.json()
+
+
+def test_console_endpoint_surfaces_helper_error(base_url, monkeypatch):
+    def boom():
+        raise RuntimeError("no text 'X' on screen")
+
+    monkeypatch.setattr("phone_harness.helpers.ocr", boom)
+    r = requests.post(base_url + "/api/console", json={"line": "ocr()"}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "no text 'X' on screen"}

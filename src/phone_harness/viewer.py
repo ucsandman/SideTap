@@ -8,6 +8,7 @@ polling /api/screenshot when the stream is down.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -40,6 +41,10 @@ _ACTION_LOCK = threading.Lock()
 # the browser's poll doesn't queue requests inside WDA mid-sequence (unlock is
 # timing-sensitive: added latency lets the lock screen fall back asleep).
 _LAST_STATUS: dict | None = None
+
+# Last good /api/phone payload, served while a gesture holds _ACTION_LOCK
+# (same reasoning as _LAST_STATUS).
+_LAST_PHONE: dict | None = None
 
 # LAN exposure, probed in the background (the port probe can take a second) and
 # surfaced as a persistent banner on the phone pane — not only inside the
@@ -162,6 +167,80 @@ def _lock_ports() -> dict:
     return {"ok": True, "message": "Approve the admin prompt, then re-run checks."}
 
 
+# Console whitelist: helper names the viewer's console may dispatch. Mirrors
+# mcp_server._TOOLS (not imported: that module needs the mcp package).
+# screenshot excluded — bytes don't render in a JSON console.
+_CONSOLE_TOOLS = (
+    "ocr",
+    "screen_info",
+    "tap",
+    "tap_text",
+    "long_press",
+    "swipe",
+    "scroll",
+    "type_text",
+    "press_home",
+    "open_app",
+    "current_app",
+    "wait_for_app",
+    "find_text",
+    "wait_for_text",
+    "wait_stable",
+    "read_messages",
+    "send_message",
+    "unlock",
+)
+
+
+def _console_literal(node: ast.AST):
+    """A literal AST node's value. Raises ValueError on anything non-literal."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, (int, float))
+    ):
+        return -node.operand.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_console_literal(e) for e in node.elts]
+    if isinstance(node, ast.Dict):
+        if any(k is None for k in node.keys):  # {**x}
+            raise ValueError("arguments must be literals")
+        try:
+            return {
+                _console_literal(k): _console_literal(v)
+                for k, v in zip(node.keys, node.values)
+            }
+        except TypeError as exc:  # e.g. {[1, 2]: 3} - unhashable key
+            raise ValueError("arguments must be literals") from exc
+    raise ValueError("arguments must be literals")
+
+
+def _parse_console(line: str) -> tuple[str, list, dict]:
+    """Parse one whitelisted helper call. -> (name, args, kwargs).
+
+    Accepts exactly `name(literal, key=literal, ...)` where name is in
+    _CONSOLE_TOOLS. Everything else raises ValueError — this is the whole
+    security story of /api/console, so nothing here may call eval/exec.
+    """
+    try:
+        expr = ast.parse(line.strip(), mode="eval").body
+    except SyntaxError as exc:
+        raise ValueError(f"syntax error: {exc.msg}") from exc
+    if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
+        raise ValueError('one helper call, e.g. tap_text("General")')
+    name = expr.func.id
+    if name not in _CONSOLE_TOOLS:
+        raise ValueError(f"unknown helper: {name}")
+    args = [_console_literal(a) for a in expr.args]
+    if any(k.arg is None for k in expr.keywords):  # **kwargs
+        raise ValueError("**kwargs not allowed")
+    kwargs = {k.arg: _console_literal(k.value) for k in expr.keywords}
+    return name, args, kwargs
+
+
 class Handler(BaseHTTPRequestHandler):
     client = WDAClient(timeout=10)
 
@@ -242,6 +321,27 @@ class Handler(BaseHTTPRequestHandler):
                             "boot": _BOOT_ID,
                         }
                     )
+            elif path == "/api/phone":
+                global _LAST_PHONE
+                if _ACTION_LOCK.locked() and _LAST_PHONE is not None:
+                    self._json(_LAST_PHONE)
+                    return
+                info: dict = {"battery": None, "locked": None, "app": None}
+                try:
+                    info["battery"] = self.client.battery()
+                except WDAError:
+                    pass
+                try:
+                    info["locked"] = self.client.is_locked()
+                except WDAError:
+                    pass
+                try:
+                    info["app"] = self.client.active_app()
+                except WDAError:
+                    pass
+                info["session"] = self.client.session_id
+                _LAST_PHONE = info
+                self._json(info)
             elif path == "/api/doctor":
                 self._json(admin.doctor_results())
             elif path == "/api/fix-input":
@@ -253,12 +353,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_recent_activity())
             elif path == "/api/stop":
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/apps":
+                from . import helpers
+
+                self._json({"known": sorted(helpers.BUNDLE_IDS)})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:
             self._json({"error": str(exc)}, 502)
         except (ConnectionAbortedError, BrokenPipeError):
             pass
+        except Exception as exc:
+            self._json({"error": str(exc)}, 500)
 
     def do_POST(self):  # noqa: vulture
         if not self._allowed():
@@ -324,12 +430,76 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     stop_file().unlink(missing_ok=True)
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/text":
+                from . import helpers
+
+                to = str(payload.get("to", "")).strip()
+                message = str(payload.get("message", "")).strip()
+                if not to or not message:
+                    self._json(
+                        {"ok": False, "error": "to and message are required"}, 400
+                    )
+                    return
+                try:
+                    with _ACTION_LOCK:
+                        result = helpers.send_message(to, message)
+                except WDAError:
+                    raise  # existing 502 handler
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                body = json.dumps(
+                    {
+                        "ok": bool(result.get("sent"))
+                        if isinstance(result, dict)
+                        else False,
+                        "result": result,
+                    },
+                    default=repr,
+                )
+                self._send(200, body.encode(), "application/json")
+            elif path == "/api/open-app":
+                from . import helpers
+
+                name = str(payload.get("name", "")).strip()
+                if not name:
+                    self._json({"ok": False, "error": "name is required"}, 400)
+                    return
+                try:
+                    with _ACTION_LOCK:
+                        helpers.open_app(name)
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": True})
+            elif path == "/api/console":
+                from . import helpers
+
+                try:
+                    name, args, kwargs = _parse_console(str(payload.get("line", "")))
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, 400)
+                    return
+                try:
+                    with _ACTION_LOCK:
+                        result = getattr(helpers, name)(*args, **kwargs)
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                body = json.dumps({"ok": True, "result": result}, default=repr)
+                self._send(200, body.encode(), "application/json")
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:
             self._json({"error": str(exc)}, 502)
         except (ConnectionAbortedError, BrokenPipeError):
             pass
+        except Exception as exc:
+            self._json({"error": str(exc)}, 500)
 
 
 class _Server(ThreadingHTTPServer):

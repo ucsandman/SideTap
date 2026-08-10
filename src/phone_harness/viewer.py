@@ -8,6 +8,7 @@ polling /api/screenshot when the stream is down.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -164,6 +165,77 @@ def _lock_ports() -> dict:
     except OSError as exc:
         return {"ok": False, "message": str(exc)}
     return {"ok": True, "message": "Approve the admin prompt, then re-run checks."}
+
+
+# Console whitelist: helper names the viewer's console may dispatch. Mirrors
+# mcp_server._TOOLS (not imported: that module needs the mcp package).
+# screenshot excluded — bytes don't render in a JSON console.
+_CONSOLE_TOOLS = (
+    "ocr",
+    "screen_info",
+    "tap",
+    "tap_text",
+    "long_press",
+    "swipe",
+    "scroll",
+    "type_text",
+    "press_home",
+    "open_app",
+    "current_app",
+    "wait_for_app",
+    "find_text",
+    "wait_for_text",
+    "wait_stable",
+    "read_messages",
+    "send_message",
+    "unlock",
+)
+
+
+def _console_literal(node: ast.AST):
+    """A literal AST node's value. Raises ValueError on anything non-literal."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, (int, float))
+    ):
+        return -node.operand.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_console_literal(e) for e in node.elts]
+    if isinstance(node, ast.Dict):
+        if any(k is None for k in node.keys):  # {**x}
+            raise ValueError("arguments must be literals")
+        return {
+            _console_literal(k): _console_literal(v)
+            for k, v in zip(node.keys, node.values)
+        }
+    raise ValueError("arguments must be literals")
+
+
+def _parse_console(line: str) -> tuple[str, list, dict]:
+    """Parse one whitelisted helper call. -> (name, args, kwargs).
+
+    Accepts exactly `name(literal, key=literal, ...)` where name is in
+    _CONSOLE_TOOLS. Everything else raises ValueError — this is the whole
+    security story of /api/console, so nothing here may call eval/exec.
+    """
+    try:
+        expr = ast.parse(line.strip(), mode="eval").body
+    except SyntaxError as exc:
+        raise ValueError(f"syntax error: {exc.msg}") from exc
+    if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
+        raise ValueError('one helper call, e.g. tap_text("General")')
+    name = expr.func.id
+    if name not in _CONSOLE_TOOLS:
+        raise ValueError(f"unknown helper: {name}")
+    args = [_console_literal(a) for a in expr.args]
+    if any(k.arg is None for k in expr.keywords):  # **kwargs
+        raise ValueError("**kwargs not allowed")
+    kwargs = {k.arg: _console_literal(k.value) for k in expr.keywords}
+    return name, args, kwargs
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -387,6 +459,24 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": str(exc)})
                     return
                 self._json({"ok": True})
+            elif path == "/api/console":
+                from . import helpers
+
+                try:
+                    name, args, kwargs = _parse_console(str(payload.get("line", "")))
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, 400)
+                    return
+                try:
+                    with _ACTION_LOCK:
+                        result = getattr(helpers, name)(*args, **kwargs)
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                body = json.dumps({"ok": True, "result": result}, default=repr)
+                self._send(200, body.encode(), "application/json")
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:

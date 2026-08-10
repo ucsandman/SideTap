@@ -297,3 +297,55 @@ def test_apps_endpoint_lists_known_names(base_url):
     r = requests.get(base_url + "/api/apps", timeout=5)
     names = r.json()["known"]
     assert "settings" in names and names == sorted(names)
+
+
+def test_parse_console_accepts_literal_call():
+    name, args, kwargs = viewer._parse_console('tap_text("General", exact=True)')
+    assert (name, args, kwargs) == ("tap_text", ["General"], {"exact": True})
+    assert viewer._parse_console("swipe(10, -20, 10.5, 400)")[1] == [10, -20, 10.5, 400]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "os.system('calc')",  # attribute call
+        "__import__('os')",  # not whitelisted
+        "screenshot()",  # deliberately excluded
+        "tap(1+2, 3)",  # non-literal arg
+        "tap_text(open('x'))",  # call as arg
+        "tap(1); tap(2)",  # not a single expression
+        "ocr",  # not a call
+        "send_message(**{'contact': 'Mom'})",  # **kwargs
+        "",
+    ],
+)
+def test_parse_console_rejects(line):
+    with pytest.raises(ValueError):
+        viewer._parse_console(line)
+
+
+def test_console_endpoint_runs_whitelisted_helper(base_url, monkeypatch):
+    monkeypatch.setattr(
+        "phone_harness.helpers.ocr", lambda: [{"text": "General", "x": 1, "y": 2}]
+    )
+    r = requests.post(base_url + "/api/console", json={"line": "ocr()"}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "result": [{"text": "General", "x": 1, "y": 2}]}
+
+
+def test_console_endpoint_rejects_bad_line(base_url):
+    r = requests.post(
+        base_url + "/api/console", json={"line": "__import__('os')"}, timeout=5
+    )
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_console_endpoint_surfaces_helper_error(base_url, monkeypatch):
+    def boom():
+        raise RuntimeError("no text 'X' on screen")
+
+    monkeypatch.setattr("phone_harness.helpers.ocr", boom)
+    r = requests.post(base_url + "/api/console", json={"line": "ocr()"}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "no text 'X' on screen"}

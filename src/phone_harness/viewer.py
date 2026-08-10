@@ -208,10 +208,13 @@ def _console_literal(node: ast.AST):
     if isinstance(node, ast.Dict):
         if any(k is None for k in node.keys):  # {**x}
             raise ValueError("arguments must be literals")
-        return {
-            _console_literal(k): _console_literal(v)
-            for k, v in zip(node.keys, node.values)
-        }
+        try:
+            return {
+                _console_literal(k): _console_literal(v)
+                for k, v in zip(node.keys, node.values)
+            }
+        except TypeError as exc:  # e.g. {[1, 2]: 3} - unhashable key
+            raise ValueError("arguments must be literals") from exc
     raise ValueError("arguments must be literals")
 
 

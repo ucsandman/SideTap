@@ -316,6 +316,8 @@ def test_parse_console_accepts_literal_call():
         "tap(1); tap(2)",  # not a single expression
         "ocr",  # not a call
         "send_message(**{'contact': 'Mom'})",  # **kwargs
+        "tap({[1, 2]: 3})",  # unhashable dict key (list)
+        "tap({(1, 2): 3})",  # unhashable dict key (tuple, still literal)
         "",
     ],
 )
@@ -336,6 +338,17 @@ def test_console_endpoint_runs_whitelisted_helper(base_url, monkeypatch):
 def test_console_endpoint_rejects_bad_line(base_url):
     r = requests.post(
         base_url + "/api/console", json={"line": "__import__('os')"}, timeout=5
+    )
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_console_endpoint_rejects_unhashable_dict_key(base_url):
+    # Regression: _console_literal used to let a TypeError (unhashable dict
+    # key) escape _parse_console instead of the documented ValueError, which
+    # skipped the 400 branch and dropped the connection.
+    r = requests.post(
+        base_url + "/api/console", json={"line": "tap({[1, 2]: 3})"}, timeout=5
     )
     assert r.status_code == 400
     assert r.json()["ok"] is False

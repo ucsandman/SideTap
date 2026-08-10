@@ -247,3 +247,53 @@ def test_activity_endpoint_serves_feed(base_url, tmp_path, monkeypatch):
     )
     r = requests.get(base_url + "/api/activity", timeout=5)
     assert r.json() == [{"ts": 1.0, "action": "tap (10, 20)"}]
+
+
+def test_text_endpoint_sends_message(base_url, monkeypatch):
+    sent = {}
+
+    def fake_send(contact, text):
+        sent["args"] = (contact, text)
+        return {"sent": True, "contact": contact}
+
+    monkeypatch.setattr("phone_harness.helpers.send_message", fake_send)
+    r = requests.post(
+        base_url + "/api/text", json={"to": "Mom", "message": "hi"}, timeout=5
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert sent["args"] == ("Mom", "hi")
+
+
+def test_text_endpoint_validates_fields(base_url):
+    r = requests.post(base_url + "/api/text", json={"to": "  "}, timeout=5)
+    assert r.status_code == 400
+    assert "required" in r.json()["error"]
+
+
+def test_text_endpoint_surfaces_helper_error(base_url, monkeypatch):
+    def boom(contact, text):
+        raise RuntimeError("thread not found")
+
+    monkeypatch.setattr("phone_harness.helpers.send_message", boom)
+    r = requests.post(
+        base_url + "/api/text", json={"to": "Mom", "message": "hi"}, timeout=5
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "thread not found"}
+
+
+def test_open_app_endpoint(base_url, monkeypatch):
+    opened = []
+    monkeypatch.setattr("phone_harness.helpers.open_app", opened.append)
+    r = requests.post(base_url + "/api/open-app", json={"name": "Safari"}, timeout=5)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert opened == ["Safari"]
+    r = requests.post(base_url + "/api/open-app", json={}, timeout=5)
+    assert r.status_code == 400
+
+
+def test_apps_endpoint_lists_known_names(base_url):
+    r = requests.get(base_url + "/api/apps", timeout=5)
+    names = r.json()["known"]
+    assert "settings" in names and names == sorted(names)

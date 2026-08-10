@@ -277,6 +277,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_recent_activity())
             elif path == "/api/stop":
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/apps":
+                from . import helpers
+
+                self._json({"known": sorted(helpers.BUNDLE_IDS)})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:
@@ -348,6 +352,41 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     stop_file().unlink(missing_ok=True)
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/text":
+                from . import helpers
+
+                to = str(payload.get("to", "")).strip()
+                message = str(payload.get("message", "")).strip()
+                if not to or not message:
+                    self._json(
+                        {"ok": False, "error": "to and message are required"}, 400
+                    )
+                    return
+                try:
+                    with _ACTION_LOCK:
+                        result = helpers.send_message(to, message)
+                except WDAError:
+                    raise  # existing 502 handler
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": bool(result.get("sent")), "result": result})
+            elif path == "/api/open-app":
+                from . import helpers
+
+                name = str(payload.get("name", "")).strip()
+                if not name:
+                    self._json({"ok": False, "error": "name is required"}, 400)
+                    return
+                try:
+                    with _ACTION_LOCK:
+                        helpers.open_app(name)
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": True})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:

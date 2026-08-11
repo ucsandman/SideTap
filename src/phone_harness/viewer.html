@@ -67,6 +67,25 @@
   #lan-banner button { border-color:rgba(248,81,73,.6); color:var(--bad); flex:0 0 auto; }
   #lan-banner button:hover { background:rgba(248,81,73,.12); border-color:var(--bad); }
 
+  /* ---- send approval: an agent that read the phone wants to text someone.
+     The decision is the human's every time, so it is loud and it blocks. --- */
+  #send-approval, #full-approval {
+    flex:0 0 auto; margin-bottom:var(--s2); padding:10px 12px;
+    border:1px solid var(--bad); border-radius:var(--r2);
+    background:rgba(248,81,73,.13); color:#ffb9b4; font-size:12.5px;
+  }
+  #send-approval .who, #full-approval .who { font-weight:700; }
+  #send-approval .msg, #full-approval .msg {
+    margin:6px 0; padding:6px 8px; border-radius:var(--r2);
+    background:rgba(0,0,0,.25); color:var(--fg);
+    max-height:6em; overflow:hidden; word-break:break-word;
+  }
+  #send-approval .why, #full-approval .why { font-size:11.5px; opacity:.9; }
+  #send-approval .row, #full-approval .row { display:flex; gap:var(--s2); margin-top:8px; }
+  #send-approval button, #full-approval button { flex:1 1 0; font-weight:700; }
+  #send-approval .deny, #full-approval .deny { border-color:rgba(248,81,73,.6); color:var(--bad); }
+  #send-approval .approve, #full-approval .approve { border-color:rgba(88,166,255,.6); }
+
   /* ---- signature-expiry banner (7-day free-ID countdown, amber) ------- */
   #sig-banner {
     display:flex; align-items:center; gap:var(--s2); padding:9px 12px;
@@ -321,6 +340,7 @@
         <div id="app-chips" class="chips"></div>
       </div>
       <div id="col-agent" class="col">
+        <div id="send-approval" hidden></div>
         <div id="activity">
           <h2 class="sec">Activity</h2>
           <div id="activity-list"></div>
@@ -381,6 +401,7 @@
         <div id="full-activity" hidden></div>
         <div id="full-sends" hidden></div>
         <div id="full-console" hidden></div>
+        <div id="full-approval" hidden></div>
       </div>
     </div>
   </div>
@@ -467,7 +488,7 @@ function escapeHtml(s) {
 
 // ---- overlay controller: one shell, five hidden bodies, exactly one visible.
 let ovOpen = null;
-const OV_BODIES = ['doctor','fix-panel','full-activity','full-sends','full-console'];
+const OV_BODIES = ['doctor','fix-panel','full-activity','full-sends','full-console','full-approval'];
 function openOverlay(id, title) {
   OV_BODIES.forEach(b => document.getElementById(b).hidden = b !== id);
   document.getElementById('ov-title').textContent = title;
@@ -524,6 +545,54 @@ async function loadSent() {
   } catch (e) { /* panel is best-effort */ }
 }
 document.getElementById('more-sends').onclick = () => openOverlay('full-sends', 'Recent sends');
+
+// An agent that read the phone is asking to send. Untrusted content is already
+// in its context, so this decision is the human's, every time. No "always
+// allow": the risk lives in the message, not in the contact. The agent's call
+// is blocked in another process until this is answered, and giving no answer
+// refuses the send.
+let approvalShown = null;
+function approvalHtml(p) {
+  const flags = (p.flags || []).length
+    ? `<div class="why">⚑ ${p.flags.map(escapeHtml).join(' · ')}</div>` : '';
+  return `<div class="who">Agent wants to text ${escapeHtml(p.contact)}</div>
+    <div class="msg">${escapeHtml(p.text)}</div>
+    <div class="why">It read your phone (${escapeHtml(p.taint_source)}) before asking to send this.</div>
+    ${flags}
+    <div class="row">
+      <button class="deny" onclick="decideSend('${p.id}','deny')">Deny</button>
+      <button class="approve" onclick="decideSend('${p.id}','approve')">Approve</button>
+    </div>`;
+}
+async function decideSend(id, decision) {
+  try {
+    await getJSON('/api/send_decision', {method:'POST', headers:JSON_HDR,
+      body: JSON.stringify({ id, decision })});
+  } catch (e) { /* no answer reaches the agent: its send times out and denies */ }
+  approvalShown = null;
+  document.getElementById('send-approval').hidden = true;
+  if (ovOpen === 'full-approval') closeOverlay();
+  loadApproval();
+}
+async function loadApproval() {
+  try {
+    const { pending } = await getJSON('/api/pending_send');
+    const box = document.getElementById('send-approval');
+    if (!pending) {
+      box.hidden = true; approvalShown = null;
+      if (ovOpen === 'full-approval') closeOverlay();
+      return;
+    }
+    const html = approvalHtml(pending);
+    box.innerHTML = html;
+    document.getElementById('full-approval').innerHTML = html;
+    box.hidden = false;
+    if (approvalShown !== pending.id) {   // demand attention once per request
+      approvalShown = pending.id;
+      openOverlay('full-approval', 'Approve this send?');
+    }
+  } catch (e) { /* panel is best-effort */ }
+}
 
 // The whole trust story is "you can see what the agent does" — every action any
 // process sends to the phone lands here (taps, swipes, typing; never key text).
@@ -593,6 +662,8 @@ window.addEventListener('load', () => {
   setInterval(loadSent, 5000);
   setInterval(loadStop, 5000);
   setInterval(loadActivity, 3000);
+  setInterval(loadApproval, 1000);  // a blocked send must surface fast
+  loadApproval();
   setInterval(loadPhone, 10000);
 });
 

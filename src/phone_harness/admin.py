@@ -281,7 +281,7 @@ def notify_expiry() -> int:
         return 0
     when = "has EXPIRED" if hours <= 0 else f"expires in {hours:.0f}h"
     shown = _toast(
-        f"sidetap: WDA signature {when}",
+        f"SideTap: WDA signature {when}",
         "Run `phone-harness fix-input` and click Start in Sideloadly.",
     )
     print(f"signature {when} — toast {'shown' if shown else 'FAILED to show'}")

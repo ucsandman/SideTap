@@ -227,9 +227,11 @@ _ACT_TOOLS = {fn.__name__: fn for fn in _TOOLS + _READING_TOOLS}
 _ACT_TOOLS["unlock"] = helpers.unlock
 
 
-@server.tool()
+# noqa goes on the decorator line because that is the line vulture reports for
+# a decorated function. act() has no static caller: FastMCP invokes it.
+@server.tool()  # noqa: vulture  (reached only through the MCP tool registry)
 def act(steps: list[dict]) -> list[dict]:
-    """Run several sidetap tools in one round trip, e.g. a tap-type-send
+    """Run several SideTap tools in one round trip, e.g. a tap-type-send
     sequence or three scrolls. Each step is {"tool": name, "args": {...}}
     using the other tools' names and arguments (screenshot excluded).
     Stops at the first failure; returns one {"tool", "ok", "result"|"error"}

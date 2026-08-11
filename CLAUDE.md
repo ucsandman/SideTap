@@ -1,4 +1,4 @@
-# sidetap
+# SideTap
 
 LLM agents drive a real iPhone from Windows over USB + WebDriverAgent (go-ios).
 Windows rebuild of ShawnPana/phone-harness (which is macOS-only).
@@ -20,7 +20,7 @@ Windows rebuild of ShawnPana/phone-harness (which is macOS-only).
 
 ## Commands
 
-- Run everything: `python launch.py` (viewer opens immediately; `up()` runs in a background thread). Double-click equivalents: `sidetap.cmd`, or the Desktop/Start Menu **Sidetap** shortcut (`scripts/install_shortcut.ps1` installs it, `-Startup` adds run-at-boot, icon in `assets/sidetap.ico`)
+- Run everything: `python launch.py` (viewer opens immediately; `up()` runs in a background thread). Double-click equivalents: `sidetap.cmd`, or the Desktop/Start Menu **SideTap** shortcut (`scripts/install_shortcut.ps1` installs it, `-Startup` adds run-at-boot, icon in `assets/sidetap.ico`)
 - Tests: `python -m pytest tests -q`
 - Diagnose: `phone-harness doctor` (never guess at connection problems — run this)
 - After a replug: the viewer's Restart link button, or `phone-harness up`

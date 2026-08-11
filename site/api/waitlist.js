@@ -30,10 +30,10 @@ module.exports = async (req, res) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: 'sidetap waitlist <sidetap@practicalsystems.io>',
+      from: 'SideTap waitlist <sidetap@practicalsystems.io>',
       to: ['wes@practicalsystems.io'],
-      subject: `sidetap Pro waitlist: ${email}`,
-      text: `${email} joined the sidetap Pro waitlist.\n\ntime: ${new Date().toISOString()}\nua: ${req.headers['user-agent'] || 'unknown'}`,
+      subject: `SideTap Pro waitlist: ${email}`,
+      text: `${email} joined the SideTap Pro waitlist.\n\ntime: ${new Date().toISOString()}\nua: ${req.headers['user-agent'] || 'unknown'}`,
     }),
   });
 

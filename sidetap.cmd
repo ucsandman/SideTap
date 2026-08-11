@@ -4,6 +4,6 @@ cd /d "%~dp0"
 python launch.py
 if errorlevel 1 (
     echo.
-    echo sidetap exited with an error. Read the message above.
+    echo SideTap exited with an error. Read the message above.
     pause
 )

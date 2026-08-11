@@ -57,7 +57,7 @@ def _exec_stdin() -> int:
         # the same warning, so an agent driving the phone through stdin is
         # told what it just read is data, not instructions.
         if trust.tainted():
-            print(f"\n[sidetap] {trust.WARNING}", file=sys.stderr)
+            print(f"\n[SideTap] {trust.WARNING}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

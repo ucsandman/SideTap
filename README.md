@@ -1,4 +1,4 @@
-# sidetap
+# SideTap
 
 **Let an LLM agent see and control a real iPhone from a Windows desktop. No Mac, no Xcode, no Appium server, no jailbreak, free Apple ID.**
 
@@ -8,9 +8,9 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 [![Website](https://img.shields.io/badge/web-sidetap.io-4493f8.svg)](https://sidetap.io)
 
-![sidetap driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
+![SideTap driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
 
-Every iPhone automation route assumes you own a Mac. This one does not. sidetap drives a real iPhone over USB using [go-ios](https://github.com/danielpaulus/go-ios) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
+Every iPhone automation route assumes you own a Mac. This one does not. SideTap drives a real iPhone over USB using [go-ios](https://github.com/danielpaulus/go-ios) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
 
 It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-harness), which relies on macOS iPhone Mirroring. Bonus over the original: WebDriverAgent exposes the real UI element tree, so the agent reads exact buttons and labels instead of OCR guesses.
 
@@ -27,7 +27,7 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 Skip the manual setup: paste this into Claude Code (or Codex) on your Windows PC and let it drive, asking you only for the steps that need your hands.
 
 ```text
-Set up sidetap (github.com/ucsandman/sidetap) on this Windows machine so LLM agents can drive my iPhone over USB.
+Set up SideTap (github.com/ucsandman/sidetap) on this Windows machine so LLM agents can drive my iPhone over USB.
 
 1. Clone https://github.com/ucsandman/sidetap and run: pip install -r requirements.txt
 2. Install go-ios globally: npm install -g go-ios
@@ -67,7 +67,7 @@ python launch.py          :: opens the live viewer; the link comes up in the bac
 
 First time? Follow **[docs/setup-windows.md](docs/setup-windows.md)** (about 20 minutes, one-time: USB driver, Developer Mode, sideload WebDriverAgent).
 
-Prefer one click? Run `powershell scripts\install_shortcut.ps1` once — it puts a **Sidetap** shortcut on your Desktop and in the Start Menu. Double-click it (or double-click `sidetap.cmd`) instead of typing `python launch.py`. Add `-Startup` to also start sidetap when Windows starts.
+Prefer one click? Run `powershell scripts\install_shortcut.ps1` once — it puts a **SideTap** shortcut on your Desktop and in the Start Menu. Double-click it (or double-click `sidetap.cmd`) instead of typing `python launch.py`. Add `-Startup` to also start SideTap when Windows starts.
 
 Day-to-day commands:
 

@@ -11,7 +11,7 @@ import re
 import time
 from pathlib import Path
 
-from . import capture, config, device
+from . import approval, capture, config, device, trust
 from .wda_client import WDAClient, WDAError
 
 _client: WDAClient | None = None
@@ -36,6 +36,9 @@ def screenshot(path: str | None = None) -> bytes:
     png = capture.screenshot_png()
     if path:
         Path(path).write_bytes(png)
+    # Pixels cannot be scanned for injected text, but a vision model reads
+    # them, so a screenshot taints exactly like a text read.
+    trust.mark("screenshot", [])
     return png
 
 
@@ -77,7 +80,7 @@ def collect_texts(node: dict, out: list | None = None) -> list[dict]:
 # reads reuse one fetch. Any action invalidates; the short TTL bounds staleness
 # when the screen changes on its own (animations, notifications).
 _TREE_TTL = 2.0
-_tree_cache: dict = {"tree": None, "ts": 0.0}
+_tree_cache: dict = {"tree": None, "ts": 0.0, "flags": []}
 
 
 def _invalidate_tree() -> None:
@@ -85,12 +88,23 @@ def _invalidate_tree() -> None:
 
 
 def ui_tree() -> dict:
-    """Raw UI element tree (nested dicts). The precise view of the screen."""
+    """Raw UI element tree (nested dicts). The precise view of the screen.
+
+    Every text read in this module reaches the screen through here, so this is
+    the one place that has to mark the session tainted: whatever is on the
+    phone is attacker-controlled, and a send after this point needs a human.
+    """
     now = time.monotonic()
     if _tree_cache["tree"] is not None and now - _tree_cache["ts"] < _TREE_TTL:
+        trust.mark("screen", _tree_cache["flags"])
         return _tree_cache["tree"]
     tree = client().source()
-    _tree_cache.update(tree=tree, ts=time.monotonic())
+    # Scan the visible text only: the raw tree is mostly geometry, and the
+    # flags shown on the approval card should come from what a human would
+    # have seen (or, for hidden characters, would not have seen).
+    flags = trust.scan_items([e["text"] for e in collect_texts(tree)])
+    _tree_cache.update(tree=tree, ts=time.monotonic(), flags=flags)
+    trust.mark("screen", flags)
     return tree
 
 
@@ -520,9 +534,14 @@ def read_messages(contact: str, limit: int = 20) -> list[dict]:
     Returns [{'text', 'from_me'}, ...]. Closes the loop send_message opened:
     the agent can now see the reply, not just write.
     """
-    _open_thread(contact)
-    w, _h = client().window_size()
-    return _message_bubbles(ui_tree(), w)[-limit:]
+    with trust.internal():  # navigating to the thread is bookkeeping, not content
+        _open_thread(contact)
+        w, _h = client().window_size()
+        bubbles = _message_bubbles(ui_tree(), w)[-limit:]
+    # Incoming messages are the most direct injection route into this agent,
+    # so name this source specifically rather than leaving it as "screen".
+    trust.mark("read_messages", trust.scan_items([b["text"] for b in bubbles]))
+    return bubbles
 
 
 def send_message(contact: str, text: str) -> dict:

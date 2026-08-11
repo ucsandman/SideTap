@@ -544,6 +544,19 @@ def read_messages(contact: str, limit: int = 20) -> list[dict]:
     return bubbles
 
 
+_GATE_REFUSALS = {
+    "deny": "Send denied in the viewer. The user rejected this message.",
+    "timeout": (
+        "Nobody approved this send in the viewer in time, so it was refused. "
+        "Ask the user to click Approve and try again."
+    ),
+    "busy": (
+        "Another send is already waiting for approval in the viewer. "
+        "Answer that card first."
+    ),
+}
+
+
 def send_message(contact: str, text: str) -> dict:
     """Send a Message to a conversation: open Messages, open the thread, type, send.
 
@@ -551,32 +564,51 @@ def send_message(contact: str, text: str) -> dict:
     Refuses to send if the contact name is ambiguous or the thread that opens does
     not match `contact`, and records every send to .state/actions.log.
 
+    Prompt-injection gate: once anything has been read off the phone in this
+    process, the send waits for the user to click Approve in the viewer. A send
+    the user typed into the viewer themselves is not gated. There is deliberately
+    no argument to skip this — every parameter of an MCP tool is reachable by an
+    injected instruction, so a bypass argument would hand over the key.
+
     The compose field is labeled "Message", not "iMessage" — message bubbles carry
     "iMessage" in their labels, so never search for that.
     """
-    title = _open_thread(contact)
+    taint = trust.tainted()
+    if taint and not trust.is_human_initiated():
+        flags = list(taint["flags"])
+        for flag in trust.scan(text):
+            if flag not in flags:
+                flags.append(flag)
+        verdict = approval.request(contact, text, flags, taint["source"])
+        if verdict != "approve":
+            _log_action(contact, None, text, sent=False)
+            raise WDAError(_GATE_REFUSALS.get(verdict, _GATE_REFUSALS["deny"]))
 
-    fields = [e for e in ocr() if e["type"] == "TextField"]
-    if not fields:
-        raise WDAError(
-            "No compose field on screen. Is the conversation open? Call ocr() to check."
-        )
-    field = max(fields, key=lambda e: e["y"])  # compose bar sits at the bottom
-    tap(field["x"], field["y"])
-    time.sleep(0.8)
-    type_text(text)
-    time.sleep(0.5)
-    sends = [
-        e
-        for e in ocr()
-        if e["type"] == "Button" and e["text"].strip().lower() == "send"
-    ]
-    if not sends:
-        raise WDAError("Send button not found — text may not have been typed.")
-    _log_action(contact, title, text, sent=False)  # attempt, before the tap
-    tap(sends[0]["x"], sends[0]["y"])
-    time.sleep(1.5)
-    _log_action(contact, title, text, sent=True)  # confirmed
+    with trust.internal():  # the send's own reads are not agent-facing content
+        title = _open_thread(contact)
+
+        fields = [e for e in ocr() if e["type"] == "TextField"]
+        if not fields:
+            raise WDAError(
+                "No compose field on screen. Is the conversation open? "
+                "Call ocr() to check."
+            )
+        field = max(fields, key=lambda e: e["y"])  # compose bar sits at the bottom
+        tap(field["x"], field["y"])
+        time.sleep(0.8)
+        type_text(text)
+        time.sleep(0.5)
+        sends = [
+            e
+            for e in ocr()
+            if e["type"] == "Button" and e["text"].strip().lower() == "send"
+        ]
+        if not sends:
+            raise WDAError("Send button not found — text may not have been typed.")
+        _log_action(contact, title, text, sent=False)  # attempt, before the tap
+        tap(sends[0]["x"], sends[0]["y"])
+        time.sleep(1.5)
+        _log_action(contact, title, text, sent=True)  # confirmed
     return {"contact": contact, "resolved_title": title, "text": text, "sent": True}
 
 

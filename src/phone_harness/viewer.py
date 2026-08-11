@@ -19,7 +19,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import admin, capture, config, device
+from . import admin, approval, capture, config, device, trust
 from .wda_client import WDAClient, WDAError, stop_engaged, stop_file
 
 _HTML = Path(__file__).with_name("viewer.html")
@@ -492,7 +492,11 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
                 try:
-                    with _ACTION_LOCK:
+                    # The human typed this recipient and this text into the
+                    # form and clicked, so there is nothing to approve. Gating
+                    # here would also block inside _ACTION_LOCK for the whole
+                    # approval timeout and freeze every other viewer gesture.
+                    with _ACTION_LOCK, trust.human_initiated():
                         result = helpers.send_message(to, message)
                 except WDAError:
                     raise  # existing 502 handler

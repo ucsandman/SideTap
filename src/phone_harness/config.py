@@ -42,6 +42,10 @@ def get(key: str, default: str | None = None) -> str | None:
 WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # noqa: vulture
 PHONE_PASSCODE = get("PHONE_PASSCODE")  # opt-in: lets helpers.unlock() type it
 
+# How long a gated send waits for the human to click Approve in the viewer.
+# Running out is a denial, never a send: the safe direction is not sending.
+SEND_APPROVAL_TIMEOUT = float(get("SEND_APPROVAL_TIMEOUT", "120") or "120")
+
 # Default moved off 8765: Practical Systems' pipeline API owns that port on
 # this workstation, and both stacks must run at the same time.
 VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")

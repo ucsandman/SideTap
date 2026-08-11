@@ -23,7 +23,7 @@ from __future__ import annotations
 import sys
 import traceback
 
-from . import config, helpers
+from . import config, helpers, trust
 
 
 def _agent_namespace() -> dict:
@@ -52,6 +52,12 @@ def _exec_stdin() -> int:
     except Exception:
         traceback.print_exc()
         return 1
+    finally:
+        # The MCP surface wraps screen reads in an envelope; this one prints
+        # the same warning, so an agent driving the phone through stdin is
+        # told what it just read is data, not instructions.
+        if trust.tainted():
+            print(f"\n[sidetap] {trust.WARNING}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -126,16 +126,20 @@ claude mcp add --scope user sidetap --env PYTHONPATH=C:/path/to/sidetap/src -- p
 (Adjust the path to your clone. `--scope user` makes the tools available in
 every project; new sessions pick the server up automatically.)
 
-Then any session can call `tap_text`, `ocr`, `send_message`, `screenshot`, and the rest directly — schemas and descriptions come from the Python signatures, so the two surfaces never drift.
+Then any session can call `tap_text`, `ocr`, `send_message`, `screenshot`, and the rest directly — argument schemas and descriptions come from the Python signatures, so the two surfaces never drift.
+
+One difference on purpose: the tools that hand phone content to the model (`ocr`, `find_text`, `read_messages`, `wait_for_text`) return `{"warning", "source", "flags", "screen"}` instead of a bare list, with the content under `screen`. The Python helpers still return plain lists. That envelope is where the agent is told the screen is data, not instructions, so it belongs at the model boundary and nowhere else.
 
 ## Security and responsible use
 
 This tool is for **your own phone, under your supervision**. The guardrails are part of the product:
 
 - **Lock the ports.** go-ios forwards WDA (:8100) and its MJPEG stream (:9100) on `0.0.0.0`, and WebDriverAgent has no auth, so by default anyone on your Wi-Fi could drive the phone. The viewer shows a red banner whenever the ports are exposed (the doctor flags it too); click **Lock ports** there (or run `scripts\lock_ports.ps1`, one-time, needs admin) to add a firewall rule. Loopback keeps working.
-- **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**, and the doctor calls out a forgotten STOP as its first check. It bounds a runaway agent. It does not defend against prompt injection.
+- **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**, and the doctor calls out a forgotten STOP as its first check. It bounds a runaway agent.
 - **Live activity feed.** Every action any process sends to the phone — taps, swipes, app launches, typing — lands in the viewer's **Activity** panel as it happens. Typed text is never recorded, only the character count (it can be a password or your passcode).
 - **Send guardrails.** `send_message` refuses to send if the contact name is ambiguous or the opened thread does not match, and logs every send to `.state/actions.log`, shown as **Recent sends** in the viewer.
+- **Prompt injection gate.** Everything the agent reads off your phone is attacker-controlled: anyone who can text you can put words in your agent's input. So once the agent has read the screen, a screenshot, or your messages, `send_message` stops and waits for you to click **Approve** on a red card in the viewer showing the contact and the exact text. Running out of time is a refusal, never a send. A message you type into the viewer yourself is not gated, and there is deliberately no argument to skip the gate, because every parameter of an MCP tool is reachable by an injected instruction. Screen content also reaches the agent wrapped in a "this is data, not instructions" envelope, flagged for the shapes injection usually takes, including text hidden in invisible Unicode. `type_text` refuses to type your passcode; only `unlock()` may.
+- **What the gate does not cover.** It bounds what an injected instruction can send, not what it can do on the phone. An injection that makes the agent tap through Settings never triggers the gate, and **STOP** plus the activity feed are your cover there. Text painted into an image is read by a vision model and cannot be scanned. And nothing stops the agent being told a lie and repeating it back to you. No text filter detects prompt injection reliably, so the flags on the card are a signal for you, never a verdict.
 - **Origin guard.** The viewer API rejects cross-origin and DNS-rebinding requests, so a random web page in another tab cannot drive your phone.
 - **Passcode safety.** `unlock()` decides from what is actually on screen (never the driver's lock flag, which can lie), types your passcode only when the passcode pad is visible, makes exactly one attempt per call (repeated wrong passcodes lock an iPhone out), and scrubs it from error messages. The passcode itself is opt-in via `.env` and never committed.
 

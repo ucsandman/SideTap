@@ -103,6 +103,8 @@ PY
 | `ui_tree()` | full raw element tree (cached ~2s; every action invalidates it) |
 | `tap(x, y)` / `long_press(x, y)` | touch at points |
 | `tap_text("General")` | find text and tap it |
+| `scroll_until_found("Notifications")` | scroll until it sits tappable mid-screen; returns the element |
+| `find_on_home_screen("Brain Dump")` | sweep Home Screen pages for an icon; returns the element (~8s per page) |
 | `type_text("hello")` | type into the focused field |
 | `swipe(x1,y1,x2,y2)` / `scroll("down")` | gestures |
 | `open_app("Settings")` | launch by friendly name or bundle id |
@@ -130,6 +132,12 @@ every project; new sessions pick the server up automatically.)
 Then any session can call `tap_text`, `ocr`, `send_message`, `screenshot`, and the rest directly — argument schemas and descriptions come from the Python signatures, so the two surfaces never drift.
 
 One difference on purpose: the tools that hand phone content to the model (`ocr`, `find_text`, `read_messages`, `wait_for_text`) return `{"warning", "source", "flags", "screen"}` instead of a bare list, with the content under `screen`. The Python helpers still return plain lists. That envelope is where the agent is told the screen is data, not instructions, so it belongs at the model boundary and nowhere else.
+
+The other difference is size. `ocr` and `find_text` **compact** what they return, because the model pays for every byte of it: whole-screen wrappers go, `rect` goes (`x`/`y` is what a tap needs), a `StaticText` or `Image` label repeating the text of the control that encloses it goes, and identical text landing twice in the same place collapses to whichever entry is worth tapping. Measured across four real screens, that is **64% fewer tokens** per read.
+
+Dropping the inner label is also the safer target, since tapping it instead of its button is the classic mis-tap. Only those two label types are ever droppable, so anything independently tappable or stateful — a `Switch` inside its row, a `checkmark` reporting which option is selected — always survives. `Other` is deliberately **not** treated as a wrapper: the Home Screen search affordance is an `Other`, and dropping the type loses the only way to tap it.
+
+Pass `ocr(full=True)` for the raw tree with rects. The Python helpers are untouched, so `viewer.py` and `send_message` still see everything.
 
 ## Security and responsible use
 

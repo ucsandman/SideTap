@@ -183,6 +183,69 @@ def tap_text(text: str, index: int = 0, exact: bool = False) -> dict:
     return el
 
 
+# Fractions of screen height where a nav bar or bottom toolbar can sit on top
+# of a list row. A hit inside them is real but not reliably tappable — tapping
+# one lands on the chrome instead of the row — so the scroll helpers keep going
+# until a hit lands between them. Measured on a 956pt screen: the nav bar ends
+# ~162pt and the search/tab bar starts ~822pt.
+_REACH_TOP, _REACH_BOTTOM = 0.17, 0.86
+
+
+def _in_reach(el: dict, height: float) -> bool:
+    return _REACH_TOP * height < el["y"] < _REACH_BOTTOM * height
+
+
+def scroll_until_found(
+    text: str,
+    max_scrolls: int = 8,
+    direction: str = "down",
+    amount: float = 0.35,
+    exact: bool = False,
+) -> dict:
+    """Scroll until `text` sits in the tappable middle of the screen, return it.
+
+    One call instead of scroll-a-guessed-amount-then-look-then-correct. A hit
+    hiding under the nav bar does not count as found, because tapping it hits
+    the bar instead of the row — that exact mis-tap is what this prevents.
+    """
+    _, h = client().window_size()
+    for _ in range(max_scrolls + 1):
+        for el in find_text(text, exact=exact):
+            if _in_reach(el, h):
+                return el
+        scroll(direction, amount)
+        wait_stable(timeout=3)
+    raise WDAError(
+        f"{text!r} never reached the tappable middle of the screen after "
+        f"{max_scrolls} {direction} scrolls. Call ocr() to see what is visible."
+    )
+
+
+def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
+    """Find a Home Screen icon by name across pages, return the element.
+
+    find_text only ever sees the current page, so an icon parked deep in the
+    Home Screen reads as missing. "Add to Home Screen" drops a new icon in the
+    first free slot, which is usually the last page, so this is the normal way
+    to find one. Icons inside folders are not visible to this.
+    """
+    w, h = client().window_size()
+    press_home()
+    wait_stable(timeout=3)
+    press_home()  # from any page, a second press lands on page 1
+    wait_stable(timeout=3)
+    for _ in range(max_pages):
+        for el in find_text(text):
+            if el.get("type") == "Icon":
+                return el
+        swipe(w * 0.9, h / 2, w * 0.1, h / 2, 0.3)
+        wait_stable(timeout=3)
+    raise WDAError(
+        f"No Home Screen icon named {text!r} in the first {max_pages} pages. "
+        "It may be inside a folder, where this cannot see it."
+    )
+
+
 def type_text(text: str) -> None:
     """Type into the currently focused text field (tap the field first).
 
@@ -774,6 +837,8 @@ __all__ = [
     "scroll",
     "find_text",
     "tap_text",
+    "scroll_until_found",
+    "find_on_home_screen",
     "type_text",
     "press_home",
     "open_app",

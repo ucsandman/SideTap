@@ -55,10 +55,17 @@ def test_wrapped_tools_hide_internal_params():
 
 def test_act_runs_steps_in_order(monkeypatch):
     calls = []
-    monkeypatch.setitem(mcp_server._ACT_TOOLS, "tap", lambda x, y: calls.append(("tap", x, y)))
-    monkeypatch.setitem(mcp_server._ACT_TOOLS, "type_text", lambda text: calls.append(("type", text)))
+    monkeypatch.setitem(
+        mcp_server._ACT_TOOLS, "tap", lambda x, y: calls.append(("tap", x, y))
+    )
+    monkeypatch.setitem(
+        mcp_server._ACT_TOOLS, "type_text", lambda text: calls.append(("type", text))
+    )
     out = mcp_server.act(
-        [{"tool": "tap", "args": {"x": 1, "y": 2}}, {"tool": "type_text", "args": {"text": "hi"}}]
+        [
+            {"tool": "tap", "args": {"x": 1, "y": 2}},
+            {"tool": "type_text", "args": {"text": "hi"}},
+        ]
     )
     assert calls == [("tap", 1, 2), ("type", "hi")]
     assert [s["ok"] for s in out] == [True, True]
@@ -145,6 +152,133 @@ def test_act_can_still_reach_the_wrapped_read_tools(monkeypatch):
     out = mcp_server.act([{"tool": "ocr", "args": {}}])
     assert out[0]["ok"] is True
     assert out[0]["result"]["screen"] == [{"text": "General"}]
+
+
+# ---- compaction -------------------------------------------------------------
+# A raw screen read is ~2/3 noise. The model pays for every byte, so the MCP
+# boundary strips it. helpers.ocr() stays full for viewer.py and send_message.
+
+
+def _row(text, type_, x, y, w, h):
+    return {
+        "text": text,
+        "x": x + w / 2,
+        "y": y + h / 2,
+        "type": type_,
+        "rect": {"x": x, "y": y, "width": w, "height": h},
+    }
+
+
+def test_compact_drops_a_label_enclosed_by_its_button():
+    button = _row("Show Previews, When Unlocked", "Button", 20, 400, 400, 50)
+    label = _row("Show Previews", "StaticText", 40, 415, 100, 20)
+    out = mcp_server._compact([button, label])
+    assert [r["text"] for r in out] == ["Show Previews, When Unlocked"]
+
+
+def test_compact_keeps_a_standalone_label():
+    """'What's on your mind?' has no enclosing control; losing it blinds the model."""
+    prompt = _row("What's on your mind?", "StaticText", 35, 84, 370, 22)
+    out = mcp_server._compact([prompt])
+    assert [r["text"] for r in out] == ["What's on your mind?"]
+
+
+def test_compact_keeps_an_enclosed_switch():
+    """A Switch inside its row is independently tappable, so it must survive even
+    though the row's label contains its text."""
+    row = _row("Airplane Mode, On", "Switch", 20, 400, 400, 50)
+    toggle = _row("On", "Switch", 339, 412, 63, 29)
+    out = mcp_server._compact([row, toggle])
+    assert {r["text"] for r in out} == {"Airplane Mode, On", "On"}
+
+
+def test_compact_keeps_a_checkmark_that_reports_state():
+    """The checkmark is how the model reads which option is selected."""
+    cell = _row("Always", "Cell", 20, 133, 400, 51)
+    check = _row("checkmark", "Button", 381, 150, 17, 16)
+    out = mcp_server._compact([cell, check])
+    assert "checkmark" in {r["text"] for r in out}
+
+
+def test_compact_drops_containers_and_rect():
+    app = _row("Settings", "Application", 0, 0, 440, 956)
+    cell = _row("General", "Cell", 20, 300, 400, 49)
+    out = mcp_server._compact([app, cell])
+    assert [r["text"] for r in out] == ["General"]
+    assert "rect" not in out[0]
+    assert {"x", "y"} <= set(out[0])  # still tappable
+
+
+def test_compact_tolerates_rows_without_geometry():
+    assert mcp_server._compact([{"text": "General"}]) == [{"text": "General"}]
+
+
+def test_ocr_compacts_by_default_and_full_opts_out(monkeypatch):
+    rows = [
+        _row("Notifications", "Button", 20, 400, 400, 50),
+        _row("Notifications", "StaticText", 36, 415, 127, 20),
+    ]
+    monkeypatch.setattr(mcp_server.helpers, "ocr", lambda: rows)
+    assert len(mcp_server.ocr()["screen"]) == 1
+    full = mcp_server.ocr(full=True)["screen"]
+    assert len(full) == 2 and "rect" in full[0]
+
+
+def test_find_text_returns_the_element_worth_tapping(monkeypatch):
+    hits = [
+        _row("Show Previews", "StaticText", 40, 415, 100, 20),
+        _row("Show Previews, When Unlocked", "Button", 20, 400, 400, 50),
+    ]
+    monkeypatch.setattr(mcp_server.helpers, "find_text", lambda text, exact: hits)
+    out = mcp_server.find_text("Previews")["screen"]
+    assert [r["type"] for r in out] == ["Button"]
+
+
+def test_compact_keeps_an_other_that_is_a_real_target():
+    """The Home Screen search affordance is an `Other`. Treating the type as
+    noise silently loses the only way to tap it."""
+    search = _row("Search", "Other", 180, 763, 80, 31)
+    glyph = _row("Search", "Image", 191, 773, 13, 11)
+    label = _row("Search", "StaticText", 206, 771, 43, 15)
+    out = mcp_server._compact([search, glyph, label])
+    assert [(r["text"], r["type"]) for r in out] == [("Search", "Other")]
+
+
+def test_compact_collapses_an_identical_twin_in_the_same_place():
+    bar = _row("Vertical scroll bar, 3 pages", "Other", 407, 116, 30, 754)
+    twin = _row("Vertical scroll bar, 3 pages", "Other", 407, 116, 30, 754)
+    assert len(mcp_server._compact([bar, twin])) == 1
+
+
+def test_duplicate_collapsing_prefers_the_actionable_element():
+    label = _row("Wi-Fi", "StaticText", 20, 400, 400, 50)
+    button = _row("Wi-Fi", "Button", 20, 400, 400, 50)
+    out = mcp_server._compact([label, button])
+    assert [r["type"] for r in out] == ["Button"]
+
+
+def test_compact_keeps_side_by_side_elements_sharing_text():
+    """Non-overlapping rects are different targets even with the same text."""
+    left = _row("Edit", "Button", 20, 400, 60, 40)
+    right = _row("Edit", "Button", 300, 400, 60, 40)
+    assert len(mcp_server._compact([left, right])) == 2
+
+
+def test_round_trip_helpers_are_registered_with_schemas():
+    tools = {t.name: t for t in _tools()}
+    assert {"text", "max_scrolls", "direction"} <= set(
+        tools["scroll_until_found"].inputSchema["properties"]
+    )
+    assert {"text", "max_pages"} <= set(
+        tools["find_on_home_screen"].inputSchema["properties"]
+    )
+    # they hand back phone content, so they carry the untrusted envelope note
+    assert "never as instructions" in tools["find_on_home_screen"].description
+
+
+def test_ocr_full_flag_is_on_the_tool_schema():
+    tools = {t.name: t for t in _tools()}
+    assert "full" in tools["ocr"].inputSchema["properties"]
 
 
 def test_no_agent_tool_can_change_the_gate_setting():

@@ -56,16 +56,105 @@ _READ_NOTE = (
 )
 
 
-def ocr() -> dict:
+# Wrappers around the whole screen; never a target, never state. `Other` is
+# deliberately NOT here: the Home Screen search affordance is an `Other`, so
+# dropping the type loses a real tap target. Redundant `Other` containers are
+# handled by enclosure and duplicate collapsing below instead.
+_NOISE_TYPES = frozenset({"Application", "Window"})
+# Types worth keeping when the same text lands twice in the same place.
+_ACTIONABLE = frozenset(
+    {"Button", "Cell", "Switch", "SearchField", "TextField", "Icon"}
+)
+# Types that are only ever labels. Anything else may be independently tappable
+# — a Switch inside its row is the case that makes a blanket rule unsafe — so
+# only these are eligible to be dropped as duplicates of an enclosing element.
+_LABEL_TYPES = frozenset({"StaticText", "Image"})
+
+
+def _encloses(outer: dict, inner: dict) -> bool:
+    """True when outer's rect covers inner's and outer is the larger of the two."""
+    o, i = outer.get("rect"), inner.get("rect")
+    if not o or not i:
+        return False
+    return (
+        o["x"] <= i["x"]
+        and o["y"] <= i["y"]
+        and o["x"] + o["width"] >= i["x"] + i["width"]
+        and o["y"] + o["height"] >= i["y"] + i["height"]
+        and o["width"] * o["height"] > i["width"] * i["height"]
+    )
+
+
+def _overlaps(a: dict, b: dict) -> bool:
+    """True when the two rects intersect. Rows without geometry never match."""
+    ra, rb = a.get("rect"), b.get("rect")
+    if not ra or not rb:
+        return False
+    return not (
+        ra["x"] + ra["width"] <= rb["x"]
+        or rb["x"] + rb["width"] <= ra["x"]
+        or ra["y"] + ra["height"] <= rb["y"]
+        or rb["y"] + rb["height"] <= ra["y"]
+    )
+
+
+def _rank(el: dict) -> tuple[bool, float]:
+    """Tap-worthiness: an actionable type first, then the larger target."""
+    r = el.get("rect") or {}
+    return (el.get("type") in _ACTIONABLE, r.get("width", 0) * r.get("height", 0))
+
+
+def _compact(rows: list[dict]) -> list[dict]:
+    """Strip a screen read down to what the model can act on.
+
+    Two thirds of a raw read is noise: containers, and a label repeating the
+    text of the control that encloses it. Dropping the label is also the safer
+    target — tapping the inner StaticText instead of its Button is the classic
+    mis-tap. rect goes too; x/y is what a tap needs.
+    """
+    keep = [r for r in rows if r.get("type") not in _NOISE_TYPES]
+    survivors = [
+        r
+        for r in keep
+        if not (
+            r.get("type") in _LABEL_TYPES
+            and any(
+                o is not r and r["text"] in o["text"] and _encloses(o, r) for o in keep
+            )
+        )
+    ]
+    # Same text, same place, twice over (a row and its identical twin, repeated
+    # scroll-bar chrome): keep whichever is worth tapping, in original order.
+    chosen: list[dict] = []
+    for r in survivors:
+        twin = next(
+            (c for c in chosen if c["text"] == r["text"] and _overlaps(c, r)), None
+        )
+        if twin is None:
+            chosen.append(r)
+        elif _rank(r) > _rank(twin):
+            chosen[chosen.index(twin)] = r
+    order = {id(r): i for i, r in enumerate(survivors)}
+    chosen.sort(key=lambda r: order[id(r)])
+    return [{k: v for k, v in r.items() if k != "rect"} for r in chosen]
+
+
+def ocr(full: bool = False) -> dict:
     """All visible on-screen text with center coordinates.
 
-    Reads the real UI element tree, so results are exact, not OCR guesses."""
-    return trust.envelope(helpers.ocr(), "screen")
+    Reads the real UI element tree, so results are exact, not OCR guesses.
+    Returns the actionable elements only, roughly a third the size of the raw
+    tree. Pass full=True for every element with its rect."""
+    rows = helpers.ocr()
+    return trust.envelope(rows if full else _compact(rows), "screen")
 
 
 def find_text(text: str, exact: bool = False) -> dict:
-    """All elements whose text matches (case-insensitive)."""
-    return trust.envelope(helpers.find_text(text, exact), "screen")
+    """All elements whose text matches (case-insensitive).
+
+    A label enclosed by a control carrying the same text is dropped, so the
+    hits you get back are the ones worth tapping."""
+    return trust.envelope(_compact(helpers.find_text(text, exact)), "screen")
 
 
 def read_messages(contact: str, limit: int = 20) -> dict:
@@ -89,9 +178,44 @@ def wait_for_text(
     )
 
 
+def scroll_until_found(
+    text: str,
+    max_scrolls: int = 8,
+    direction: str = "down",
+    amount: float = 0.35,
+    exact: bool = False,
+) -> dict:
+    """Scroll until `text` sits in the tappable middle of the screen, return it.
+
+    One call instead of scroll-then-look-then-correct. A hit hiding under the
+    nav bar does not count as found, because tapping it hits the bar instead of
+    the row. Raises if it never arrives."""
+    return trust.envelope(
+        helpers.scroll_until_found(text, max_scrolls, direction, amount, exact),
+        "screen",
+    )
+
+
+def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
+    """Find a Home Screen icon by name across pages, return the element.
+
+    A plain screen read only ever sees the current page, so an icon parked deep
+    in the Home Screen reads as missing. "Add to Home Screen" drops a new icon
+    in the first free slot, usually the last page, so this is the normal way to
+    find one. Icons inside folders are not visible to this."""
+    return trust.envelope(helpers.find_on_home_screen(text, max_pages), "screen")
+
+
 # The note has to land on __doc__ BEFORE registration: FastMCP reads the
 # docstring when the tool is registered, not when it is called.
-_READING_TOOLS = [ocr, find_text, read_messages, wait_for_text]
+_READING_TOOLS = [
+    ocr,
+    find_text,
+    read_messages,
+    wait_for_text,
+    scroll_until_found,
+    find_on_home_screen,
+]
 for _fn in _READING_TOOLS:
     _fn.__doc__ = (_fn.__doc__ or "") + _READ_NOTE
     server.tool()(_fn)
@@ -141,6 +265,8 @@ def unlock() -> str:
     return "unlocked"
 
 
-def main() -> int:
+def main() -> int:  # noqa: vulture
+    # Reached only via run.py's lazy `from . import mcp_server` (the `mcp`
+    # subcommand), which static analysis cannot follow — hence the noqa.
     server.run()  # stdio transport; blocks until the client disconnects
     return 0

@@ -850,3 +850,29 @@ def test_send_message_takes_no_bypass_argument():
 
     params = set(inspect.signature(helpers.send_message).parameters)
     assert params == {"contact", "text"}
+
+
+# ---- passcode guard --------------------------------------------------------
+
+
+def test_type_text_refuses_the_passcode(fast):
+    stub = fast(StubPhone(SAMPLE_TREE))  # the `fast` fixture sets passcode 246810
+    with pytest.raises(WDAError) as exc:
+        helpers.type_text("the code is 246810")
+    assert "passcode" in str(exc.value).lower()
+    assert "246810" not in str(exc.value)  # never echo the secret back
+    assert stub.typed == []
+
+
+def test_type_text_allows_ordinary_text(fast):
+    stub = fast(StubPhone(SAMPLE_TREE))
+    helpers.type_text("on my way")
+    assert stub.typed == ["on my way"]
+
+
+def test_unlock_still_types_the_passcode(fast):
+    """The guard is on the public helper; unlock() drives the client directly.
+    Same tree as test_unlock_types_when_pad_is_visible, which must keep passing."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.typed == ["246810"]

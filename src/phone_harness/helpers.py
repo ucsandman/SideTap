@@ -184,7 +184,19 @@ def tap_text(text: str, index: int = 0, exact: bool = False) -> dict:
 
 
 def type_text(text: str) -> None:
-    """Type into the currently focused text field (tap the field first)."""
+    """Type into the currently focused text field (tap the field first).
+
+    Refuses to type PHONE_PASSCODE. Nothing the agent legitimately types
+    contains it, and an injected instruction must not be able to spend it into
+    a note, a search box or a message. unlock() types it straight through the
+    client, so unlocking is unaffected.
+    """
+    if config.PHONE_PASSCODE and config.PHONE_PASSCODE in text:
+        raise WDAError(
+            "Refused: this text contains your phone passcode. Only unlock() "
+            "may type it. If this was not you, an instruction on the phone "
+            "screen may have tried to steal it."
+        )
     _invalidate_tree()
     client().type_text(text)
 

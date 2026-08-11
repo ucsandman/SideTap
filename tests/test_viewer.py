@@ -421,3 +421,58 @@ def test_unlock_endpoint_names_the_fix_when_link_down(base_url, monkeypatch):
     j = r.json()
     assert j["ok"] is False
     assert "wake" in j["error"].lower()
+
+
+# ---- send approval (the prompt-injection gate's human surface) --------------
+
+
+def test_pending_send_is_null_when_nothing_waits(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    r = requests.get(base_url + "/api/pending_send", timeout=5)
+    assert r.json() == {"pending": None}
+
+
+def test_pending_send_shows_the_waiting_record(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    (tmp_path / "pending_send.json").write_text(
+        '{"id": "abc", "contact": "Mom", "text": "hi", "flags": [], '
+        '"taint_source": "read_messages", "created": 1}',
+        encoding="utf-8",
+    )
+    r = requests.get(base_url + "/api/pending_send", timeout=5)
+    assert r.json()["pending"]["contact"] == "Mom"
+
+
+def test_send_decision_writes_the_answer(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    (tmp_path / "pending_send.json").write_text('{"id": "abc"}', encoding="utf-8")
+    r = requests.post(
+        base_url + "/api/send_decision",
+        json={"id": "abc", "decision": "approve"},
+        timeout=5,
+    )
+    assert r.json() == {"ok": True}
+    assert "approve" in (tmp_path / "send_decision.json").read_text(encoding="utf-8")
+
+
+def test_send_decision_rejects_a_stale_id(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    (tmp_path / "pending_send.json").write_text('{"id": "abc"}', encoding="utf-8")
+    r = requests.post(
+        base_url + "/api/send_decision",
+        json={"id": "gone", "decision": "approve"},
+        timeout=5,
+    )
+    assert r.json() == {"ok": False}
+    assert not (tmp_path / "send_decision.json").exists()
+
+
+def test_send_decision_rejects_cross_origin(base_url):
+    """A page in another tab must not be able to approve a send."""
+    r = requests.post(
+        base_url + "/api/send_decision",
+        json={"id": "abc", "decision": "approve"},
+        headers={"Origin": "http://evil.example"},
+        timeout=5,
+    )
+    assert r.status_code == 403

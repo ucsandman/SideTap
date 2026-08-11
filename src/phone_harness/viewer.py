@@ -390,6 +390,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_recent_activity())
             elif path == "/api/stop":
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/pending_send":
+                # A send the agent asked for after reading the phone. It is
+                # blocked in another process until this is answered.
+                self._json({"pending": approval.pending()})
             elif path == "/api/apps":
                 from . import helpers
 
@@ -481,6 +485,11 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     stop_file().unlink(missing_ok=True)
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/send_decision":
+                ok = approval.decide(
+                    str(payload.get("id", "")), str(payload.get("decision", ""))
+                )
+                self._json({"ok": ok})
             elif path == "/api/text":
                 from . import helpers
 

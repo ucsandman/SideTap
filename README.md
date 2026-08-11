@@ -36,7 +36,8 @@ Set up SideTap (github.com/ucsandman/sidetap) on this Windows machine so LLM age
 5. Run phone-harness doctor after every step. Every FAIL names its own fix. Loop until all checks pass. Never guess at connection problems.
 6. When doctor is green, run: python launch.py and confirm the live viewer shows my phone screen at http://127.0.0.1:8770.
 7. If I use Claude Code, register the phone as native tools: claude mcp add --scope user sidetap --env PYTHONPATH=<absolute path to the clone>/src -- python -m phone_harness mcp (skip this step otherwise).
-8. Remind me at the end: free Apple ID signatures expire every 7 days. When touch input dies, phone-harness fix-input brings it back.
+8. If I use Claude Code, install the bundled skills so every session reads the harness's traps before its first tap: copy the skills/phone and skills/phone-gotchas folders into ~/.claude/skills/ (skip this step otherwise).
+9. Remind me at the end: free Apple ID signatures expire every 7 days. When touch input dies, phone-harness fix-input brings it back.
 
 Ask me before anything that touches my Apple ID, my phone's settings, or sends anything from my phone.
 ```
@@ -47,6 +48,7 @@ Ask me before anything that touches my Apple ID, my phone's settings, or sends a
 - **Live viewer in your browser** at ~34 fps: click to tap, drag to swipe, type on your keyboard, save screenshots. One-click **Unlock** (types your passcode from `.env`) and **Restart link** (the fix after a replug). Works even before touch input is set up.
 - **One-call flows** like `send_message("Mom", "on my way")` that open Messages, find the thread, type, and send, with guardrails (see Security). `read_messages("Mom")` reads the replies back.
 - **Native MCP tools.** `claude mcp add sidetap -- phone-harness mcp` gives any Claude Code or Claude Desktop session the whole helper API as typed tool calls — no Python piping.
+- **Agent skills in the box.** Copy [`skills/phone`](skills/phone) and [`skills/phone-gotchas`](skills/phone-gotchas) into `~/.claude/skills/` and any Claude Code session picks up the helper API *and* the traps that otherwise cost an hour of debugging: Home Screen icons only drag in jiggle mode (and fail silently outside it), coordinates are points and not pixels, the page editor is too heavy for the UI-tree read, and what the harness genuinely cannot do.
 - **Live activity feed.** Every tap, swipe, and keystroke count any agent sends shows up in the viewer as it happens, so you always know what just drove the screen.
 - **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires.
 - **Free Apple ID signing that actually works.** Sideloadly leaves the nested `.xctest` bundle unsigned, so the driver never launches. `phone-harness fix-input` repairs that locally: no Apple password scripting, no paid developer account. See [How the signing fix works](#how-the-signing-fix-works).

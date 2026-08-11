@@ -73,6 +73,25 @@ hides the send inside a batch either way.
 Cross-process handoff uses `.state/`, the same pattern already used by `STOP` and
 `wda_session`. The MCP server, the CLI and the viewer are separate processes.
 
+## Decision 4 — the viewer's own send is never gated, and the bypass is not a parameter
+
+Found while planning. The viewer's `/api/text` calls `helpers.send_message` while holding
+`_ACTION_LOCK`, and the viewer process reads the screen constantly, so it is permanently
+tainted. Left alone, every message the user typed into the viewer's own form would raise
+a card asking the user to approve their own click — and it would hold `_ACTION_LOCK` for
+the whole timeout, freezing every other viewer gesture.
+
+**Chosen: a thread-local `trust.human_initiated()` context manager that only `viewer.py`
+enters.** The user typed that recipient and that text into a form and clicked. There is
+no agent in the loop, so there is nothing to approve.
+
+Rejected: **a `send_message(..., approved=True)` parameter.** Every parameter of an
+MCP-exposed function is reachable by an injected instruction, so a bypass argument would
+hand the attacker the key. `send_message`'s signature does not change.
+
+Thread-local, not global, because the viewer is a `ThreadingHTTPServer`: one thread's
+human-initiated send must not un-gate an agent send running in another.
+
 ## Components
 
 ### `src/phone_harness/trust.py` (new, ~120 lines, no I/O in the pure parts)
@@ -197,6 +216,7 @@ All tests pass with no phone attached.
 - `send_message` writes `pending_send.json` when tainted, and proceeds on approve.
 - `send_message` raises on deny and on timeout, and leaves no stale state files.
 - `type_text` refuses the passcode; `unlock()` still types it.
+- A send inside `trust.human_initiated()` is not gated even when tainted.
 - `ocr`, `find_text`, `read_messages`, `wait_for_text` and `screenshot` each set taint.
 - MCP reading tools return the envelope shape; `screenshot` still returns an `Image`.
 - Viewer: `/api/pending_send` and `/api/send_decision` round-trip and reject cross-origin.

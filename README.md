@@ -51,6 +51,7 @@ Ask me before anything that touches my Apple ID, my phone's settings, or sends a
 - **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires.
 - **Free Apple ID signing that actually works.** Sideloadly leaves the nested `.xctest` bundle unsigned, so the driver never launches. `phone-harness fix-input` repairs that locally: no Apple password scripting, no paid developer account. See [How the signing fix works](#how-the-signing-fix-works).
 - **Kill switch.** A red STOP button in the viewer freezes every agent action while you keep watching the screen.
+- **Prompt injection gate.** Anyone who can text you can put words in your agent's input. So once the agent has read your screen or your messages, a send stops and waits for you to approve the exact text in the viewer. Running out of time refuses it. It bounds what an injected instruction can send, not what it can tap, and [Security](#security-and-responsible-use) says exactly where that line is.
 
 ## Quick start
 

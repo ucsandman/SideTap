@@ -145,3 +145,15 @@ def test_act_can_still_reach_the_wrapped_read_tools(monkeypatch):
     out = mcp_server.act([{"tool": "ocr", "args": {}}])
     assert out[0]["ok"] is True
     assert out[0]["result"]["screen"] == [{"text": "General"}]
+
+
+def test_no_agent_tool_can_change_the_gate_setting():
+    """A gate an injected instruction can switch off is not a gate. The mode is
+    reachable from the viewer and .env only, never from a tool call."""
+    names = {t.name for t in _tools()}
+    assert not {n for n in names if "approval" in n or "mode" in n}
+    assert "set_mode" not in mcp_server._ACT_TOOLS
+    # and it must not have leaked into the agent's Python namespace either
+    from phone_harness import helpers
+
+    assert not {n for n in helpers.__all__ if "approval" in n or "mode" in n}

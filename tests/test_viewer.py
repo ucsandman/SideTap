@@ -476,3 +476,39 @@ def test_send_decision_rejects_cross_origin(base_url):
         timeout=5,
     )
     assert r.status_code == 403
+
+
+def test_send_approval_mode_is_readable(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(viewer.config, "SEND_APPROVAL", "always")
+    r = requests.get(base_url + "/api/send_approval", timeout=5)
+    assert r.json() == {"mode": "always", "modes": ["always", "flagged", "off"]}
+
+
+def test_send_approval_mode_can_be_toggled(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    r = requests.post(base_url + "/api/send_approval", json={"mode": "off"}, timeout=5)
+    assert r.json()["mode"] == "off"
+    assert (tmp_path / "send_approval").read_text(encoding="utf-8") == "off"
+    r = requests.get(base_url + "/api/send_approval", timeout=5)
+    assert r.json()["mode"] == "off"
+
+
+def test_send_approval_mode_rejects_junk(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    r = requests.post(
+        base_url + "/api/send_approval", json={"mode": "disabled"}, timeout=5
+    )
+    assert r.status_code == 400
+    assert not (tmp_path / "send_approval").exists()
+
+
+def test_send_approval_mode_rejects_cross_origin(base_url):
+    """The gate setting must not be flippable by a page in another tab."""
+    r = requests.post(
+        base_url + "/api/send_approval",
+        json={"mode": "off"},
+        headers={"Origin": "http://evil.example"},
+        timeout=5,
+    )
+    assert r.status_code == 403

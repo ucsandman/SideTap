@@ -86,6 +86,21 @@
   #send-approval .deny, #full-approval .deny { border-color:rgba(248,81,73,.6); color:var(--bad); }
   #send-approval .approve, #full-approval .approve { border-color:rgba(88,166,255,.6); }
 
+  /* ---- gate setting: always | flagged | off. Anything but "always" is a
+     reduced-safety state, so the control says so in amber. ---------------- */
+  #gate { flex:0 0 auto; display:flex; flex-direction:column; gap:3px; margin-bottom:var(--s2); }
+  #gate .row { display:flex; align-items:center; gap:6px; }
+  #gate .lbl { font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); white-space:nowrap; }
+  #gate .seg { display:flex; gap:2px; margin-left:auto; }
+  #gate button {
+    padding:2px 7px; font-size:11px; border-radius:var(--r2);
+    border:1px solid var(--line); background:none; color:var(--dim);
+  }
+  #gate button[aria-pressed="true"] { color:var(--fg); border-color:var(--blue); }
+  #gate.relaxed button[aria-pressed="true"] { color:#ffcf8f; border-color:#d29922; }
+  #gate .note { font-size:11px; color:#ffcf8f; line-height:1.3; }
+  #gate .note:empty { display:none; }
+
   /* ---- signature-expiry banner (7-day free-ID countdown, amber) ------- */
   #sig-banner {
     display:flex; align-items:center; gap:var(--s2); padding:9px 12px;
@@ -340,6 +355,17 @@
         <div id="app-chips" class="chips"></div>
       </div>
       <div id="col-agent" class="col">
+        <div id="gate">
+          <div class="row">
+            <span class="lbl">Approve sends</span>
+            <span class="seg">
+              <button data-mode="always" aria-pressed="false">Always</button>
+              <button data-mode="flagged" aria-pressed="false">Flagged</button>
+              <button data-mode="off" aria-pressed="false">Off</button>
+            </span>
+          </div>
+          <div class="note" id="gate-note"></div>
+        </div>
         <div id="send-approval" hidden></div>
         <div id="activity">
           <h2 class="sec">Activity</h2>
@@ -546,6 +572,33 @@ async function loadSent() {
 }
 document.getElementById('more-sends').onclick = () => openOverlay('full-sends', 'Recent sends');
 
+// The gate setting. Only reachable here and in .env, never from an agent tool:
+// a gate an injected instruction can switch off is not a gate.
+const GATE_NOTE = {
+  always: '',
+  flagged: 'Only asks when something looks off. A payload written to dodge the checks gets through.',
+  off: 'Never asks. STOP and the activity feed are all that is left.',
+};
+function renderGate(m) {
+  document.getElementById('gate').classList.toggle('relaxed', m !== 'always');
+  document.getElementById('gate-note').textContent = GATE_NOTE[m] || '';
+  document.querySelectorAll('#gate button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+}
+async function loadGate() {
+  try { renderGate((await getJSON('/api/send_approval')).mode); }
+  catch (e) { /* panel is best-effort */ }
+}
+document.querySelectorAll('#gate button').forEach(b => {
+  b.onclick = async () => {
+    try {
+      const j = await getJSON('/api/send_approval', {method:'POST', headers:JSON_HDR,
+        body: JSON.stringify({ mode: b.dataset.mode })});
+      renderGate(j.mode);
+    } catch (e) { loadGate(); }
+  };
+});
+
 // An agent that read the phone is asking to send. Untrusted content is already
 // in its context, so this decision is the human's, every time. No "always
 // allow": the risk lives in the message, not in the contact. The agent's call
@@ -664,6 +717,7 @@ window.addEventListener('load', () => {
   setInterval(loadActivity, 3000);
   setInterval(loadApproval, 1000);  // a blocked send must surface fast
   loadApproval();
+  loadGate();
   setInterval(loadPhone, 10000);
 });
 

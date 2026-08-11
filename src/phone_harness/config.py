@@ -42,6 +42,11 @@ def get(key: str, default: str | None = None) -> str | None:
 WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # noqa: vulture
 PHONE_PASSCODE = get("PHONE_PASSCODE")  # opt-in: lets helpers.unlock() type it
 
+# Prompt-injection gate: always | flagged | off. The default for this machine;
+# the viewer's toggle writes .state/send_approval, which wins at send time.
+# Anything unrecognized falls back to "always" (approval.mode fails safe).
+SEND_APPROVAL = get("SEND_APPROVAL", "always")
+
 # How long a gated send waits for the human to click Approve in the viewer.
 # Running out is a denial, never a send: the safe direction is not sending.
 SEND_APPROVAL_TIMEOUT = float(get("SEND_APPROVAL_TIMEOUT", "120") or "120")

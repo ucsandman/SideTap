@@ -97,3 +97,48 @@ def test_a_decision_for_another_request_is_not_accepted():
         '{"id": "old", "decision": "approve"}', encoding="utf-8"
     )
     assert approval.request("Mom", "hi", [], "screen", timeout=0) == "timeout"
+
+
+# ---- the three-way setting -------------------------------------------------
+# always | flagged | off. Reachable from the viewer and .env only, never from
+# an agent tool: a gate an injected instruction can switch off is not a gate.
+
+
+def test_mode_defaults_to_always(monkeypatch):
+    monkeypatch.setattr(config, "SEND_APPROVAL", None)
+    assert approval.mode() == "always"
+
+
+def test_mode_reads_the_env_default(monkeypatch):
+    monkeypatch.setattr(config, "SEND_APPROVAL", "flagged")
+    assert approval.mode() == "flagged"
+
+
+def test_the_viewer_toggle_beats_the_env_default(monkeypatch):
+    monkeypatch.setattr(config, "SEND_APPROVAL", "off")
+    approval.set_mode("always")
+    assert approval.mode() == "always"
+
+
+def test_set_mode_round_trips_every_value():
+    for value in ("off", "flagged", "always"):
+        assert approval.set_mode(value) == value
+        assert approval.mode() == value
+
+
+def test_set_mode_rejects_junk():
+    with pytest.raises(ValueError):
+        approval.set_mode("yes-please")
+
+
+@pytest.mark.parametrize("junk", ["", "  ", "ON", "maybe", "0"])
+def test_an_unreadable_setting_fails_safe_to_always(monkeypatch, junk):
+    """A corrupt file or a typo in .env must not silently disable the gate."""
+    monkeypatch.setattr(config, "SEND_APPROVAL", junk)
+    approval.mode_file().write_text(junk, encoding="utf-8")
+    assert approval.mode() == "always"
+
+
+def test_case_and_whitespace_are_tolerated(monkeypatch):
+    monkeypatch.setattr(config, "SEND_APPROVAL", "  FLAGGED \n")
+    assert approval.mode() == "flagged"

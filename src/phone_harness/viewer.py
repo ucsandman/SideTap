@@ -390,6 +390,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_recent_activity())
             elif path == "/api/stop":
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/send_approval":
+                self._json({"mode": approval.mode(), "modes": list(approval.MODES)})
             elif path == "/api/pending_send":
                 # A send the agent asked for after reading the phone. It is
                 # blocked in another process until this is answered.
@@ -485,6 +487,13 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     stop_file().unlink(missing_ok=True)
                 self._json({"stopped": stop_engaged()})
+            elif path == "/api/send_approval":
+                # The only writable path to the gate setting, and it is
+                # origin-guarded like every other POST. No agent tool sets this.
+                try:
+                    self._json({"mode": approval.set_mode(payload.get("mode", ""))})
+                except ValueError as exc:
+                    self._json({"error": str(exc)}, 400)
             elif path == "/api/send_decision":
                 ok = approval.decide(
                     str(payload.get("id", "")), str(payload.get("decision", ""))

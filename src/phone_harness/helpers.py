@@ -591,7 +591,11 @@ def send_message(contact: str, text: str) -> dict:
         for flag in trust.scan(text):
             if flag not in flags:
                 flags.append(flag)
-        verdict = approval.request(contact, text, flags, taint["source"])
+        gate = approval.mode()  # read now: the human can flip it mid-session
+        if gate == "off" or (gate == "flagged" and not flags):
+            verdict = "approve"
+        else:
+            verdict = approval.request(contact, text, flags, taint["source"])
         if verdict != "approve":
             _log_action(contact, None, text, sent=False)
             raise WDAError(_GATE_REFUSALS.get(verdict, _GATE_REFUSALS["deny"]))

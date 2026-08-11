@@ -20,6 +20,56 @@ from . import config
 
 POLL = 0.25
 
+# always  - every send after a read waits for a click (the safe default)
+# flagged - only ask when the scanner actually found something. Trades real
+#           safety for quiet: a payload written to dodge the heuristics gets
+#           through, because this promotes the flags from a hint to a verdict.
+# off     - never ask. STOP and the activity feed are all that is left.
+MODES = ("always", "flagged", "off")
+
+
+def mode_file() -> Path:
+    return config.STATE_DIR / "send_approval"
+
+
+def mode() -> str:
+    """The gate setting in force right now.
+
+    The viewer's toggle (.state/send_approval) beats the .env default, and is
+    read at send time, because the agent process is long-lived and the human
+    can flip it mid-session. Anything unrecognized, from a typo or a truncated
+    file, falls back to "always": a setting that cannot be read must never be
+    the one that disables the gate.
+
+    Deliberately not writable by any agent tool. See set_mode.
+    """
+    for value in (_read_text(mode_file()), config.SEND_APPROVAL):
+        if value and value.strip().lower() in MODES:
+            return value.strip().lower()
+    return "always"
+
+
+def set_mode(value: str) -> str:
+    """Change the gate setting. Called by the viewer toggle and nothing else.
+
+    Never registered as an MCP tool and never added to helpers.__all__: an
+    injected instruction that can switch the gate off has defeated it, so the
+    only way to reach this is a human clicking in the viewer or editing .env.
+    """
+    value = (value or "").strip().lower()
+    if value not in MODES:
+        raise ValueError(f"send approval mode must be one of {MODES}, got {value!r}")
+    config.STATE_DIR.mkdir(exist_ok=True)
+    mode_file().write_text(value, encoding="utf-8")
+    return value
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
 
 def pending_file() -> Path:
     """Read dynamically so tests can relocate STATE_DIR."""

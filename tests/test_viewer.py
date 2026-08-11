@@ -2,6 +2,7 @@
 
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -210,6 +211,32 @@ def test_viewer_html_has_no_duplicate_element_ids():
     ids = re.findall(r'\bid="([^"]+)"', html)
     dupes = {i for i in ids if ids.count(i) > 1}
     assert not dupes, f"duplicate element ids: {sorted(dupes)}"
+
+
+def test_viewer_html_javascript_parses():
+    # The whole page is one inline <script>: a syntax error anywhere in it
+    # leaves every button dead, and no Python test can see that — a stray
+    # `finally` shipped past a green 254-test run on 2026-08-11. Node is the
+    # parser we already have on this machine; skip where there isn't one
+    # rather than add a dependency for it.
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("no node to parse the page's JS with")
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+    assert scripts, "viewer.html has no inline script — did the page change shape?"
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "viewer.js"
+        js.write_text("\n".join(scripts), encoding="utf-8")
+        done = subprocess.run(
+            [node, "--check", str(js)], capture_output=True, text=True
+        )
+    assert done.returncode == 0, f"viewer.html JS does not parse:\n{done.stderr}"
 
 
 def test_status_carries_boot_id_for_auto_reload(base_url):
@@ -512,3 +539,40 @@ def test_send_approval_mode_rejects_cross_origin(base_url):
         timeout=5,
     )
     assert r.status_code == 403
+
+
+def test_gesture_during_a_long_action_is_dropped_not_queued(base_url, monkeypatch):
+    """A gesture the human aimed at a frozen screen must never fire later.
+
+    unlock() after deep sleep holds _ACTION_LOCK for 10-30s. Measured live
+    2026-08-11: four taps made during one 11s unlock ALL executed after it
+    finished, 4.8-9.5s stale, landing on the unlocked home screen instead of
+    the lock screen the human was looking at. Queueing them is the bug.
+    """
+    monkeypatch.setattr(viewer, "_ACTION_WAIT", 0.2)
+    client = viewer.Handler.client
+    with viewer._ACTION_LOCK:  # stand in for the unlock holding the phone
+        r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    assert r.status_code == 409
+    assert r.json()["ok"] is False
+    assert "busy" in r.json()["error"].lower()
+    assert "home" not in client.calls  # never ran, not even late
+
+
+def test_a_gesture_still_waits_for_a_quick_one_ahead_of_it(base_url):
+    """Two deliberate gestures in a row must still serialize, not get dropped."""
+    client = viewer.Handler.client
+    started = threading.Event()
+
+    def hold():
+        with viewer._ACTION_LOCK:
+            started.set()
+            time.sleep(0.15)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    started.wait(2)
+    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    holder.join()
+    assert r.status_code == 200
+    assert "home" in client.calls

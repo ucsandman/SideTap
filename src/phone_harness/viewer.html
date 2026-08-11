@@ -149,6 +149,16 @@
     padding:5px 12px; border-radius:99px; background:var(--bad); color:#fff;
     font-size:11px; font-weight:700; letter-spacing:.12em; pointer-events:none;
   }
+  /* A long action owns the phone (unlock is 11s awake, 20-30s after deep
+     sleep). Unlabelled, the pane just looks frozen — which is what makes
+     someone click it again, and those clicks used to queue and fire late.
+     Blue: this is an action in progress, not a fault. STOP still outranks it. */
+  #screen-wrap.busy:not(.stopped) { border-color:var(--accent); }
+  #screen-wrap.busy:not(.stopped)::after {
+    content:attr(data-busy); position:absolute; left:50%; top:18px; transform:translateX(-50%);
+    padding:5px 12px; border-radius:99px; background:var(--accent); color:#fff;
+    font-size:11px; font-weight:700; letter-spacing:.12em; pointer-events:none;
+  }
 
   /* ---- side pane ----------------------------------------------------- */
   #side {
@@ -456,6 +466,42 @@ function showHint(text) {
   hintHoldUntil = Date.now() + 6000;
 }
 
+// A long action (unlock, a send, an app launch) owns the phone for 10-30s.
+// The server now DROPS gestures made meanwhile rather than queueing them, so
+// the pane has to say it is busy — otherwise it reads as frozen and gets
+// clicked, which is how the stale-gesture burst started.
+let busyLabel = '';
+function setBusy(label) {
+  busyLabel = label;
+  const wrap = document.getElementById('screen-wrap');
+  if (label) wrap.dataset.busy = label;
+  wrap.classList.toggle('busy', !!label);
+}
+async function withBusy(label, fn) {
+  setBusy(label);
+  try { return await fn(); } finally { setBusy(''); }
+}
+// True when a gesture should not even be sent. Answers the click locally so
+// the human gets a reason instantly instead of a dropped request.
+function phoneBusy() {
+  if (!busyLabel) return false;
+  showHint(busyLabel.charAt(0) + busyLabel.slice(1).toLowerCase() +
+           '… taps are ignored until it finishes.');
+  return true;
+}
+// The fire-and-forget gesture buttons (Home, the edge-gesture shortcuts). They
+// had no failure to report before; a dropped gesture is a real outcome, so it
+// gets said instead of the button looking like it did nothing.
+async function gesturePost(url, body) {
+  if (phoneBusy()) return;
+  const r = await fetch(url, {method:'POST', headers:JSON_HDR,
+                              body: JSON.stringify(body || {})});
+  if (r.status === 409) {
+    const j = await r.json().catch(() => ({}));
+    showHint(j.error || 'Phone is busy — that gesture was dropped.');
+  }
+}
+
 // WDA's MJPEG server pushes ~15fps video; polling go-ios PNGs is the fallback.
 function startStream(port) {
   if (streaming) return;
@@ -753,8 +799,9 @@ screen.addEventListener('pointerup', async (ev) => {
   if (!drag || !points) return;
   const start = drag; drag = null;
   const r = screen.getBoundingClientRect();
-  showDot(start.x - r.left, start.y - r.top, inputEnabled);
+  showDot(start.x - r.left, start.y - r.top, inputEnabled && !busyLabel);
   if (!inputEnabled) return;
+  if (phoneBusy()) return;  // aimed at a screen the long action is about to change
   const clamp = (v, max) => Math.min(Math.max(v, 0), max);
   const toPt = (cx, cy) => ({
     x: clamp((cx - r.left) / r.width, 1) * points.width,
@@ -763,7 +810,12 @@ screen.addEventListener('pointerup', async (ev) => {
   const post = async (url, body) => {
     const resp = await fetch(url, {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    if (!resp.ok) showDot(start.x - r.left, start.y - r.top, false);
+    if (resp.ok) return;
+    showDot(start.x - r.left, start.y - r.top, false);
+    if (resp.status === 409) {   // dropped as stale, not queued — say why
+      const j = await resp.json().catch(() => ({}));
+      showHint(j.error || 'Phone is busy — that gesture was dropped.');
+    }
   };
   const moved = Math.hypot(ev.clientX - start.x, ev.clientY - start.y);
   if (moved < 8) {
@@ -800,6 +852,7 @@ async function flushWheel() {
 screen.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   if (!points || !inputEnabled) return;
+  if (phoneBusy()) { wheelAcc = 0; return; }
   wheelAcc += ev.deltaY;
   flushWheel();
 }, {passive: false});
@@ -827,6 +880,7 @@ window.addEventListener('keydown', (ev) => {
   if (!inputEnabled) return;
   if (ev.target.closest('input,textarea,button,select,[tabindex]')) return;     // typing in the paste box stays local
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
+  if (phoneBusy()) { ev.preventDefault(); return; }    // keys aimed at the pre-action screen
   let ch = null;
   if (ev.key === 'Enter') ch = '\n';
   else if (ev.key === 'Backspace') ch = '\b';
@@ -843,16 +897,19 @@ document.getElementById('btn-stop').onclick = async () => {
                                         body: JSON.stringify({stop: !stopped})});
   stopped = j.stopped; renderStop();
 };
-document.getElementById('btn-home').onclick = () =>
-  fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
+document.getElementById('btn-home').onclick = () => gesturePost('/api/home');
 document.getElementById('btn-unlock').onclick = async () => {
   const btn = document.getElementById('btn-unlock');
   btn.disabled = true; btn.textContent = 'Unlocking…';
-  try {
-    const r = await fetch('/api/unlock', {method:'POST', headers:JSON_HDR, body:'{}'});
-    const j = await r.json();
-    showHint(j.ok ? 'Unlocked.' : (j.error || 'Unlock failed'));
-  } catch (e) { showHint('Unlock failed'); }
+  // 11s from a fresh lock, 20-30s after a deep sleep (WDA stalls on the first
+  // call). The pane has to hold a label for that whole window.
+  await withBusy('UNLOCKING', async () => {
+    try {
+      const r = await fetch('/api/unlock', {method:'POST', headers:JSON_HDR, body:'{}'});
+      const j = await r.json();
+      showHint(j.ok ? 'Unlocked.' : (j.error || 'Unlock failed'));
+    } catch (e) { showHint('Unlock failed'); }
+  });
   btn.disabled = false; btn.textContent = 'Unlock';
 };
 document.getElementById('btn-lock').onclick = async () => {
@@ -986,8 +1043,7 @@ document.getElementById('btn-lan-lock').onclick = (ev) => lockPorts(ev.currentTa
 // impossible to land by dragging on a scaled-down screenshot.
 async function edgeSwipe(x1, y1, x2, y2) {
   if (!points || !inputEnabled) return;
-  await fetch('/api/swipe', {method:'POST', headers:JSON_HDR, body: JSON.stringify(
-    {x1, y1, x2, y2, seconds: 0.3})});
+  await gesturePost('/api/swipe', {x1, y1, x2, y2, seconds: 0.3});
 }
 document.getElementById('btn-notifs').onclick = () =>       // pull from top-left
   edgeSwipe(points.width * 0.25, 1, points.width * 0.25, points.height * 0.55);
@@ -1102,10 +1158,12 @@ function renderAppChips() {
       async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.dataset.busy = '1';
         try {
-          const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
-                                                  body: JSON.stringify({name})});
-          const j = await r.json();
-          if (!j.ok) showHint(j.error || 'Could not open ' + name);
+          await withBusy('OPENING', async () => {
+            const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
+                                                    body: JSON.stringify({name})});
+            const j = await r.json();
+            if (!j.ok) showHint(j.error || 'Could not open ' + name);
+          });
         } catch (e) { showHint('Could not open ' + name); }
         finally { delete b.dataset.busy; b.disabled = !inputEnabled; }
       },
@@ -1118,13 +1176,16 @@ document.getElementById('btn-text-send').onclick = async () => {
   if (!to || !message.trim()) { showHint('Contact and message are both needed.'); return; }
   const btn = document.getElementById('btn-text-send');
   btn.disabled = true; btn.textContent = 'Sending…'; btn.dataset.busy = '1';
+  // A send drives Messages for several seconds; same freeze, same treatment.
   try {
-    const r = await fetch('/api/text', {method:'POST', headers:JSON_HDR,
-                                        body: JSON.stringify({to, message})});
-    const j = await r.json();
-    showHint(j.ok ? 'Sent to ' + to + '.'
-                  : (j.error || 'Send not confirmed — check Recent sends.'));
-    if (j.ok) document.getElementById('text-msg').value = '';
+    await withBusy('SENDING', async () => {
+      const r = await fetch('/api/text', {method:'POST', headers:JSON_HDR,
+                                          body: JSON.stringify({to, message})});
+      const j = await r.json();
+      showHint(j.ok ? 'Sent to ' + to + '.'
+                    : (j.error || 'Send not confirmed — check Recent sends.'));
+      if (j.ok) document.getElementById('text-msg').value = '';
+    });
   } catch (e) { showHint('Send failed.'); }
   finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; btn.textContent = 'Send'; }
   loadSent(); renderContactChips();

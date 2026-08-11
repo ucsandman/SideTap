@@ -9,6 +9,7 @@ polling /api/screenshot when the stream is down.
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import subprocess
@@ -36,6 +37,33 @@ _FIX_JOB = {"running": False, "step": "idle", "message": "", "ok": None}
 # One phone gesture at a time: unlock() is a timed wake→swipe→type sequence,
 # and a tap/keystroke landing in the middle of it garbles both.
 _ACTION_LOCK = threading.Lock()
+
+# ...but a gesture that cannot START promptly is no longer aimed at the screen
+# the human was looking at, so it must be DROPPED rather than stored and
+# replayed. unlock() holds the lock 11s on a shallow lock and 20-30s after a
+# deep sleep, and a dark unresponsive screen is exactly what makes someone
+# click it again. Measured live 2026-08-11: four taps made during one 11s
+# unlock all executed AFTER it finished, 4.8-9.5s stale, landing on the
+# unlocked home screen — a burst of gestures nobody aimed at anything.
+# Generous enough that two deliberate gestures in a row still serialize (a tap
+# round-trips in ~0.4s, a swipe in ~0.9s).
+_ACTION_WAIT = 2.0
+
+
+class PhoneBusy(Exception):
+    """A gesture could not get the phone within _ACTION_WAIT, so it was dropped."""
+
+
+@contextlib.contextmanager
+def _action_slot():
+    """Hold the phone for one gesture, or drop the gesture if it waited too long."""
+    if not _ACTION_LOCK.acquire(timeout=_ACTION_WAIT):
+        raise PhoneBusy()
+    try:
+        yield
+    finally:
+        _ACTION_LOCK.release()
+
 
 # Last good /api/status payload. Served while a gesture holds _ACTION_LOCK so
 # the browser's poll doesn't queue requests inside WDA mid-sequence (unlock is
@@ -421,11 +449,11 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
         try:
             if path == "/api/tap":
-                with _ACTION_LOCK:
+                with _action_slot():
                     self.client.tap(float(payload["x"]), float(payload["y"]))
                 self._json({"ok": True})
             elif path == "/api/swipe":
-                with _ACTION_LOCK:
+                with _action_slot():
                     self.client.swipe(
                         float(payload["x1"]),
                         float(payload["y1"]),
@@ -435,15 +463,15 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 self._json({"ok": True})
             elif path == "/api/type":
-                with _ACTION_LOCK:
+                with _action_slot():
                     self.client.type_text(str(payload.get("text", "")))
                 self._json({"ok": True})
             elif path == "/api/home":
-                with _ACTION_LOCK:
+                with _action_slot():
                     self.client.home()
                 self._json({"ok": True})
             elif path == "/api/lock":
-                with _ACTION_LOCK:
+                with _action_slot():
                     self.client.lock()
                 self._json({"ok": True})
             elif path == "/api/unlock":
@@ -463,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
                         }
                     )
                     return
-                with _ACTION_LOCK:
+                with _action_slot():
                     # Reuse the viewer's client: unlock is timing-sensitive,
                     # and a fresh client would redo session discovery mid-wake.
                     helpers.unlock(self.client)
@@ -514,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
                     # form and clicked, so there is nothing to approve. Gating
                     # here would also block inside _ACTION_LOCK for the whole
                     # approval timeout and freeze every other viewer gesture.
-                    with _ACTION_LOCK, trust.human_initiated():
+                    with _action_slot(), trust.human_initiated():
                         result = helpers.send_message(to, message)
                 except WDAError:
                     raise  # existing 502 handler
@@ -539,7 +567,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "name is required"}, 400)
                     return
                 try:
-                    with _ACTION_LOCK:
+                    with _action_slot():
                         helpers.open_app(name)
                 except WDAError:
                     raise
@@ -556,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": str(exc)}, 400)
                     return
                 try:
-                    with _ACTION_LOCK:
+                    with _action_slot():
                         result = getattr(helpers, name)(*args, **kwargs)
                 except WDAError:
                     raise
@@ -567,6 +595,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, body.encode(), "application/json")
             else:
                 self._json({"error": "not found"}, 404)
+        except PhoneBusy:
+            # Dropped on purpose. Say so plainly: silence here reads as the
+            # freeze that caused the extra clicks in the first place.
+            self._json(
+                {
+                    "ok": False,
+                    "error": (
+                        "Phone is busy with another action — that one was "
+                        "dropped, not queued. Try again in a moment."
+                    ),
+                },
+                409,
+            )
         except WDAError as exc:
             self._json({"error": str(exc)}, 502)
         except (ConnectionAbortedError, BrokenPipeError):

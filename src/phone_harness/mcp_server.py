@@ -38,6 +38,7 @@ _TOOLS = [
     helpers.type_text,
     helpers.press_home,
     helpers.current_page,
+    helpers.goto_home_page,
     helpers.open_app,
     helpers.current_app,
     helpers.wait_for_app,

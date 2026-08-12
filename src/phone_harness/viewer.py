@@ -190,6 +190,25 @@ def _tune_mjpeg(client: WDAClient) -> None:
         pass  # stream still works on defaults
 
 
+# The Home Screen is an app like any other as far as WDA is concerned.
+_SPRINGBOARD = "com.apple.springboard"
+
+
+def _app_is_open(client: WDAClient) -> bool:
+    """True when something other than the Home Screen is frontmost.
+
+    Unknown counts as False, so the Home button falls back to the full walk
+    rather than becoming a dead button: press_home() does nothing at all once
+    you are already on the Home Screen.
+    """
+    try:
+        info = client.active_app() or {}
+    except WDAError:
+        return False
+    bundle = str(info.get("bundleId") or "")
+    return bool(bundle) and bundle != _SPRINGBOARD
+
+
 # 1x1 grey PNG shown when the phone is unreachable
 _PLACEHOLDER = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
@@ -493,11 +512,18 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/home":
                 from . import helpers
 
-                # Not client.home(): /wda/homescreen only exits an app to the
-                # springboard and is a no-op between Home Screen pages, so the
-                # button used to leave you wherever you already were.
+                # Two jobs, one button, exactly like the physical Home gesture:
+                # from an app it only LEAVES the app (~0.4s, one call), and only
+                # from the Home Screen itself does a second press walk to page 1.
+                # Walking unconditionally froze the phone for 6-8s behind a busy
+                # label just to minimise an app, which is most of what this
+                # button gets used for. The walk is still the only way to reach
+                # page 1: /wda/homescreen is a no-op between Home Screen pages.
                 with _action_slot():
-                    helpers.goto_home_page(1)
+                    if _app_is_open(self.client):
+                        helpers.press_home()
+                    else:
+                        helpers.goto_home_page(1)
                 self._json({"ok": True})
             elif path == "/api/lock":
                 with _action_slot():

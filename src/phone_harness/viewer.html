@@ -361,7 +361,7 @@
     <div id="controls">
       <button id="btn-stop" aria-pressed="false">■ STOP</button>
       <div id="buttons">
-        <button id="btn-home">⌂ Home</button>
+        <button id="btn-home" title="Leave the app. Press again from the Home Screen to walk to page 1.">⌂ Home</button>
         <button id="btn-unlock">Unlock</button>
         <button id="btn-lock">Lock</button>
         <button id="btn-notifs" hidden>▾ Notifs</button>
@@ -1020,7 +1020,7 @@ document.getElementById('btn-home').onclick = () => {
     const j = await r.json().catch(() => ({}));
     showHint(j.error || (r.status === 409
       ? 'Phone is busy — that gesture was dropped.'
-      : 'Could not reach page 1.'));
+      : 'Could not go home.'));
   });
 };
 document.getElementById('btn-unlock').onclick = async () => {

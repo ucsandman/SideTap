@@ -629,14 +629,46 @@ def test_long_press_defaults_duration(base_url):
     assert viewer.Handler.client.calls[-1][3] == 0.8
 
 
-def test_home_walks_to_page_one(base_url, monkeypatch):
-    # press_home is a no-op between pages, so Home has to walk. Wiring only:
-    # the walk itself is covered in test_helpers.
-    seen = []
-    monkeypatch.setattr(helpers, "goto_home_page", lambda n=1: seen.append(n))
+def _home_calls(monkeypatch):
+    """Record which of the two paths /api/home takes."""
+    calls = []
+    monkeypatch.setattr(helpers, "press_home", lambda: calls.append("press"))
+    monkeypatch.setattr(
+        helpers, "goto_home_page", lambda n=1: calls.append(("walk", n))
+    )
+    return calls
+
+
+def test_home_only_leaves_the_app_when_one_is_open(base_url, monkeypatch):
+    # Minimising an app is most of what this button gets used for, and walking
+    # to page 1 to do it froze the phone for 6-8s behind a busy label. From an
+    # app it costs one call, exactly like the physical Home gesture.
+    calls = _home_calls(monkeypatch)
+    viewer.Handler.client.app = {"bundleId": "com.apple.mobilesafari", "name": "Safari"}
     r = requests.post(base_url + "/api/home", json={}, timeout=5)
     assert r.status_code == 200
-    assert seen == [1]
+    assert calls == ["press"]
+
+
+def test_home_walks_to_page_one_from_the_home_screen(base_url, monkeypatch):
+    # Second press, springboard already frontmost: press_home is a no-op between
+    # pages, so reaching page 1 has to walk. The walk itself is in test_helpers.
+    calls = _home_calls(monkeypatch)
+    viewer.Handler.client.app = {"bundleId": "com.apple.springboard", "name": ""}
+    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    assert r.status_code == 200
+    assert calls == [("walk", 1)]
+
+
+def test_home_walks_when_the_front_app_cannot_be_read(base_url, monkeypatch):
+    # Unknown must not turn Home into a dead button: press_home() does nothing
+    # at all on the Home Screen, so an unreadable front app falls back to the
+    # walk, which leaves an app on its own anyway.
+    calls = _home_calls(monkeypatch)
+    viewer.Handler.client.app = None  # active_app() raises
+    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    assert r.status_code == 200
+    assert calls == [("walk", 1)]
 
 
 def test_no_gesture_post_nested_inside_with_busy():

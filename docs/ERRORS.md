@@ -78,3 +78,56 @@ Multi-touch icon stacking (needs a second simultaneous pointer; unproven on WDA)
 **Captured in** `skills/phone-gotchas/SKILL.md` (traps table, cross-page drag
 section, and the "price a bulk reorganisation" costing section) and
 `skills/phone/SKILL.md`. Both re-copied to `~/.claude/skills/`.
+
+---
+
+## 2026-08-12 — The viewer's checks were a snapshot of the worst second of the boot
+
+**Symptom.** Plug in the phone, SideTap opens, header says "3 checks failing"
+and the Checks overlay pops itself open. Click **Refresh checks** and all 11
+pass. Every single time.
+
+**Root cause.** `loadDoctor()` ran EXACTLY ONCE, on `window load`. `launch.py`
+opens the browser immediately and runs `admin.up()` in a background thread, so
+that one run landed mid bring-up, when the tunnel and WDA genuinely were not up
+yet. Nothing ever re-ran it. Everything else on the page polls (status 5s,
+activity 3s, phone 10s); the checks alone were frozen. The overlay auto-opened
+because `prevFails` starts at 0, so the very first render always looked like an
+ok→fail transition.
+
+**Fix.** The checks re-run themselves while any fails (3s, 3s, 5s, 8s, 15s, then
+every 30s) and stop once green — a full run is ~2s of go-ios subprocesses plus a
+screenshot, so polling it forever would fight the live stream for the phone.
+`admin.bringing_up()` (the `_UP_LOCK` state) reaches the page on `/api/status`
+as `starting`, and while it is true the header reads "Starting link…" with grey
+dots rather than a red count. `/api/doctor` now serves its last result while
+`_ACTION_LOCK` is held, same as `/api/status` and `/api/phone`.
+
+**Lesson.** A one-shot read rendered next to live-polling neighbours reads as
+live. If a panel can be wrong the moment it is drawn, it has to re-draw itself
+or say why it cannot.
+
+---
+
+## 2026-08-12 — Restarting the UI killed the phone link (`taskkill /T`)
+
+**Symptom.** Found while verifying the fix above. `phone-harness doctor`: all 11
+green. Start SideTap again (double-click, or `python launch.py` while one is
+already open). Seconds later: tunnel not running, WDA not answering.
+
+**Root cause.** `_kill_stale_viewer()` killed the previous viewer with
+`taskkill /PID <pid> /T /F`. The `/T` kills the process TREE, and the tunnel and
+the forwards are children of the launch.py that started them. Worse, the order
+hides it: `launch.py` starts the `up()` thread FIRST, `up()` sees WDA answering
+and returns "Already up" in ~0.2s, and only then does `serve()` reach
+`_kill_stale_viewer()` and kill the link it had just approved. Nothing re-runs
+`up()` after that, so the viewer comes back with a dead phone.
+
+**Fix.** `_safe_kill(pid, prefix, tree=False)` for the viewer. Freeing the port
+is the viewer's job; the go-ios processes are the phone link and are meant to
+outlive a UI restart. `device.stop_all()` (i.e. `phone-harness down`) is what
+stops those, by their own pid files, and keeps the tree kill.
+
+**Lesson.** `/T` is not a stronger `taskkill`, it is a different one. Before
+using it, ask what is parented to the process — detached service processes are
+frequently children of whatever launched them.

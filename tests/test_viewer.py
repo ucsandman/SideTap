@@ -666,6 +666,70 @@ def test_no_gesture_post_nested_inside_with_busy():
         )
 
 
+def test_status_reports_a_bring_up_in_flight(base_url, monkeypatch):
+    # launch.py opens the browser IMMEDIATELY and runs up() in a background
+    # thread, so the page's first check run lands mid bring-up. Without this
+    # flag it cannot tell "still starting" from "broken" and reports the red
+    # one, which is then frozen on screen until someone clicks Refresh.
+    viewer.Handler.client.window = (390.0, 844.0)
+    assert requests.get(base_url + "/api/status", timeout=5).json()["starting"] is False
+    monkeypatch.setattr(viewer.admin, "bringing_up", lambda: True)
+    assert requests.get(base_url + "/api/status", timeout=5).json()["starting"] is True
+
+
+def test_status_reports_bring_up_even_while_a_gesture_holds_the_phone(
+    base_url, monkeypatch
+):
+    # /api/status serves its CACHED payload during a gesture. The flag must not
+    # ride along in that cache: an unlock holds the lock 20-30s, which is long
+    # enough for a bring-up to finish behind it.
+    viewer.Handler.client.window = (390.0, 844.0)
+    requests.get(base_url + "/api/status", timeout=5)  # prime the cache
+    monkeypatch.setattr(viewer.admin, "bringing_up", lambda: True)
+    with viewer._ACTION_LOCK:
+        body = requests.get(base_url + "/api/status", timeout=5).json()
+    assert body["starting"] is True
+    assert body["window"] == {"width": 390.0, "height": 844.0}  # still the cache
+
+
+def test_doctor_is_not_rerun_while_a_gesture_holds_the_phone(base_url, monkeypatch):
+    # The page re-runs the checks by itself while any fails, and a full run is
+    # ~2s of go-ios subprocesses plus a screenshot. Landing that inside an
+    # unlock is what lets a waking lock screen fall back asleep — same reason
+    # /api/status and /api/phone serve their last payload there.
+    runs = []
+
+    def counted():
+        runs.append(1)
+        return [{"name": "tunnel", "ok": True, "detail": "up", "fix": ""}]
+
+    monkeypatch.setattr(viewer.admin, "doctor_results", counted)
+    assert (
+        requests.get(base_url + "/api/doctor", timeout=5).json()[0]["name"] == "tunnel"
+    )
+    assert len(runs) == 1
+    with viewer._ACTION_LOCK:
+        served = requests.get(base_url + "/api/doctor", timeout=5).json()
+    assert len(runs) == 1  # not re-run
+    assert served[0]["name"] == "tunnel"  # last result, not an empty list
+
+
+def test_checks_reschedule_themselves_while_failing():
+    # The page used to run the checks EXACTLY once, on load — mid bring-up —
+    # and freeze that red result until someone clicked Refresh checks. Every
+    # exit from loadDoctor must hand off to scheduleDoctor, which re-runs while
+    # anything fails and stops once green.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("async function loadDoctor()")
+    end = html.index("btn-refresh", start)
+    body = html[start:end]
+    assert body.count("scheduleDoctor(") == 2, (
+        "loadDoctor must schedule the next run on BOTH paths (checks read, and "
+        "the catch where the viewer is unreachable)"
+    )
+    assert "scheduleDoctor(fails > 0)" in body  # stops once green
+
+
 def test_home_surfaces_a_failed_walk(base_url, monkeypatch):
     # A transient WDA drop mid-walk leaves the phone part-way. That must reach
     # the human as an error, never a silent no-op that looks like it worked.
@@ -676,3 +740,29 @@ def test_home_surfaces_a_failed_walk(base_url, monkeypatch):
     r = requests.post(base_url + "/api/home", json={}, timeout=5)
     assert r.status_code >= 400
     assert "page 5" in r.text
+
+
+def test_stale_viewer_kill_spares_the_phone_link(tmp_path, monkeypatch):
+    # Starting SideTap while one is already open must not kill the tunnel and
+    # the forwards, which are children of the older launch.py. up() returns
+    # early ("Already up") BEFORE serve() gets here, so nothing would rebuild
+    # them: the viewer came back with a dead link (measured 2026-08-12).
+    import os
+
+    from phone_harness import device
+
+    monkeypatch.setattr(viewer.config, "STATE_DIR", tmp_path)
+    (tmp_path / "viewer.pid").write_text("424242", encoding="utf-8")
+    seen = {}
+
+    def fake_kill(pid, prefix, tree=True):
+        seen.update(pid=pid, prefix=prefix, tree=tree)
+        return True
+
+    monkeypatch.setattr(device, "_safe_kill", fake_kill)
+    viewer._kill_stale_viewer()
+    assert seen == {"pid": 424242, "prefix": "python", "tree": False}
+    # ...and it still claims the port for this process.
+    assert (tmp_path / "viewer.pid").read_text(encoding="utf-8").strip() == str(
+        os.getpid()
+    )

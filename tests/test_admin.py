@@ -188,3 +188,17 @@ def test_wda_check_still_fails_when_really_uninstalled(monkeypatch, tmp_path):
     assert not ok
     assert "not found" in detail
     assert "Sideload" in fix
+
+
+def test_bringing_up_tracks_an_in_flight_up(monkeypatch):
+    # launch.py brings the link up in a background thread while the browser is
+    # already open. The viewer asks this to tell "starting" apart from "broken"
+    # instead of freezing a mid-bring-up red result on screen.
+    seen = []
+    assert admin.bringing_up() is False
+    monkeypatch.setattr(
+        admin, "_up", lambda wait_seconds: seen.append(admin.bringing_up()) or 0
+    )
+    assert admin.up(wait_seconds=0) == 0
+    assert seen == [True]  # true for the whole run...
+    assert admin.bringing_up() is False  # ...and false again after it

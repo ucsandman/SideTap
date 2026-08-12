@@ -197,6 +197,7 @@
   #strip-info { margin-left:auto; font-size:12.5px; white-space:nowrap; }   /* unchanged, just re-parented */
   .dot { width:9px; height:9px; border-radius:50%; background:var(--ok); display:inline-block; flex:0 0 auto; }
   .dot.bad { background:var(--bad); }
+  .dot.wait { background:var(--dim); }   /* down, but the link is still coming up */
 
   #dash-grid {
     flex:1 1 auto; min-height:0;                     /* min-height:0 is mandatory: without it a grid
@@ -557,6 +558,13 @@ async function loadStatus() {
     }
     points = s.window;
     inputEnabled = !!s.input;
+    // The link comes up in a background thread after this page opens. While
+    // that runs, a dead tunnel is "starting", not "failing".
+    const wasStarting = linkStarting;
+    linkStarting = s.starting === true;
+    // Bring-up just finished and checks are still failing (a retry is pending):
+    // ask them again NOW instead of waiting out the backoff.
+    if (wasStarting && !linkStarting && doctorTimer) { doctorTries = 0; loadDoctor(); }
     if (s.mjpeg) startStream(s.mjpeg);
     screen.classList.remove('dead');
     if (Date.now() >= hintHoldUntil) {
@@ -578,6 +586,7 @@ async function loadStatus() {
     document.getElementById('lan-banner').hidden = s.lan_exposed !== true;
   } catch (e) {
     points = null; screen.classList.add('dead');
+    linkStarting = false;   // can't confirm a bring-up: stop claiming one
   }
 }
 
@@ -1056,7 +1065,29 @@ function fixCommand(fix) {
   return known ? known[1] : null;
 }
 
-let prevFails = 0;
+// The checks re-run themselves while anything fails, then stop. They must:
+// launch.py opens this page IMMEDIATELY and brings the link up in a background
+// thread, so the first run always lands mid bring-up and its red result used to
+// stick until someone clicked Refresh. They must also STOP once green — a full
+// run is ~2s of go-ios subprocesses plus a screenshot, so polling it forever
+// would fight the live stream for the phone.
+const DOCTOR_RETRY_MS = [3000, 3000, 5000, 8000, 15000, 30000];
+let doctorTimer = null;
+let doctorTries = 0;
+function scheduleDoctor(failing) {
+  clearTimeout(doctorTimer);
+  doctorTimer = null;
+  if (!failing) { doctorTries = 0; return; }
+  const wait = DOCTOR_RETRY_MS[Math.min(doctorTries, DOCTOR_RETRY_MS.length - 1)];
+  doctorTries++;
+  doctorTimer = setTimeout(loadDoctor, wait);
+}
+
+// True while up() is in flight, per /api/status. Starts true because at page
+// load a bring-up is essentially always running; the first status poll (a
+// second or so later) corrects it if this viewer was started on its own.
+let linkStarting = true;
+let sawIdleFail = false;
 let checksAutoOpened = false;
 async function loadDoctor() {
   const el = document.getElementById('doctor');
@@ -1098,7 +1129,12 @@ async function loadDoctor() {
     const footer = overflowCount > 0
       ? `<div class="dim">+${overflowCount} more failing. Run \`phone-harness doctor\`</div>`
       : '';
-    el.innerHTML = failRows + compactRows + passRows + footer;
+    // Mid bring-up the fix lines say "Run: phone-harness up" — which is exactly
+    // what IS running. Say so rather than let the panel give stale advice.
+    const banner = (linkStarting && failing.length)
+      ? '<div class="dim">Starting the link… these re-run by themselves.</div>'
+      : '';
+    el.innerHTML = banner + failRows + compactRows + passRows + footer;
     el.querySelectorAll('.copy-btn').forEach(b => b.onclick = async () => {
       await navigator.clipboard.writeText(cmds[b.dataset.i]);
       b.textContent = '✓ copied';
@@ -1113,27 +1149,36 @@ async function loadDoctor() {
     if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
     lastDoctor = results;
     const fails = failing.length;
-    document.getElementById('checks-dots').innerHTML =
-      results.map(r => '<span class="dot' + (r.ok ? '' : ' bad') + '"></span>').join('');
+    document.getElementById('checks-dots').innerHTML = results.map(r =>
+      '<span class="dot' + (r.ok ? '' : (linkStarting ? ' wait' : ' bad')) + '"></span>').join('');
     document.getElementById('checks-text').textContent =
-      fails ? fails + ' check' + (fails > 1 ? 's' : '') + ' failing' : 'All ' + results.length + ' checks pass';
-    // Auto-open only on an ok -> fail transition, once per page load, and
-    // never steal the shared overlay from a running fix job.
-    if (fails > 0 && prevFails === 0 && !checksAutoOpened && !fixRunning
+      fails ? (linkStarting ? 'Starting link…'
+                            : fails + ' check' + (fails > 1 ? 's' : '') + ' failing')
+            : 'All ' + results.length + ' checks pass';
+    // Auto-open once per page load, and never steal the shared overlay from a
+    // running fix job. It takes TWO consecutive failing runs with no bring-up
+    // in flight: one is how every boot legitimately starts, and popping the
+    // panel there is the noise that made this whole thing annoying. Two means
+    // the failure outlived the bring-up, which is worth someone's attention.
+    const idleFail = fails > 0 && !linkStarting;
+    if (idleFail && sawIdleFail && !checksAutoOpened && !fixRunning
         && document.getElementById('ov').hidden) {
       checksAutoOpened = true;
       openOverlay('doctor', 'Checks');
     }
+    sawIdleFail = idleFail;
     degradeChecksToFit();  // re-render may have restored fix text; re-fit
-    prevFails = fails;
+    scheduleDoctor(fails > 0);
   } catch (e) {
     el.innerHTML = '<div class="check bad"><span class="mark">FAIL</span><span class="body"><span class="name">viewer server unreachable</span></span></div>';
     document.getElementById('checks-dots').innerHTML = '<span class="dot bad"></span>';
     document.getElementById('checks-text').textContent = 'viewer unreachable';
-    prevFails = 1;
+    sawIdleFail = false;      // a dead server is not a phone problem to pop open
+    scheduleDoctor(true);
   }
 }
-document.getElementById('btn-refresh').onclick = loadDoctor;
+// A manual click restarts the fast cadence, not wherever the backoff had got to.
+document.getElementById('btn-refresh').onclick = () => { doctorTries = 0; loadDoctor(); };
 document.getElementById('btn-up').onclick = async () => {
   const btn = document.getElementById('btn-up');
   btn.disabled = true; btn.textContent = 'Restarting… (up to a minute)';

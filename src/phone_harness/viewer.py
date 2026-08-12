@@ -74,6 +74,13 @@ _LAST_STATUS: dict | None = None
 # (same reasoning as _LAST_STATUS).
 _LAST_PHONE: dict | None = None
 
+# Last good /api/doctor payload, served while a gesture holds _ACTION_LOCK.
+# Same reasoning again, and it matters more here: the page re-runs the checks
+# by itself while any of them fails, and a full run is ~2s of subprocesses AND
+# a screenshot — exactly the latency that lets a waking lock screen fall back
+# asleep mid-unlock.
+_LAST_DOCTOR: list | None = None
+
 # Self-healing link. Deep sleep kills WDA (iOS kills the test runner ~15min
 # after the screen goes dark; watched it die live 2026-08-10) and NOTHING over
 # USB can wake the phone — lockdown itself is gated while it sleeps (ReadPair
@@ -361,8 +368,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Screen size in points comes from WDA when the input driver is up.
                 # Without it we still stream go-ios screenshots and use pixel size.
                 global _LAST_STATUS
+                # Never cached: the page reads it to tell "the link is still
+                # coming up" apart from "the link is broken".
+                starting = admin.bringing_up()
                 if _ACTION_LOCK.locked() and _LAST_STATUS is not None:
-                    self._json(_LAST_STATUS)
+                    self._json({**_LAST_STATUS, "starting": starting})
                     return
                 try:
                     w, h = self.client.window_size()
@@ -374,7 +384,7 @@ class Handler(BaseHTTPRequestHandler):
                         "lan_exposed": _LAN_STATE["exposed"],
                         "boot": _BOOT_ID,
                     }
-                    self._json(_LAST_STATUS)
+                    self._json({**_LAST_STATUS, "starting": starting})
                 except WDAError:
                     pw, ph = _png_size(capture.screenshot_png(max_age=0.4))
                     self._json(
@@ -384,6 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                             "mjpeg": None,
                             "lan_exposed": _LAN_STATE["exposed"],
                             "boot": _BOOT_ID,
+                            "starting": starting,
                         }
                     )
             elif path == "/api/phone":
@@ -408,7 +419,12 @@ class Handler(BaseHTTPRequestHandler):
                 _LAST_PHONE = info
                 self._json(info)
             elif path == "/api/doctor":
-                self._json(admin.doctor_results())
+                global _LAST_DOCTOR
+                if _ACTION_LOCK.locked() and _LAST_DOCTOR is not None:
+                    self._json(_LAST_DOCTOR)
+                    return
+                _LAST_DOCTOR = admin.doctor_results()
+                self._json(_LAST_DOCTOR)
             elif path == "/api/fix-input":
                 with _FIX_LOCK:
                     self._json(dict(_FIX_JOB))
@@ -649,7 +665,14 @@ def _kill_stale_viewer() -> None:
 
             # Only kill a process that is still a python (viewer) one: the
             # pid file survives crashes and Windows reuses pids.
-            _safe_kill(pid, "python")
+            # NOT the process tree: the tunnel and the forwards are CHILDREN of
+            # the launch.py that started them, so a tree kill here takes the
+            # phone link down as a side effect of restarting the UI. Starting
+            # SideTap while one was already open did exactly that (measured
+            # 2026-08-12: all 11 checks green, then tunnel + WDA dead seconds
+            # later, with up() already past its "Already up" early return).
+            # down() is what stops those, by their own pid files.
+            _safe_kill(pid, "python", tree=False)
     config.STATE_DIR.mkdir(exist_ok=True)
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
 

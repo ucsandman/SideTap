@@ -279,9 +279,15 @@
   .more-btn:hover { background:none; color:var(--accent); }
 
   /* ---- actions column -------------------------------------------------- */
-  .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); max-height:150px; overflow:hidden; }
+  /* max-height lives in JS now. A fixed 150px cut row 5 of the app chips
+     through the middle: the 12-chip count cap wraps to five rows, and half a
+     "Music" chip is exactly the bare clip this column's overflow policy
+     forbids. clampChips() measures the real row height and keeps WHOLE rows. */
+  .chips { display:flex; flex-wrap:wrap; gap:var(--s1); margin-bottom:var(--s2); overflow:hidden; }
   .chip { padding:5px 11px; border-radius:99px; font-size:12.5px; }
   #app-chips .chip { text-transform:capitalize; }
+  /* current Home Screen page: the one chip that reports state, not a target */
+  .chip.on { border-color:var(--accent); color:var(--text); background:#20303f; }
   .chip .pin { margin-left:6px; opacity:.5; }
   .chip.pinned .pin { opacity:1; }
   .gap-top { margin-top:var(--s4); }
@@ -295,6 +301,30 @@
   #text-to:focus-visible, #text-msg:focus-visible, #console-in:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
   #text-row { display:flex; gap:var(--s1); align-items:stretch; }
   #text-msg { flex:1; resize:vertical; min-height:38px; }
+
+  /* A section heading that carries its own action or its own state readout. */
+  .sechead { display:flex; align-items:baseline; gap:var(--s2); margin-bottom:var(--s2); }
+  .sechead .sec { margin-bottom:0; flex:1; min-width:0;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sechead button { padding:3px 9px; font-size:12px; flex:0 0 auto; max-width:60%;
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sechead .dim { flex:0 0 auto; font-size:11.5px; white-space:nowrap; }
+  #gest-row { display:flex; flex-wrap:wrap; gap:var(--s1); }
+  #gest-row button { padding:6px 10px; font-size:12.5px; }
+  /* Everything above Thread is fixed; Thread is the one flexible track, so it
+     absorbs the free height instead of leaving it blank at the bottom. */
+  #col-actions > :not(#thread) { flex:0 0 auto; }
+  #thread { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; margin-top:var(--s4); }
+  #thread-list { flex:1 1 auto; min-height:0; overflow:hidden;
+                 display:flex; flex-direction:column; gap:var(--s1); }
+  .bub { max-width:86%; padding:6px 10px; border-radius:13px; font-size:12.5px; line-height:1.45;
+         overflow-wrap:anywhere; flex:0 0 auto; }
+  .bub.them { align-self:flex-start; background:var(--panel2); border:1px solid var(--line);
+              border-bottom-left-radius:4px; }
+  .bub.me { align-self:flex-end; background:#1d3b5c; border:1px solid #2b5688;
+            border-bottom-right-radius:4px; }
+  #thread-note { flex:0 0 auto; margin-top:var(--s2); font-size:11.5px;
+                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   /* Debug console is collapsed by default: the phone pane is the human surface;
      this card exists to run the agent's own helpers when one misbehaves. */
   button.sec { background:none; border:0; padding:0; cursor:pointer; text-align:left; }
@@ -336,8 +366,12 @@
     #side { height:auto; max-width:none; }
     #dash-grid { grid-template-columns:1fr; grid-template-rows:none;
                  grid-template-areas:"actions" "agent" "phone" "console"; }
-    .col, #activity-list, #sent-list, #console-out { overflow:visible; }
-    #col-agent #activity, #col-agent #sent, #console-out, #debug-body { flex:0 0 auto; }
+    .col, #activity-list, #sent-list, #console-out, #thread-list { overflow:visible; }
+    #col-agent #activity, #col-agent #sent, #console-out, #debug-body, #thread { flex:0 0 auto; }
+    /* The page scrolls here, so there is no height to ration. !important beats
+       the inline max-height clampChips() writes; clampChips also stops REMOVING
+       chips in this mode, or a stacked layout would keep the desktop's cut. */
+    .chips { max-height:none !important; }
   }
 </style>
 </head>
@@ -399,6 +433,27 @@
         </div>
         <h2 class="sec gap-top">Open app</h2>
         <div id="app-chips" class="chips"></div>
+        <button id="more-apps" class="more-btn" hidden></button>
+        <div class="sechead gap-top">
+          <h2 class="sec">Go to page</h2>
+          <span class="dim" id="page-now"></span>
+        </div>
+        <div id="page-chips" class="chips"></div>
+        <h2 class="sec gap-top">Gestures</h2>
+        <div id="gest-row">
+          <button id="g-back" title="Swipe in from the left edge">← Back</button>
+          <button id="g-search" title="Spotlight: swipe down on the Home Screen">Search</button>
+          <button id="g-up" title="Scroll the screen up">Scroll ↑</button>
+          <button id="g-down" title="Scroll the screen down">Scroll ↓</button>
+        </div>
+        <div id="thread">
+          <div class="sechead">
+            <h2 class="sec">Thread</h2>
+            <button id="btn-read-thread">Read thread</button>
+          </div>
+          <div id="thread-list"></div>
+          <div class="dim" id="thread-note">Opens the thread on the phone. Read only.</div>
+        </div>
       </div>
       <div id="col-agent" class="col">
         <div id="gate">
@@ -471,6 +526,7 @@
           <div id="fix-steps"></div>
         </div>
         <div id="full-activity" hidden></div>
+        <div id="full-apps" hidden></div>
         <div id="full-sends" hidden></div>
         <div id="full-console" hidden></div>
         <div id="full-approval" hidden></div>
@@ -604,7 +660,7 @@ function escapeHtml(s) {
 
 // ---- overlay controller: one shell, five hidden bodies, exactly one visible.
 let ovOpen = null;
-const OV_BODIES = ['doctor','fix-panel','full-activity','full-sends','full-console','full-approval'];
+const OV_BODIES = ['doctor','fix-panel','full-activity','full-apps','full-sends','full-console','full-approval'];
 let ovReturnFocus = null;
 function openOverlay(id, title) {
   OV_BODIES.forEach(b => document.getElementById(b).hidden = b !== id);
@@ -798,7 +854,8 @@ async function loadPhone() {
     ];
     document.getElementById('phone-rows').innerHTML = rows.map(([k, v]) =>
       `<div class="prow"><span class="k">${k}</span><span>${escapeHtml(v)}</span></div>`).join('');
-  } catch (e) { /* passive info is best-effort */ }
+    renderPageChips(p.page || null);   // null off the Home Screen; the server
+  } catch (e) { /* passive info is best-effort */ }   // only reads it there
 }
 
 // start network loops only after the page has fully loaded
@@ -814,6 +871,13 @@ window.addEventListener('load', () => {
   loadApproval();
   loadGate();
   setInterval(loadPhone, 10000);
+  // Both clamps are measured, so both are wrong the moment the window changes
+  // size. Re-fit on resize only — never on a poll, or the column would thrash.
+  let refit;
+  addEventListener('resize', () => {
+    clearTimeout(refit);
+    refit = setTimeout(() => { renderAppChips(); renderThread(); }, 150);
+  });
 });
 
 // ---- kill switch: blocks all agent actions until resumed -------------------
@@ -1202,9 +1266,9 @@ document.getElementById('btn-lan-lock').onclick = (ev) => lockPorts(ev.currentTa
 
 // ---- edge-gesture shortcuts: reliable clicks for gestures that are nearly ---
 // impossible to land by dragging on a scaled-down screenshot.
-async function edgeSwipe(x1, y1, x2, y2) {
+async function edgeSwipe(x1, y1, x2, y2, seconds = 0.3) {
   if (!points || !inputEnabled) return;
-  await gesturePost('/api/swipe', {x1, y1, x2, y2, seconds: 0.3});
+  await gesturePost('/api/swipe', {x1, y1, x2, y2, seconds});
 }
 document.getElementById('btn-notifs').onclick = () =>       // pull from top-left
   edgeSwipe(points.width * 0.25, 1, points.width * 0.25, points.height * 0.55);
@@ -1307,31 +1371,259 @@ function renderContactChips() {
   wrap.replaceChildren(...[...pinned, ...learned].slice(0, 10).map(name =>
     chip(name, pinned.includes(name),
       () => { document.getElementById('text-to').value = name;
+              syncReadLabel();   // the Read button names the same contact
               document.getElementById('text-msg').focus(); },
       () => togglePin('sidetap.pins.contacts', name, renderContactChips))));
 }
+// A count cap alone cannot bound a wrapping row: chip text varies, so 12 apps
+// wrap to five rows on one phone and four on another. The old fixed
+// max-height:150px cut row five through the middle and said nothing — half a
+// "Music" chip, which is the bare clip this column's overflow policy forbids.
+// Measure the real row height at render, keep WHOLE rows, and count out loud
+// whatever had to go. Runs once per render and on resize, never on a poll.
+function clampChips(box, moreBtn, noun) {
+  box.style.maxHeight = '';
+  if (moreBtn) moreBtn.hidden = true;
+  // Below 1100px the page scrolls and there is no height to ration. Removing
+  // chips there would carry the desktop's cut into a layout that never needed it.
+  if (window.matchMedia('(max-width:1100px)').matches) return;
+  const kids = [...box.children];
+  if (!kids.length) return;
+  const col = box.closest('.col');
+  const budget = Math.max(60, (col ? col.clientHeight : 600) * 0.28);
+  const tops = [...new Set(kids.map(k => k.offsetTop))].sort((a, b) => a - b);
+  const rowH = tops.length > 1 ? tops[1] - tops[0] : box.scrollHeight;
+  let rows = Math.max(1, Math.floor(budget / rowH));
+  // The 28% ration assumes the column HAS the room to give. When it does not,
+  // the surplus lands on #thread (flex:1 1 auto, min-height:0), which shrinks
+  // under its own chrome until the column's overflow:hidden cuts #thread-note
+  // through the middle — 31px of it gone at a 780px viewport, measured, and no
+  // "+N more" said so. Note the 28% ration alone never even fired there: it
+  // allowed 6 rows when only 5 existed, so nothing was dropped while the column
+  // ran 32px over. Shed whole rows until the column fits. These chips are the
+  // one block with an overlay escape hatch and a spoken count, so they degrade.
+  while (col && rows > 1) {
+    box.style.maxHeight = (rows * rowH) + 'px';
+    if (moreBtn) moreBtn.hidden = rows >= tops.length;   // it costs height too
+    if (col.scrollHeight <= col.clientHeight) break;
+    rows--;
+  }
+  box.style.maxHeight = '';
+  if (moreBtn) moreBtn.hidden = true;
+  const cut = tops[rows];
+  if (cut === undefined) return;          // every row already fits the budget
+  let dropped = 0;
+  kids.forEach(k => { if (k.offsetTop >= cut) { k.remove(); dropped++; } });
+  box.style.maxHeight = (rows * rowH) + 'px';
+  if (dropped && moreBtn) {
+    moreBtn.hidden = false;
+    moreBtn.textContent = '+' + dropped + ' more ' + noun + ' ▸';
+  }
+}
+
 let knownApps = [];
+function appChip(name, pinned) {
+  return chip(name, pinned,
+    async (ev) => {
+      const b = ev.currentTarget; b.disabled = true; b.dataset.busy = '1';
+      try {
+        await withBusy('OPENING', async () => {
+          const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
+                                                  body: JSON.stringify({name})});
+          const j = await r.json();
+          if (!j.ok) showHint(j.error || 'Could not open ' + name + '.');
+        });
+      } catch (e) { showHint('Could not open ' + name + '.'); }
+      finally { delete b.dataset.busy; b.disabled = !inputEnabled; }
+    },
+    () => togglePin('sidetap.pins.apps', name, renderAppChips));
+}
 function renderAppChips() {
-  const wrap = document.getElementById('app-chips');
   const pinned = pins('sidetap.pins.apps');
-  const rest = knownApps.filter(n => !pinned.includes(n));
-  wrap.replaceChildren(...[...pinned, ...rest].slice(0, 12).map(name =>
-    chip(name, pinned.includes(name),
-      async (ev) => {
-        const b = ev.currentTarget; b.disabled = true; b.dataset.busy = '1';
-        try {
-          await withBusy('OPENING', async () => {
-            const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
-                                                    body: JSON.stringify({name})});
-            const j = await r.json();
-            if (!j.ok) showHint(j.error || 'Could not open ' + name + '.');
-          });
-        } catch (e) { showHint('Could not open ' + name + '.'); }
-        finally { delete b.dataset.busy; b.disabled = !inputEnabled; }
-      },
-      () => togglePin('sidetap.pins.apps', name, renderAppChips))));
+  const order = [...pinned, ...knownApps.filter(n => !pinned.includes(n))];
+  // 24 bounds the DOM; clampChips bounds the pixels. The overlay always holds
+  // every app, so a chip the clamp drops is never an app you cannot reach.
+  document.getElementById('app-chips').replaceChildren(
+    ...order.slice(0, 24).map(n => appChip(n, pinned.includes(n))));
+  const full = document.getElementById('full-apps');
+  full.className = 'chips';
+  full.replaceChildren(...order.map(n => appChip(n, pinned.includes(n))));
+  clampChips(document.getElementById('app-chips'),
+             document.getElementById('more-apps'), 'apps');
   updateActionAvail();
 }
+document.getElementById('more-apps').onclick = () => openOverlay('full-apps', 'Open app');
+
+// ---- Go to page: the chips are 1..total. goto_home_page() refuses anything
+// else by design, but it still walks correctly OUT of Today View and the App
+// Library, so those two need no chip — the readout names them and any chip
+// escapes them.
+let pageSig = null;
+function renderPageChips(page) {
+  const sig = page ? page.index + '/' + page.total : 'none';
+  if (sig === pageSig) return;            // an unchanged 10s poll rebuilds nothing
+  pageSig = sig;
+  const box = document.getElementById('page-chips');
+  const now = document.getElementById('page-now');
+  // Every rebuild here changes the column's height, and it happens LONG after
+  // clampChips last measured — these chips land from the 10s /api/phone poll.
+  // That stale ration is what left #thread 12px tall holding 60px of content,
+  // with its note cut through the middle and no "+N more" to say so: the clamp
+  // had measured a column that still fit, so it broke early and never fired.
+  if (!page) {
+    now.textContent = 'Home Screen only';
+    box.replaceChildren();
+    renderAppChips();                     // re-ration against the new height
+    return;
+  }
+  now.textContent = page.zone === 'today' ? 'on Today View'
+    : page.zone === 'app_library' ? 'in the App Library'
+    : 'on page ' + page.index;
+  const kids = [];
+  for (let n = 1; n <= page.total; n++) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (n === page.index ? ' on' : '');
+    b.textContent = n;
+    b.title = 'Walk to Home Screen page ' + n;
+    b.onclick = () => walkToPage(n);
+    kids.push(b);
+  }
+  box.replaceChildren(...kids);
+  renderAppChips();                       // re-ration against the new height
+  updateActionAvail();
+}
+function walkToPage(n) {
+  if (phoneBusy()) return;                // the guard must run BEFORE withBusy
+  return withBusy('WALKING', async () => {
+    const r = await fetch('/api/page', {method:'POST', headers:JSON_HDR,
+                                        body: JSON.stringify({index:n})});
+    const j = await r.json().catch(() => ({}));
+    if (!j.ok) showHint(j.error || (r.status === 409
+      ? 'Phone is busy — that walk was dropped.'
+      : 'Could not reach page ' + n + '.'));
+  }).then(() => { pageSig = null; loadPhone(); });
+}
+
+// ---- Gestures: swipes that are impractical to drag on a scaled screenshot.
+// Same edgeSwipe path the Notifs and Control buttons already use, so there is
+// no new endpoint and no new failure mode.
+// Fractions of the screen, not points: the table must not touch `points`, which
+// is null until the first /api/status lands. Every row below was measured on
+// device 2026-08-12 — a system gesture that is too SHORT or too FAST is simply
+// swallowed. Back at 0.45 width / 0.25s did nothing from Settings > General;
+// the same gesture at 0.91 width / 0.6s popped the screen every time. Do not
+// "tidy" these numbers.                             x1    y1    x2    y2   secs
+const GESTURES = {
+  'g-back':     [0,    0.5,  0.91, 0.5,  0.6 ],
+  'g-search':   [0.5,  0.26, 0.5,  0.73, 0.5 ],
+  'g-up':       [0.5,  0.35, 0.5,  0.75, 0.3 ],
+  'g-down':     [0.5,  0.75, 0.5,  0.35, 0.3 ],
+};
+// NO app-switcher button. The switcher needs a swipe that HOLDS near 45% height
+// before it lifts, and swipe() is press-move-release with nothing in between —
+// duration does not substitute for the hold. Measured twice on device
+// 2026-08-12 (0.9s and 1.4s, two different end points): the phone did not move.
+// It needs a press/pause/release action chain in wda_client first.
+// Said once, after Search, because that is the gesture whose whole point is to
+// leave a keyboard waiting on the phone.
+const GESTURE_HINTS = {'g-search': 'Spotlight is open — just type, it goes to the phone.'};
+Object.entries(GESTURES).forEach(([id, [fx1, fy1, fx2, fy2, secs]]) => {
+  document.getElementById(id).onclick = (ev) => {
+    if (!points) return;
+    // Clamp 1pt inside: 0 and the full height are off the swipe surface.
+    const at = (f, span) => Math.min(Math.max(f * span, 1), span - 1);
+    edgeSwipe(at(fx1, points.width), at(fy1, points.height),
+              at(fx2, points.width), at(fy2, points.height), secs);
+    // Keys only reach the phone when nothing focusable holds focus: the window
+    // keydown handler returns early on input/textarea/button/select/[tabindex].
+    // A clicked button KEEPS focus, so Search opened Spotlight and then ate
+    // every letter typed at it, and the obvious repair — click the screen —
+    // sends a TAP that closes Spotlight again. Hand focus back to the document
+    // so the very next keystroke lands on the phone.
+    // ev.detail is 0 when the click came from the keyboard (Enter/Space on a
+    // focused button); blurring there would throw a keyboard user out of the
+    // tab order, so only a real pointer click gives focus up.
+    if (ev.detail > 0) ev.currentTarget.blur();
+    if (GESTURE_HINTS[id]) showHint(GESTURE_HINTS[id]);
+  };
+});
+
+// ---- Thread: the read half of "Text someone". read_messages() has shipped
+// since the start and no human surface ever called it.
+let threadMsgs = null;
+function readLabel() {
+  const to = document.getElementById('text-to').value.trim();
+  return to ? 'Read ' + to : 'Read thread';
+}
+function syncReadLabel() {
+  const b = document.getElementById('btn-read-thread');
+  if (!b.dataset.busy) b.textContent = readLabel();
+}
+// Degrade-to-fit, oldest first: a bare "last N" cap cannot bound this box
+// because bubble height depends on how long each message is. Same policy as
+// the checks panel and the sends feed, and whatever goes is counted.
+function renderThread() {
+  const list = document.getElementById('thread-list');
+  if (!threadMsgs) {
+    list.innerHTML = '<div class="dim">Read the thread to see the last messages here.</div>';
+    return;
+  }
+  if (!threadMsgs.length) {
+    list.innerHTML = '<div class="dim">No messages found in that thread.</div>';
+    return;
+  }
+  let keep = threadMsgs.slice();
+  const draw = () => {
+    const kids = [];
+    if (keep.length < threadMsgs.length) {
+      const d = document.createElement('div');
+      d.className = 'dim';
+      d.style.cssText = 'font-size:11.5px;flex:0 0 auto';
+      d.textContent = '↑ ' + (threadMsgs.length - keep.length) + ' older not shown';
+      kids.push(d);
+    }
+    keep.forEach(m => {
+      const b = document.createElement('div');
+      b.className = 'bub ' + (m.from_me ? 'me' : 'them');
+      b.textContent = m.text;          // textContent, never innerHTML: this is
+      kids.push(b);                    // message text off the phone
+    });
+    list.replaceChildren(...kids);
+  };
+  draw();
+  let guard = 60;
+  while (list.scrollHeight > list.clientHeight + 1 && keep.length > 1 && guard--) {
+    keep.shift();
+    draw();
+  }
+}
+document.getElementById('text-to').addEventListener('input', syncReadLabel);
+document.getElementById('btn-read-thread').onclick = async () => {
+  const to = document.getElementById('text-to').value.trim();
+  if (!to) { showHint('Type a contact first.'); return; }
+  if (phoneBusy()) return;
+  const btn = document.getElementById('btn-read-thread');
+  btn.disabled = true; btn.dataset.busy = '1'; btn.textContent = 'Reading…';
+  try {
+    // ~10s: it opens Messages, searches the name and opens the thread. An
+    // unlabelled freeze that long is what makes a human click again.
+    await withBusy('READING', async () => {
+      const r = await fetch('/api/read-thread', {method:'POST', headers:JSON_HDR,
+                                                 body: JSON.stringify({contact:to, limit:30})});
+      const j = await r.json().catch(() => ({}));
+      if (!j.ok) {
+        showHint(j.error || (r.status === 409
+          ? 'Phone is busy — the read was dropped.'
+          : 'Could not read that thread.'));
+        return;
+      }
+      threadMsgs = j.messages || [];
+      renderThread();
+    });
+  } catch (e) { showHint('Could not read that thread.'); }
+  finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; syncReadLabel(); }
+};
+renderThread();
 document.getElementById('btn-text-send').onclick = async () => {
   const to = document.getElementById('text-to').value.trim();
   const message = document.getElementById('text-msg').value;
@@ -1357,13 +1649,14 @@ function updateActionAvail() {
   const tip = inputEnabled ? '' : 'Touch input is down — see checks';
   // A send/open in flight owns its own disabled state until it finishes —
   // the 5s status poll must not re-enable a button mid-request (double-send risk).
-  ['btn-text-send', 'btn-console-run'].forEach(id => {
+  ['btn-text-send', 'btn-console-run', 'btn-read-thread',
+   ...Object.keys(GESTURES)].forEach(id => {
     const el = document.getElementById(id);
     if (el && !el.dataset.busy) { el.disabled = !inputEnabled; el.title = tip; }
   });
-  document.querySelectorAll('#app-chips .chip').forEach(c => {
-    if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; }
-  });
+  // #full-apps holds the same chips in the overlay; they drive the phone too.
+  document.querySelectorAll('#app-chips .chip, #full-apps .chip, #page-chips .chip')
+    .forEach(c => { if (!c.dataset.busy) { c.disabled = !inputEnabled; c.title = tip; } });
 }
 // ---- Debug column (collapsed by default; state persists) ---------------------
 const debugBody = document.getElementById('debug-body');

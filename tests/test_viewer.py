@@ -158,6 +158,8 @@ def test_phone_endpoint_serves_passive_info(base_url):
         "locked": False,
         "app": {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 4242},
         "session": "stub-session",
+        # Safari is frontmost, so the Home Screen page is not read at all.
+        "page": None,
     }
 
 
@@ -173,7 +175,53 @@ def test_phone_endpoint_degrades_per_field(base_url):
         "locked": True,
         "app": None,
         "session": "stub-session",
+        "page": None,
     }
+
+
+def test_phone_endpoint_reads_page_only_on_the_home_screen(base_url, monkeypatch):
+    # current_page() is a real WDA lookup on a 10s poll. It must fire on the
+    # springboard and nowhere else, or every app screen pays for a page
+    # indicator that is not on it.
+    from phone_harness import helpers
+
+    calls = []
+
+    def fake_current_page():
+        calls.append(1)
+        return {"index": 4, "total": 8, "zone": "page"}
+
+    monkeypatch.setattr(helpers, "current_page", fake_current_page)
+    c = viewer.Handler.client
+    c.battery_info = None
+    c.locked = False
+
+    c.app = {"bundleId": "com.apple.mobilesafari", "name": "Safari", "pid": 1}
+    assert requests.get(base_url + "/api/phone", timeout=5).json()["page"] is None
+    assert calls == []
+
+    c.app = {"bundleId": "com.apple.springboard", "name": "SpringBoard", "pid": 1}
+    body = requests.get(base_url + "/api/phone", timeout=5).json()
+    assert body["page"] == {"index": 4, "total": 8, "zone": "page"}
+    assert calls == [1]
+
+
+def test_phone_page_poll_does_not_arm_the_send_gate(base_url, monkeypatch):
+    # The viewer polls this every 10s. Two integers iOS generates about its own
+    # page indicator are bookkeeping, not content: if this marked the process
+    # tainted, the send gate would arm itself forever on the Home Screen.
+    from phone_harness import helpers, trust
+
+    seen = {}
+
+    def fake_current_page():
+        seen["internal"] = getattr(trust._local, "internal", False)
+        return {"index": 1, "total": 3, "zone": "page"}
+
+    monkeypatch.setattr(helpers, "current_page", fake_current_page)
+    viewer.Handler.client.app = {"bundleId": "com.apple.springboard", "pid": 1}
+    requests.get(base_url + "/api/phone", timeout=5)
+    assert seen["internal"] is True
 
 
 def test_stop_toggle_creates_and_removes_file(base_url, tmp_path, monkeypatch):
@@ -770,6 +818,121 @@ def test_home_surfaces_a_failed_walk(base_url, monkeypatch):
     r = requests.post(base_url + "/api/home", json={}, timeout=5)
     assert r.status_code >= 400
     assert "page 5" in r.text
+
+
+def test_page_endpoint_walks_to_the_requested_page(base_url, monkeypatch):
+    walked = []
+    monkeypatch.setattr(helpers, "goto_home_page", lambda n: walked.append(n))
+    r = requests.post(base_url + "/api/page", json={"index": 6}, timeout=5)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert walked == [6]
+
+
+def test_page_endpoint_surfaces_a_short_walk(base_url, monkeypatch):
+    # goto_home_page raises rather than leaving you two pages short. That has to
+    # reach the human, or the chips would highlight a page nobody is on.
+    def boom(n):
+        raise RuntimeError(f"wanted page {n}, still on page 2")
+
+    monkeypatch.setattr(helpers, "goto_home_page", boom)
+    r = requests.post(base_url + "/api/page", json={"index": 7}, timeout=5)
+    assert r.json()["ok"] is False
+    assert "still on page 2" in r.json()["error"]
+
+
+def test_page_endpoint_rejects_a_missing_index(base_url):
+    r = requests.post(base_url + "/api/page", json={}, timeout=5)
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_read_thread_returns_messages(base_url, monkeypatch):
+    seen = {}
+
+    def fake_read(contact, limit):
+        seen.update(contact=contact, limit=limit)
+        return [{"text": "hi", "from_me": False}, {"text": "hey", "from_me": True}]
+
+    monkeypatch.setattr(helpers, "read_messages", fake_read)
+    r = requests.post(
+        base_url + "/api/read-thread", json={"contact": "Mom", "limit": 30}, timeout=5
+    )
+    assert r.status_code == 200
+    assert r.json() == {
+        "ok": True,
+        "messages": [
+            {"text": "hi", "from_me": False},
+            {"text": "hey", "from_me": True},
+        ],
+    }
+    assert seen == {"contact": "Mom", "limit": 30}
+
+
+def test_read_thread_requires_a_contact(base_url):
+    r = requests.post(base_url + "/api/read-thread", json={"contact": "  "}, timeout=5)
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_read_thread_clamps_the_limit(base_url, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        helpers,
+        "read_messages",
+        lambda contact, limit: seen.update(limit=limit) or [],
+    )
+    requests.post(
+        base_url + "/api/read-thread", json={"contact": "Mom", "limit": 9999}, timeout=5
+    )
+    assert seen["limit"] == 50
+
+
+def test_read_thread_still_arms_the_send_gate(base_url, monkeypatch):
+    # The OPPOSITE of the page poll: message text is the most direct injection
+    # route into anything sharing this process. read_messages marks the process
+    # tainted and the viewer must NOT wrap that in trust.internal().
+    from phone_harness import trust
+
+    seen = {}
+
+    def fake_read(contact, limit):
+        seen["internal"] = getattr(trust._local, "internal", False)
+        return []
+
+    monkeypatch.setattr(helpers, "read_messages", fake_read)
+    requests.post(base_url + "/api/read-thread", json={"contact": "Mom"}, timeout=5)
+    assert seen["internal"] is False
+
+
+def test_gesture_buttons_give_focus_back_to_the_phone():
+    # Keys reach the phone only while nothing focusable holds focus: the window
+    # keydown handler returns early on input/textarea/button/select/[tabindex].
+    # A clicked button KEEPS focus, so Search opened Spotlight and then ate
+    # every letter typed at it, and the obvious repair — click the screen —
+    # sends a TAP that closes Spotlight. The handler must blur itself.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("Object.entries(GESTURES)")
+    body = html[start : html.index("// ---- Thread:", start)]
+    assert "ev.currentTarget.blur()" in body, (
+        "a gesture button that keeps focus swallows every keystroke after it"
+    )
+    # ...but only for a pointer click. ev.detail is 0 for Enter/Space on a
+    # focused button, and blurring there throws keyboard users out of the tab
+    # order.
+    assert "ev.detail > 0" in body
+    # The guard that makes the blur necessary in the first place.
+    assert "input,textarea,button,select,[tabindex]" in html
+
+
+def test_thread_bubbles_are_never_innerhtml():
+    # Bubbles carry message text straight off the phone. Rendering that as HTML
+    # would put attacker-controlled markup in the operator's own dashboard.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("function renderThread()")
+    body = html[start : html.index("document.getElementById('text-to')", start)]
+    assert "b.textContent = m.text;" in body
+    assert "innerHTML = m." not in body and "innerHTML = '<div class=\"bub" not in body
 
 
 def test_stale_viewer_kill_spares_the_phone_link(tmp_path, monkeypatch):

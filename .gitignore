@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+.playwright-cli/
 dist/
 node_modules/
 screenshots/

@@ -298,12 +298,12 @@ class WDAClient:
     # slow: `**/*` on the Home Screen killed WDA outright and took the session
     # with it (2026-08-12, docs/ERRORS.md).
 
-    def active_element(self) -> str:
-        """Element id of the focused field. Tap the field first."""
-        eid = _element_id(self._session_request("GET", "/element/active"))
-        if eid is None:
-            raise WDAError("No focused element. Tap a text field first.")
-        return eid
+    # There is deliberately no active_element(): GET /element/active answers a
+    # Messages thread with a message BUBBLE (XCUIElementTypeTextView named
+    # CKBalloonTextView) while the caret is blinking in the compose bar, so
+    # "the focused field" is a lie exactly where this product needs it most.
+    # Resolve the field you mean with find_first + a class chain instead
+    # (helpers._field_element). Measured on device 2026-08-12; docs/ERRORS.md.
 
     def find_first(self, class_chain: str) -> str | None:
         """Element id of the first match for an iOS class chain, or None.

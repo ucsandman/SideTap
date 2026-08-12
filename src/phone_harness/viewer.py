@@ -435,6 +435,22 @@ class Handler(BaseHTTPRequestHandler):
                 except WDAError:
                     pass
                 info["session"] = self.client.session_id
+                # Home Screen position, for the "Go to page" chips. Only on the
+                # springboard: current_page() is one targeted element lookup
+                # (0.37s measured), but inside an app there is no PageIndicator
+                # to find and the call would be pure cost. trust.internal()
+                # because this is the viewer's own 10s bookkeeping poll, not
+                # content reaching an agent — without it the send gate would arm
+                # itself every ten seconds for as long as the Home Screen is up.
+                info["page"] = None
+                if str((info["app"] or {}).get("bundleId") or "") == _SPRINGBOARD:
+                    from . import helpers
+
+                    try:
+                        with trust.internal():
+                            info["page"] = helpers.current_page()
+                    except WDAError:
+                        pass
                 _LAST_PHONE = info
                 self._json(info)
             elif path == "/api/doctor":
@@ -525,6 +541,49 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         helpers.goto_home_page(1)
                 self._json({"ok": True})
+            elif path == "/api/page":
+                from . import helpers
+
+                # Chips are 1..total only. goto_home_page() raises for anything
+                # else on purpose, but it still WALKS correctly out of Today
+                # View and the App Library, so those two need no chip of their
+                # own — the header names them and any page chip escapes them.
+                try:
+                    index = int(payload["index"])
+                except (KeyError, TypeError, ValueError):
+                    self._json({"ok": False, "error": "index is required"}, 400)
+                    return
+                try:
+                    with _action_slot():
+                        helpers.goto_home_page(index)
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": True})
+            elif path == "/api/read-thread":
+                from . import helpers
+
+                contact = str(payload.get("contact", "")).strip()
+                if not contact:
+                    self._json({"ok": False, "error": "contact is required"}, 400)
+                    return
+                limit = min(max(int(payload.get("limit", 20)), 1), 50)
+                try:
+                    # NOT trust.internal(): message text is the most direct
+                    # injection route into anything sharing this process, and
+                    # read_messages marks it as such. The viewer's own Send is
+                    # human_initiated and stays ungated; an agent send from the
+                    # debug console does not, which is the point.
+                    with _action_slot():
+                        messages = helpers.read_messages(contact, limit)
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": True, "messages": messages})
             elif path == "/api/lock":
                 with _action_slot():
                     self.client.lock()

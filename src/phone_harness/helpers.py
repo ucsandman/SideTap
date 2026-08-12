@@ -323,21 +323,57 @@ def type_text(text: str) -> None:
 _BACKSPACE = chr(0xE003)
 
 
-def _focused_value() -> str | None:
-    """What the focused field really holds, or None if it cannot be read.
+def _field_element(field: dict) -> str | None:
+    """Element id for the field the CALLER pointed at, or None.
+
+    Never WDA's /element/active. On a Messages thread that answers with a
+    message BUBBLE (an XCUIElementTypeTextView named CKBalloonTextView) even
+    with the keyboard up and the caret blinking in the compose bar, so both
+    things that used it worked on a message instead of the field: the clear ran
+    WDA's clear routine on a bubble, which long-presses it — that is what
+    opened the Tapback picker in the middle of a send — and the read-back
+    returned the bubble's text, so send_message refused the message it had just
+    typed correctly (device, 2026-08-12; docs/ERRORS.md).
+
+    Bounded class chains only, one id back — see the section note in
+    wda_client. The label pins the right field when a screen holds several
+    (`ocr()` reports a field's label as its text); the bare type chain is the
+    fallback for a field whose label iOS leaves empty.
+    """
+    kind = "**/XCUIElementType" + str(field.get("type", ""))
+    label = str(field.get("text", "")).strip()
+    chains = [kind]
+    if label and '"' not in label:  # a quote would break out of the predicate
+        chains.insert(0, f'{kind}[`label == "{label}"`]')
+    for chain in chains:
+        try:
+            eid = client().find_first(chain)
+        except WDAError:
+            return None
+        if eid:
+            return eid
+    return None
+
+
+def _field_value(eid: str | None) -> str | None:
+    """What the field really holds, or None if it cannot be read.
 
     NOT collect_texts(): that prefers `label`, which for a text field is the
     PLACEHOLDER ("Message" on the Messages compose bar), so it reads the same
-    whether the field is empty or holds a draft. The typed content is `value`.
+    whether the field is empty or holds a draft. The typed content is `value` —
+    though an EMPTY field reports its placeholder there too ("iMessage",
+    measured on device), so an emptied field never reads back as "".
     """
+    if eid is None:
+        return None
     try:
-        return client().element_value(client().active_element())
+        return client().element_value(eid)
     except WDAError:
         return None
 
 
-def _clear_focused_field() -> None:
-    """Empty the focused field, in order of reliability."""
+def _clear_field(eid: str | None) -> None:
+    """Empty the field, in order of reliability."""
     clear = [
         e
         for e in ocr()
@@ -346,12 +382,13 @@ def _clear_focused_field() -> None:
     if clear:  # search fields carry an explicit button
         tap(clear[0]["x"], clear[0]["y"])
         return
-    try:  # WebDriver's own clear: one call, any content length
-        client().element_clear(client().active_element())
-        return
-    except WDAError:
-        pass
-    current = _focused_value() or ""  # last resort: backspace over what is there
+    if eid is not None:
+        try:  # WebDriver's own clear: one call, any content length
+            client().element_clear(eid)
+            return
+        except WDAError:
+            pass
+    current = _field_value(eid) or ""  # last resort: backspace over what is there
     if current:
         type_text(_BACKSPACE * (len(current) + 2))
 
@@ -368,14 +405,20 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
 
     Pass the field element you are about to type into (the one you would tap).
     `verify=False` skips the read-back round trip.
+
+    The clear and the read-back address `field` itself, resolved to an element
+    id AFTER the tap: the keyboard slide-up moves the field (the Messages
+    compose bar goes from y=908 to y=601, measured), so the id has to come from
+    a class chain and not from the coordinates that were just tapped.
     """
     tap(field["x"], field["y"])
     time.sleep(0.4)  # keyboard slide-up, or the first keys are dropped
-    _clear_focused_field()
-    type_text(text)
+    eid = _field_element(field)
+    _clear_field(eid)
+    type_text(text)  # /wda/keys goes to the real first responder, which is right
     if not verify:
         return text
-    landed = _focused_value()
+    landed = _field_value(eid)
     return text if landed is None else landed
 
 

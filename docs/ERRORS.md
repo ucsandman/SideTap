@@ -5,6 +5,48 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-12 — WDA calls a message bubble "the focused element", so sends refused themselves
+
+**Symptom.** The viewer's Text someone walked the whole flow correctly — opened
+Messages, searched, opened the right thread, typed `test` into the compose bar —
+and then did not send. Instead the phone popped the Tapback (reaction) picker
+open on an unrelated message. `.state/actions.log` recorded the send as
+attempted and nothing went out.
+
+**Root cause.** ONE call, two symptoms: `GET /element/active`. On a Messages
+thread WDA answers it with a message BUBBLE — an `XCUIElementTypeTextView`
+named `CKBalloonTextView` — not the compose bar, even with the keyboard up and
+the caret blinking in the compose bar. `set_field_text` used it twice:
+
+- `element_clear(active_element())` ran WDA's clear routine on a *message*,
+  which long-presses it → that is the Tapback picker, and the POST still
+  returned 200 so the activity feed logged a normal `clear`.
+- `element_value(active_element())` read that same bubble back, so `landed` was
+  the bubble's text, not `test`. `send_message`'s read-back guard did its job
+  and refused to tap Send — on garbage input.
+
+The draft was never cleared either, which is the entire reason
+`set_field_text` exists.
+
+**Cheapest discriminating test.** With the thread open and the field focused:
+`/element/active` → `CKBalloonTextView`, value = a message; class chain
+``**/XCUIElementTypeTextField[`label == "Message"`]`` → `messageBodyField`,
+value = `test`, in 0.25s.
+
+**Fix.** `helpers._field_element()` resolves the field the *caller* named with a
+bounded class chain (label predicate first, bare type as fallback) and
+`_clear_field`/`_field_value` take that id. `active_element()` is gone from
+`wda_client` — it cannot be made right, and an unused method that lies about
+the product's most important screen is a landmine. Resolve AFTER the tap: the
+keyboard moves the compose bar from y=908 to y=601, so the tapped coordinates
+no longer describe the element.
+
+**Also worth knowing.** An empty iOS text field reports its PLACEHOLDER as
+`value` (`iMessage` on the compose bar), so an emptied field never reads back
+as `""`.
+
+---
+
 ## 2026-08-12 — `unlock()` refused to wake a phone that locked with an app open
 
 **Symptom.** Mid-session the phone auto-locked. `helpers.unlock()` returned

@@ -282,10 +282,12 @@ def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
     to find one. Icons inside folders are not visible to this.
     """
     w, h = client().window_size()
-    press_home()
-    wait_stable(timeout=3)
-    press_home()  # from any page, a second press lands on page 1
-    wait_stable(timeout=3)
+    # Start at page 1 or the scan silently begins wherever you happen to be and
+    # misses everything behind you. This used to be two press_home() calls on
+    # the belief that a second press pages back — it does not, /wda/homescreen
+    # is a no-op once the springboard is up, and press_home() says so itself.
+    # Caught on device 2026-08-12: from page 2 the scan started on page 2.
+    goto_home_page(1)
     for _ in range(max_pages):
         for el in find_text(text):
             if el.get("type") == "Icon":
@@ -377,6 +379,11 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
     return text if landed is None else landed
 
 
+_SPRINGBOARD = "com.apple.springboard"
+_HOME_POLL = 0.25
+_HOME_ATTEMPTS = 8  # ~2s of polling; active_app() is an 80ms read
+
+
 def press_home() -> None:
     """Go to the Home Screen, as if the physical Home gesture were used.
 
@@ -384,28 +391,31 @@ def press_home() -> None:
     are on: /wda/homescreen is a no-op once you are already on the Home Screen
     (verified on device — two consecutive calls from page 4 both stayed on page
     4). Use goto_home_page() to reach a specific page.
+
+    Waits for the springboard to actually come forward, because /wda/homescreen
+    is NOT reliably synchronous: measured 2026-08-12, it returned in ~50ms with
+    the app still frontmost on two tries out of three and the springboard
+    arrived at ~830ms, while the third call took 1.4s and was done on return.
+    Returning early is not a cosmetic problem — the viewer's second Home press
+    then read a stale active app and pressed home again instead of walking to
+    page 1, and goto_home_page() read no PageIndicator and raised. Bounded and
+    silent on timeout: the physical gesture cannot fail, so neither may this;
+    callers that need to know check the screen.
     """
     _invalidate_tree()
-    client().home()
+    c = client()
+    c.home()
+    for i in range(_HOME_ATTEMPTS):
+        if c.active_app().get("bundleId") == _SPRINGBOARD:
+            return
+        if i < _HOME_ATTEMPTS - 1:
+            time.sleep(_HOME_POLL)
 
 
 _PAGE_VALUE = re.compile(r"Page (\d+) of (\d+)")
 
 
-def _find_page_indicator(node) -> dict | None:
-    if isinstance(node, dict):
-        if node.get("type") == "PageIndicator":
-            return node
-        for child in node.get("children") or []:
-            hit = _find_page_indicator(child)
-            if hit is not None:
-                return hit
-    elif isinstance(node, list):
-        for child in node:
-            hit = _find_page_indicator(child)
-            if hit is not None:
-                return hit
-    return None
+_PAGE_INDICATOR_CHAIN = "**/XCUIElementTypePageIndicator"
 
 
 def current_page() -> dict | None:
@@ -418,13 +428,22 @@ def current_page() -> dict | None:
     Returns None when no PageIndicator is on screen (an app is open) or when the
     value does not parse: an iOS wording change must fail loudly, not guess.
 
-    NOTE: ocr() cannot see this. collect_texts prefers `label`, which is null on
-    this element, so it falls back to `name` ("Page control") and drops `value`.
+    Deliberately NOT ui_tree(): this wants one attribute off one element, and a
+    full /source dump of the Home Screen measured 3.0-5.7s (554-610 nodes,
+    244 KB) against 0.37s for the targeted lookup. That gap is the whole reason
+    goto_home_page() used to take ten seconds. ocr() still cannot see this
+    element either way — collect_texts prefers `label`, which is null here, so
+    it falls back to `name` ("Page control") and drops `value`.
     """
-    node = _find_page_indicator(ui_tree())
-    if node is None:
+    c = client()
+    eid = c.find_first(_PAGE_INDICATOR_CHAIN)
+    # Still a screen read, so the send gate still arms. No flags to pass on: the
+    # only thing reaching the caller is two integers parsed out of a string iOS
+    # generates itself, so there is no untrusted text for the scanner to see.
+    trust.mark("screen", [])
+    if eid is None:
         return None
-    match = _PAGE_VALUE.search(str(node.get("value") or ""))
+    match = _PAGE_VALUE.search(c.element_value(eid))
     if not match:
         return None
     index, total = int(match.group(1)), int(match.group(2))
@@ -437,9 +456,6 @@ def current_page() -> dict | None:
     return {"index": index, "total": total, "zone": zone}
 
 
-_PAGE_SETTLE = 0.55
-
-
 def goto_home_page(n: int = 1) -> None:
     """Land on Home Screen page `n` from anywhere.
 
@@ -450,11 +466,17 @@ def goto_home_page(n: int = 1) -> None:
     Raises ValueError for a target that is not a Home Screen page, and
     RuntimeError when the walk cannot get there — a partial walk that silently
     leaves you two pages short is the failure this guards against.
+
+    Nothing sleeps between the steps. WDA already waits for the springboard to
+    go idle inside the /actions call (waitForIdleTimeout, 2s cap), so the 0.55s
+    settle this used to pay after every swipe was counting the same wait twice.
+    Measured on device 2026-08-12: the first read after swipe() returns is
+    correct 6/6, and a six-page walk went from 10.7s to 7.0s. Leaving an app is
+    the one step that does need waiting, and press_home() now does that itself.
     """
     page = current_page()
     if page is None:  # an app is open
         press_home()
-        time.sleep(_PAGE_SETTLE)
         page = current_page()
         if page is None:
             raise RuntimeError(
@@ -472,7 +494,6 @@ def goto_home_page(n: int = 1) -> None:
                 swipe(40, 500, 400, 500, 0.25)  # left->right: toward page 1
             else:
                 swipe(400, 500, 40, 500, 0.25)
-            time.sleep(_PAGE_SETTLE)
         page = current_page()
         if page is None:
             raise RuntimeError("lost the PageIndicator mid-walk")
@@ -991,6 +1012,16 @@ def _scrub_secret(message: str, secret: str | None) -> str:
 
 _UNLOCK_TIMEOUT = 45.0  # first gesture after a deep sleep: 20.5s measured live
 
+# Is the display on? PNG size is the cheap probe, and these are the real
+# numbers off the device (2026-08-12): display OFF 50 KB, Calculator 245 KB
+# (a mostly-black UI, so close to the worst case for a lit app), Home Screen
+# 888 KB. 120 KB sits ~2.4x above the dark frame and ~2x below the darkest lit
+# screen measured. It is a heuristic, not a lock-state oracle: an app painting
+# a near-pure-black full screen could still read as dark. That is the accepted
+# residual — the alternative probes either act on the phone (press_button wakes
+# by EXITING the app, verified) or come from /wda/locked, which lies.
+_LIT_SCREEN_BYTES = 120_000
+
 
 def unlock(c: WDAClient | None = None) -> None:
     """Make the phone usable: wake it and, if the passcode pad comes up, type
@@ -1011,7 +1042,14 @@ def unlock(c: WDAClient | None = None) -> None:
         patient.session_id = c.session_id
         c = patient
     if c.active_app().get("bundleId") != "com.apple.springboard":
-        return  # an app is frontmost: unlocked and in use — touch nothing
+        # ...but only when the phone is genuinely in use. active_app() goes
+        # STALE behind a lock: a phone that locked with an app frontmost keeps
+        # naming that app until the display wakes, so this return used to
+        # refuse the exact state unlock() exists for, and every launch after it
+        # failed "device was not, or could not be, unlocked" (bit live
+        # 2026-08-12). A lit screen is what "in use" actually means.
+        if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
+            return  # frontmost app on a lit screen — touch nothing
     w, h = c.window_size()  # before the wake, so it can't eat awake-time
     _invalidate_tree()  # about to change the screen, like any other action
 
@@ -1038,7 +1076,7 @@ def unlock(c: WDAClient | None = None) -> None:
 
     wake_and_swipe()
     if not pad_appears(3.0):
-        if len(c.screenshot()) >= 150_000:
+        if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
             return  # lit and no pad: was just asleep, now awake+usable
         # Dark again: a slow swipe landed after the lock screen re-slept and
         # burned on a black screen. One more charge, then give up — endless
@@ -1051,10 +1089,9 @@ def unlock(c: WDAClient | None = None) -> None:
             "Phone is locked. Set PHONE_PASSCODE in .env or unlock it by hand."
         )
     # The tree fetch above can take seconds when the viewer is streaming, and
-    # the lock screen re-sleeps fast — typed keys on a dark screen go nowhere.
-    # A black frame compresses to almost nothing, so screenshot size is a
-    # cheap screen-still-lit probe; wake and swipe again if it slept.
-    if len(c.screenshot()) < 150_000:
+    # the lock screen re-sleeps fast — typed keys on a dark screen go nowhere,
+    # so re-probe and wake again if it slept.
+    if len(c.screenshot()) < _LIT_SCREEN_BYTES:
         wake_and_swipe()
     try:
         c.type_text(config.PHONE_PASSCODE)

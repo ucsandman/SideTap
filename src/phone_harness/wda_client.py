@@ -62,6 +62,14 @@ def _write_shared_session(sid: str) -> None:
         pass  # sharing is best-effort; the session itself still works
 
 
+def _element_id(item) -> str | None:
+    """The element id out of a WebDriver element reference, under either key."""
+    if not isinstance(item, dict):
+        return None
+    eid = item.get("ELEMENT") or item.get("element-6066-11e4-a52e-4f735466cecf")
+    return str(eid) if eid else None
+
+
 _ACTIVITY_MAX_BYTES = 64_000
 _ACTIVITY_KEEP_LINES = 200
 
@@ -222,7 +230,7 @@ class WDAClient:
     def status(self) -> dict:
         return self._request("GET", "/status")
 
-    def is_up(self) -> bool:
+    def is_up(self) -> bool:  # noqa: vulture  (called by admin.py)
         try:
             self.status()
             return True
@@ -279,22 +287,39 @@ class WDAClient:
     def active_app(self) -> dict:
         return self._session_request("GET", "/wda/activeAppInfo")
 
-    # ---- focused element -----------------------------------------------------
-    # Used only to clear and read back a text field before typing into it. NOT a
-    # perception path: /elements queries measured slower than /source on device,
-    # so screen reading stays on source(). This is one targeted lookup on a field
-    # the caller has already tapped.
+    # ---- targeted element lookups --------------------------------------------
+    # NOT a perception path. Screen reading stays on source(), and these exist
+    # only for the two jobs a full tree does badly:
+    #   - clear and read back a text field before typing into it
+    #   - read ONE known element when the whole tree costs seconds (the Home
+    #     Screen dump measured 3.0-5.7s, 554-610 nodes / 244 KB, against 0.37s
+    #     for find_first + element_value)
+    # Always query a concrete element type. An UNBOUNDED query is not merely
+    # slow: `**/*` on the Home Screen killed WDA outright and took the session
+    # with it (2026-08-12, docs/ERRORS.md).
 
     def active_element(self) -> str:
         """Element id of the focused field. Tap the field first."""
-        value = self._session_request("GET", "/element/active")
-        if isinstance(value, dict):
-            eid = value.get("ELEMENT") or value.get(
-                "element-6066-11e4-a52e-4f735466cecf"
-            )
+        eid = _element_id(self._session_request("GET", "/element/active"))
+        if eid is None:
+            raise WDAError("No focused element. Tap a text field first.")
+        return eid
+
+    def find_first(self, class_chain: str) -> str | None:
+        """Element id of the first match for an iOS class chain, or None.
+
+        Returns ONE id and never a list, on purpose: a bounded lookup is what
+        this endpoint is good for, and anything wanting to sweep the screen
+        belongs in source() instead. See the section note above.
+        """
+        value = self._session_request(
+            "POST", "/elements", {"using": "class chain", "value": class_chain}
+        )
+        for item in value or []:
+            eid = _element_id(item)
             if eid:
-                return str(eid)
-        raise WDAError("No focused element. Tap a text field first.")
+                return eid
+        return None
 
     def element_clear(self, element_id: str) -> None:
         """Empty a text field outright, whatever length its contents."""
@@ -305,14 +330,14 @@ class WDAClient:
         value = self._session_request("GET", f"/element/{element_id}/attribute/value")
         return "" if value is None else str(value)
 
-    def battery(self) -> dict:
+    def battery(self) -> dict:  # noqa: vulture  (called by viewer.py)
         """Raw WDA battery info: {level: 0..1, state: int} (state 2 = charging)."""
         return self._session_request("GET", "/wda/batteryInfo")
 
     # DISPLAY-ONLY: /wda/locked can report unlocked with the passcode pad on
     # screen (a test pins that unlock() never consults it). The viewer's status
     # strip shows it; nothing may act on it.
-    def is_locked(self) -> bool:
+    def is_locked(self) -> bool:  # noqa: vulture  (called by viewer.py)
         return bool(self._request("GET", "/wda/locked"))
 
     # ---- action ------------------------------------------------------------
@@ -388,7 +413,7 @@ class WDAClient:
         """Wake + swipe up. Only unlocks fully if the phone has no passcode."""
         self._request("POST", "/wda/unlock")
 
-    def lock(self) -> None:
+    def lock(self) -> None:  # noqa: vulture  (called by viewer.py)
         """Lock the screen. Right after an unlock, iOS's require-passcode
         grace period can make this time out while the screen still turns off —
         treat that error as cosmetic, not a failure to lock."""
@@ -397,7 +422,7 @@ class WDAClient:
     def app_launch(self, bundle_id: str) -> None:
         self._session_request("POST", "/wda/apps/launch", {"bundleId": bundle_id})
 
-    def configure_mjpeg(
+    def configure_mjpeg(  # noqa: vulture  (called by admin.py/viewer.py)
         self,
         framerate: int = config.MJPEG_FPS,
         quality: int = config.MJPEG_QUALITY,

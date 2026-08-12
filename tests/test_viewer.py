@@ -27,19 +27,17 @@ class StubClient:
         self.calls.append(("long_press", x, y, seconds))
 
     def source(self):  # noqa: vulture  (duck-typed: helpers.ui_tree calls it)
-        # /api/home walks with helpers.goto_home_page, which reads the
-        # PageIndicator. Reporting page 1 makes the walk a verified no-op.
-        return {
-            "type": "Application",
-            "children": [
-                {
-                    "type": "PageIndicator",
-                    "name": "Page control",
-                    "value": "Page 1 of 8",
-                    "children": [],
-                }
-            ],
-        }
+        return {"type": "Application", "children": []}
+
+    # /api/home walks with helpers.goto_home_page, which reads the PageIndicator
+    # through one targeted lookup rather than a whole-tree dump. Reporting page 1
+    # makes the walk a verified no-op.
+    def find_first(self, class_chain):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.calls.append(("find_first", class_chain))
+        return "page-indicator"
+
+    def element_value(self, element_id):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        return "Page 1 of 8"
 
     def swipe(self, x1, y1, x2, y2, seconds=0.3):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.calls.append(("swipe", x1, y1, x2, y2))

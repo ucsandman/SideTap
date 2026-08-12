@@ -286,13 +286,35 @@ def test_unlock_locked_without_passcode_raises(fast, monkeypatch):
 
 
 def test_unlock_leaves_foreground_app_alone(fast):
-    """An app is frontmost -> the phone is unlocked and in use. The edge swipe
-    would yank the user out of the app; unlock() must not gesture at all."""
-    stub = fast(StubPhone(SAMPLE_TREE, app="com.apple.mobilesafari"))
+    """An app is frontmost on a LIT screen -> the phone is unlocked and in use.
+    The edge swipe would yank the user out of the app; unlock() must not
+    gesture at all. Lit-ness is load-bearing here, see the next test."""
+    stub = fast(
+        StubPhone(SAMPLE_TREE, frame=b"\0" * 200_000, app="com.apple.mobilesafari")
+    )
     helpers.unlock()
     assert stub.pressed == []
     assert stub.swipes == 0
     assert stub.typed == []
+
+
+def test_unlock_wakes_a_phone_that_locked_with_an_app_open(fast):
+    """Bit live 2026-08-12: active_app() goes STALE behind a lock. A phone that
+    locked with Calculator frontmost kept answering "Calculator", so unlock()
+    took the "in use, touch nothing" exit and never woke it — and every launch
+    afterwards failed with "device was not, or could not be, unlocked". A dark
+    screen is the tell: a phone actually in use is a lit one."""
+
+    class LockedBehindApp(StubPhone):
+        def swipe(self, *args):
+            super().swipe(*args)
+            self.tree = _buttons_tree(list("1234567890"))
+            self.frame = b"\0" * 200_000  # the wake lit the screen
+
+    stub = fast(LockedBehindApp(SAMPLE_TREE, frame=b"tiny", app="com.apple.calculator"))
+    helpers.unlock()
+    assert stub.pressed == ["home"]  # it woke the phone instead of giving up
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_wrong_pin_raises_and_never_retries(fast):
@@ -1225,60 +1247,81 @@ def test_open_app_suggests_system_apps_that_ios_apps_list_omits(monkeypatch):
 # ---- Home Screen position ---------------------------------------------------
 
 
-def _tree_with_page(value):
-    """Minimal tree carrying a PageIndicator, shaped like the real one."""
-    node = {"type": "PageIndicator", "name": "Page control", "children": []}
-    if value is not None:
-        node["value"] = value
-    return {
-        "type": "Application",
-        "children": [{"type": "Other", "children": [node]}],
-    }
-
-
 class PageClient:
-    """Serves one fixed tree; enough for read-only page tests."""
+    """Serves one PageIndicator through the targeted-lookup path.
 
-    def __init__(self, tree):
-        self.tree = tree
+    A full /source dump of the Home Screen costs 3.0-5.7s on device against
+    0.37s for find_first + element_value, so current_page() must never reach
+    for source(). This stub raises if it does.
+    """
+
+    def __init__(self, value, present=True):
+        self.value, self.present = value, present
+        self.chains = []
 
     def source(self):
-        return self.tree
+        raise AssertionError("current_page must not dump the whole tree")
+
+    def find_first(self, class_chain):
+        self.chains.append(class_chain)
+        return "42" if self.present else None
+
+    def element_value(self, element_id):
+        return "" if self.value is None else self.value
 
 
-def _use_tree(monkeypatch, tree):
+def _use_page(monkeypatch, value, present=True):
     helpers._invalidate_tree()
-    monkeypatch.setattr(helpers, "_client", PageClient(tree))
+    stub = PageClient(value, present)
+    monkeypatch.setattr(helpers, "_client", stub)
+    return stub
 
 
 def test_current_page_reads_home_page(monkeypatch):
-    _use_tree(monkeypatch, _tree_with_page("Page 4 of 8"))
+    assert helpers.current_page.__doc__  # keep the stub honest about the API
+    _use_page(monkeypatch, "Page 4 of 8")
     assert helpers.current_page() == {"index": 4, "total": 8, "zone": "home"}
 
 
+def test_current_page_asks_for_the_page_indicator_only(monkeypatch):
+    # The whole speed win is one bounded lookup. An unbounded chain ("**/*")
+    # crashed WDA outright on device, so the query must name a concrete type.
+    stub = _use_page(monkeypatch, "Page 4 of 8")
+    helpers.current_page()
+    assert stub.chains == ["**/XCUIElementTypePageIndicator"]
+
+
+def test_current_page_still_arms_the_send_gate(monkeypatch):
+    # It no longer goes through ui_tree(), which is what used to taint.
+    trust.clear()
+    _use_page(monkeypatch, "Page 4 of 8")
+    helpers.current_page()
+    assert trust.tainted()["source"] == "screen"
+
+
 def test_current_page_calls_today_view_page_zero(monkeypatch):
-    _use_tree(monkeypatch, _tree_with_page("Page 0 of 8"))
+    _use_page(monkeypatch, "Page 0 of 8")
     assert helpers.current_page()["zone"] == "today"
 
 
 def test_current_page_calls_app_library_past_the_end(monkeypatch):
-    _use_tree(monkeypatch, _tree_with_page("Page 9 of 8"))
+    _use_page(monkeypatch, "Page 9 of 8")
     assert helpers.current_page()["zone"] == "app_library"
 
 
 def test_current_page_none_when_an_app_is_open(monkeypatch):
-    _use_tree(monkeypatch, {"type": "Application", "children": []})
+    _use_page(monkeypatch, None, present=False)
     assert helpers.current_page() is None
 
 
 def test_current_page_none_on_unparseable_value(monkeypatch):
     # An iOS update could change the string. Fail loudly, never guess.
-    _use_tree(monkeypatch, _tree_with_page("Seite 4 von 8"))
+    _use_page(monkeypatch, "Seite 4 von 8")
     assert helpers.current_page() is None
 
 
 def test_current_page_none_when_value_missing(monkeypatch):
-    _use_tree(monkeypatch, _tree_with_page(None))
+    _use_page(monkeypatch, None)
     assert helpers.current_page() is None
 
 
@@ -1288,9 +1331,13 @@ class PagingClient:
     def __init__(self, index, total=8, stuck=False):
         self.index, self.total, self.stuck = index, total, stuck
         self.swipes = []
+        self.slept = []
 
-    def source(self):
-        return _tree_with_page(f"Page {self.index} of {self.total}")
+    def find_first(self, class_chain):
+        return "42"
+
+    def element_value(self, element_id):
+        return f"Page {self.index} of {self.total}"
 
     def swipe(self, x1, y1, x2, y2, seconds=0.3):
         self.swipes.append("toward" if x2 > x1 else "away")
@@ -1305,7 +1352,7 @@ def _paging(monkeypatch, index, total=8, stuck=False):
     helpers._invalidate_tree()
     stub = PagingClient(index, total, stuck)
     monkeypatch.setattr(helpers, "_client", stub)
-    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers.time, "sleep", stub.slept.append)
     return stub
 
 
@@ -1314,6 +1361,17 @@ def test_goto_home_page_walks_from_page_four(monkeypatch):
     helpers.goto_home_page(1)
     assert stub.swipes == ["toward"] * 3
     assert stub.index == 1
+
+
+def test_goto_home_page_never_sleeps_between_swipes(monkeypatch):
+    # WDA already waits for the springboard to go idle inside the /actions
+    # call, so a settle here counts the same wait twice. It cost 0.55s per
+    # swipe: a six-page walk measured 10.7s with it and 7.0s without, and the
+    # first read after swipe() returns was correct 6/6 on device.
+    stub = _paging(monkeypatch, 4)
+    helpers.goto_home_page(1)
+    assert stub.swipes == ["toward"] * 3
+    assert stub.slept == []
 
 
 def test_goto_home_page_walks_from_the_last_page(monkeypatch):
@@ -1359,6 +1417,65 @@ def test_goto_home_page_raises_when_the_walk_never_lands(monkeypatch):
     assert stub.swipes  # it tried, including one corrective pass
 
 
+def test_find_on_home_screen_starts_the_scan_at_page_one(monkeypatch):
+    """It used to press home twice, believing the second press pages back. It
+    does not — /wda/homescreen is a no-op once the springboard is up — so the
+    scan silently began wherever the phone already was and could never see the
+    pages behind it. Caught on device 2026-08-12: from page 2 it scanned page 2
+    first. An icon on page 1 must be found when starting from page 3."""
+    helpers._invalidate_tree()
+
+    class Pages:
+        """Three Home Screen pages; the wanted icon lives only on page 1."""
+
+        def __init__(self, index):
+            self.index = index
+            self.scanned = []
+
+        def window_size(self):
+            return (440.0, 956.0)
+
+        def find_first(self, _chain):
+            return "42"
+
+        def element_value(self, _eid):
+            return f"Page {self.index} of 3"
+
+        def swipe(self, x1, _y1, x2, _y2, _seconds=0.3):
+            self.index += -1 if x2 > x1 else 1
+
+        def home(self):
+            pass  # as on device: a no-op once the springboard is already up
+
+        def active_app(self):
+            return {"bundleId": "com.apple.springboard"}
+
+        def source(self):
+            self.scanned.append(self.index)
+            label = "Wanted" if self.index == 1 else f"Other {self.index}"
+            return {
+                "type": "Application",
+                "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+                "children": [
+                    {
+                        "type": "Icon",
+                        "label": label,
+                        "isVisible": "1",
+                        "rect": {"x": 80, "y": 300, "width": 80, "height": 100},
+                    }
+                ],
+            }
+
+    stub = Pages(index=3)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers.capture, "screenshot_png", lambda: b"still")
+
+    el = helpers.find_on_home_screen("Wanted", max_pages=3)
+    assert el["type"] == "Icon"
+    assert stub.scanned[0] == 1, f"scan began on page {stub.scanned[0]}, not page 1"
+
+
 def test_goto_home_page_leaves_an_open_app_first(monkeypatch):
     helpers._invalidate_tree()
 
@@ -1367,10 +1484,14 @@ def test_goto_home_page_leaves_an_open_app_first(monkeypatch):
             self.homed = False
             self.swipes = []
 
-        def source(self):
-            if not self.homed:
-                return {"type": "Application", "children": []}
-            return _tree_with_page("Page 1 of 8")
+        def find_first(self, _chain):
+            return "42" if self.homed else None  # no PageIndicator inside an app
+
+        def element_value(self, _eid):
+            return "Page 1 of 8"
+
+        def active_app(self):
+            return {"bundleId": "com.apple.springboard" if self.homed else "app"}
 
         def home(self):
             self.homed = True
@@ -1384,3 +1505,50 @@ def test_goto_home_page_leaves_an_open_app_first(monkeypatch):
     helpers.goto_home_page(1)
     assert stub.homed
     assert stub.swipes == []
+
+
+class SlowSpringboard:
+    """/wda/homescreen returns, but the springboard takes a moment to arrive."""
+
+    def __init__(self, arrives_on=3):
+        self.arrives_on, self.checks, self.homed = arrives_on, 0, False
+
+    def home(self):
+        self.homed = True
+
+    def active_app(self):
+        self.checks += 1
+        late = self.homed and self.checks >= self.arrives_on
+        return {"bundleId": "com.apple.springboard" if late else "com.apple.calculator"}
+
+
+def test_press_home_waits_for_the_springboard(monkeypatch):
+    """/wda/homescreen is not reliably synchronous: measured 2026-08-12 it
+    returned in ~50ms with the app still frontmost on two tries of three, the
+    springboard arriving ~830ms later. Returning early made the viewer's second
+    Home press read a stale active app and press home again instead of walking,
+    and left goto_home_page() raising "no PageIndicator"."""
+    stub = SlowSpringboard()
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    helpers.press_home()
+    assert stub.homed
+    assert stub.checks >= 3  # it kept looking instead of trusting the return
+
+
+def test_press_home_gives_up_rather_than_hanging(monkeypatch):
+    """The physical gesture cannot fail, so this must not raise either — but it
+    must stay bounded. Callers that need to know check the screen."""
+    stub = SlowSpringboard(arrives_on=10_000)  # never
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    helpers.press_home()  # returns, does not raise
+    assert stub.checks == helpers._HOME_ATTEMPTS
+
+
+def test_press_home_returns_at_once_when_already_home(monkeypatch):
+    stub = SlowSpringboard(arrives_on=1)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    helpers.press_home()
+    assert stub.checks == 1

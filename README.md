@@ -107,7 +107,7 @@ PY
 | `tap(x, y)` / `long_press(x, y)` | touch at points |
 | `tap_text("General")` | find text and tap it |
 | `scroll_until_found("Notifications")` | scroll until it sits tappable mid-screen; returns the element |
-| `find_on_home_screen("Brain Dump")` | sweep Home Screen pages for an icon; returns the element (~8s per page) |
+| `find_on_home_screen("Brain Dump")` | walk to page 1, then sweep Home Screen pages for an icon; returns the element (~7s per page) |
 | `type_text("hello")` | type into the focused field (APPENDS at the cursor) |
 | `set_field_text(field, "hello")` | clear the field first, type, return what actually landed |
 | `compact(ocr())` | drop wrapper/duplicate rows: ~64% smaller read, capped at 60 rows |
@@ -116,7 +116,9 @@ PY
 | `current_app()` / `wait_for_app(bundle_id)` | which app is frontmost / wait until one is |
 | `send_message("Mom", "hi")` | open Messages, open the thread, type, send |
 | `read_messages("Mom")` | read the open thread back: `[{text, from_me}, ...]` |
-| `press_home()` | home screen |
+| `press_home()` | leave the app to the Home Screen; does NOT change which page you are on |
+| `current_page()` | exact Home Screen position: `{"index", "total", "zone"}` (Today View is 0, App Library is past the end) |
+| `goto_home_page(1)` | land on a specific Home Screen page, from anywhere, verified |
 | `wait_stable()` | wait until the screen stops changing |
 | `wait_for_text("Done")` | wait until specific text appears; returns the element |
 | `unlock()` | wake + unlock (passcode opt-in via `.env`) |

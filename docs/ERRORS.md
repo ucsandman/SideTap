@@ -5,6 +5,94 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-12 — `unlock()` refused to wake a phone that locked with an app open
+
+**Symptom.** Mid-session the phone auto-locked. `helpers.unlock()` returned
+instantly and did nothing, every time. Meanwhile `ios`/WDA launches failed with
+`Unable to launch ... because the device was not, or could not be, unlocked`,
+and `active_app()` cheerfully reported `com.apple.calculator`.
+
+**Root cause.** `unlock()` opens with "an app is frontmost -> the phone is
+unlocked and in use, touch nothing". But `active_app()` goes STALE behind a
+lock: a phone that locked while Calculator was frontmost keeps naming
+Calculator until the display wakes. So the guard fired on exactly the state
+`unlock()` exists to fix. One manual `press_button("home")` + swipe flipped
+`active_app()` to `com.apple.springboard`, after which `unlock()` worked first
+try — which is what confirmed the staleness rather than a broken gesture.
+
+**Fix.** Keep the early return, but qualify it with the lit-screen probe
+`unlock()` already used elsewhere, now `_LIT_SCREEN_BYTES`. An app in use is on
+a LIT screen; an app "frontmost" on a dark one is a locked phone. The threshold
+was an inherited 150_000 guess; measuring it made the margin obvious, so it is
+now 120_000 — display OFF is 50 KB, Calculator (mostly-black UI, near the worst
+case for a lit app) is 245 KB, Home Screen 888 KB. Two probes were rejected:
+`/wda/locked` lies (display-only, and a test pins that `unlock()` never
+consults it), and "wake first, then re-read `active_app`" is not passive —
+`press_button("home")` on a lit unlocked phone EXITS the app, verified. The
+residual is an app painting near-pure black, which reads as dark.
+
+**Lesson.** "Which app is frontmost" is not a lock-state probe. Any WDA read
+taken through a dark screen may be describing the phone as it was when the
+screen went off.
+
+---
+
+## 2026-08-12 — `/elements` with an unbounded class chain kills WDA
+
+**Symptom.** Profiling why a Home Screen `/source` costs 3.0-5.7s, I tested
+whether `/elements` with inline attributes could beat it. The first query,
+class chain `**/*`, never returned: WDA stopped answering on :8100 and every
+following call failed `invalid session id: Session does not exist`.
+
+**Root cause.** `**/*` matches every element in the hierarchy. On the Home
+Screen that is 554-610 nodes, and WDA resolves each match into a full element
+reference. It died mid-query rather than returning slowly.
+
+**Fix.** Don't. Perception stays on `/source`. A BOUNDED type query is safe and
+fast — `**/XCUIElementTypePageIndicator` plus one attribute read is 0.37s, and
+`current_page()` now uses exactly that — so `WDAClient.find_first` takes a class
+chain and returns ONE id, never a list, so it cannot grow into a screen sweep.
+`phone-harness up` brought WDA back with no lasting damage.
+
+**Lesson.** CLAUDE.md already said `/elements` measured slower than `/source`.
+That was true, and understated: the failure mode is not slowness, it is taking
+the session down. Note the measurement it came from was almost certainly taken
+inside an app, where `/source` is 0.22s — the Home Screen is 25x worse, which
+is what made the idea look attractive in the first place.
+
+---
+
+## 2026-08-12 — three "settles" that were each wrong in a different direction
+
+**Symptom.** `goto_home_page(1)` took 10.75s from page 3. Separately, the
+viewer's Home button sometimes pressed home twice and never walked.
+
+**Root cause.** Three different waits, none matching what the device does.
+
+1. `_PAGE_SETTLE`, 0.55s after every swipe: pure waste. WDA already waits for
+   the springboard to go idle INSIDE the `/actions` call (`waitForIdleTimeout`),
+   so this counted the same wait twice. The first read after `swipe()` returns
+   is correct 6/6 on device.
+2. `current_page()` on `ui_tree()`: not a wait at all, but it read the whole
+   544-610 node Home Screen tree (3.0-5.7s) to get two integers off one element.
+3. `press_home()` trusting `/wda/homescreen` to be synchronous. It is not: it
+   returned in ~50ms with the app still frontmost on two tries of three, with
+   the springboard arriving ~830ms later, and took 1.4s on the third. The 0.55s
+   sleep that used to follow it was never enough either — the 5.5s `/source`
+   right after was accidentally covering for it, so removing the tree read is
+   what exposed this.
+
+**Fix.** Delete the settle; read the PageIndicator through `find_first`; make
+`press_home()` poll `active_app()` until the springboard is up (bounded, never
+raises — the physical gesture cannot fail). 10.75s -> ~2.5s.
+
+**Lesson.** A fixed sleep next to an async call hides how async it really is,
+and a slow call downstream hides it again. When removing one wait exposes a
+failure, the failure was already there. Poll for the state you need; don't
+sleep a number that looked big enough.
+
+---
+
 ## 2026-08-11 — Home Screen bulk reorganisation: the load-bearing gesture was never proved
 
 **Failure.** A request to "organise the whole Home Screen" (8 Home Screen pages,

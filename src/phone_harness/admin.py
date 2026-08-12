@@ -270,7 +270,7 @@ def _toast(title: str, body: str) -> bool:
         return False
 
 
-def notify_expiry() -> int:
+def notify_expiry() -> int:  # noqa: vulture  (dispatched by name from run.py)
     """Toast if the signature has <36h left. Silent (exit 0) otherwise."""
     hours = _hours_left()
     if hours is None:
@@ -401,6 +401,18 @@ def up(wait_seconds: float = 60.0) -> int:  # noqa: vulture
     """
     with _UP_LOCK:
         return _up(wait_seconds)
+
+
+def bringing_up() -> bool:
+    """True while an up() is in flight (a caller queued on the lock counts).
+
+    launch.py opens the browser IMMEDIATELY and brings the link up in a
+    background thread, so the viewer's first doctor run lands mid bring-up and
+    legitimately sees a dead tunnel. The viewer asks this instead of calling
+    that "3 checks failing" — the answer is "starting", and it re-runs the
+    checks when this goes false.
+    """
+    return _UP_LOCK.locked()
 
 
 def _up(wait_seconds: float) -> int:

@@ -122,3 +122,20 @@ def test_wda_bundle_no_cache_fallback_when_app_really_absent(monkeypatch, tmp_pa
         lambda: [{"bundle_id": "com.apple.mobilesafari", "name": ""}],
     )
     assert device.detect_wda_bundle() is None
+
+
+def test_safe_kill_can_spare_the_process_tree(monkeypatch):
+    # The tunnel and the forwards are CHILDREN of whatever launched them, so a
+    # tree kill aimed at a stale viewer takes the phone link down with it.
+    # Measured 2026-08-12: 11 green checks, then a second SideTap launch left
+    # the tunnel and WDA dead.
+    cmds = []
+    monkeypatch.setattr(device.sys, "platform", "win32")
+    monkeypatch.setattr(device, "_pid_image", lambda pid: "python.exe")
+    monkeypatch.setattr(
+        device.subprocess, "run", lambda cmd, **kw: cmds.append((cmd, kw))
+    )
+    assert device._safe_kill(4242, "python", tree=False) is True
+    assert cmds[0][0] == ["taskkill", "/PID", "4242", "/F"]
+    assert device._safe_kill(4242, "python") is True  # default still kills the tree
+    assert "/T" in cmds[1][0]

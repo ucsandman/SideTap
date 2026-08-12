@@ -262,16 +262,21 @@ def _pid_image(pid: int) -> str:
         return ""
 
 
-def _safe_kill(pid: int, expected_prefix: str) -> bool:
+def _safe_kill(pid: int, expected_prefix: str, tree: bool = True) -> bool:
     """Force-kill `pid` only if its executable name starts with
     `expected_prefix`. Pid files outlive their process and Windows reuses
     pids, so an unchecked kill could hit an innocent process. Returns True
-    if a kill was issued."""
+    if a kill was issued.
+
+    `tree=False` spares the children. The tunnel and the forwards are children
+    of whatever launched them, so killing a viewer's tree takes the phone link
+    down with it — see _kill_stale_viewer."""
     if not expected_prefix or not _pid_image(pid).startswith(expected_prefix.lower()):
         return False
     if sys.platform == "win32":
+        cmd = ["taskkill", "/PID", str(pid), "/F"] + (["/T"] if tree else [])
         subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            cmd,
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )

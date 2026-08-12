@@ -51,6 +51,20 @@
             background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
+  /* Hold-to-long-press. The sweep is the only signal that the press registered,
+     because the phone's own menu does not appear until the device press ends. */
+  @property --hold { syntax:'<percentage>'; initial-value:0%; inherits:false; }
+  #hold-ring { position:absolute; width:46px; height:46px; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; opacity:0;
+               background:conic-gradient(var(--accent) var(--hold), transparent 0);
+               -webkit-mask:radial-gradient(circle, transparent 54%, #000 56%);
+               mask:radial-gradient(circle, transparent 54%, #000 56%); }
+  #hold-ring.arming { opacity:.95; animation:hold-fill var(--hold-ms,400ms) linear forwards; }
+  #hold-ring.done { opacity:1; --hold:100%; }
+  @keyframes hold-fill { from { --hold:0%; } to { --hold:100%; } }
+  /* No sweep, but the ring must still appear — it is the feedback, not decoration. */
+  @media (prefers-reduced-motion: reduce) {
+    #hold-ring.arming { animation:none; --hold:100%; opacity:.5; }
+  }
   /* Rows below the phone stretch to the phone's width instead of widening the pane. */
   #controls, #click-hint, #lan-banner, #sig-banner { width:0; min-width:100%; }
   #controls { display:flex; flex-direction:column; gap:var(--s1); }
@@ -340,6 +354,7 @@
       <div id="screen-wrap">
         <img id="screen" alt="phone screen" src="/api/screenshot">
         <div id="tap-dot"></div>
+        <div id="hold-ring"></div>
       </div>
     </div>
     <div id="controls">
@@ -814,44 +829,102 @@ function showDot(px, py, ok) {
   setTimeout(() => dot.style.opacity = 0, ok ? 400 : 600);
 }
 
-// Press = tap, drag = swipe (release point sets direction; hold time sets speed).
+// Press = tap, hold = long press, drag = swipe (release point sets direction;
+// hold time sets speed). The long press fires on a local timer WHILE the button
+// is still down, so the phone's menu opens during the hold instead of a second
+// after release. These helpers are shared scope because fireLongPress runs
+// before pointerup exists.
+const LONG_PRESS_MS = 400;       // local hold before we send it
+const LONG_PRESS_SECONDS = 0.8;  // how long the phone itself holds
+const holdRing = document.getElementById('hold-ring');
+holdRing.style.setProperty('--hold-ms', LONG_PRESS_MS + 'ms');
+
+const clampUnit = (v, max) => Math.min(Math.max(v, 0), max);
+function toPt(cx, cy, r) {
+  return {
+    x: clampUnit((cx - r.left) / r.width, 1) * points.width,
+    y: clampUnit((cy - r.top) / r.height, 1) * points.height,
+  };
+}
+async function postGesture(url, body, dotX, dotY) {
+  const resp = await fetch(url, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (resp.ok) return;
+  showDot(dotX, dotY, false);
+  if (resp.status === 409) {   // dropped as stale, not queued — say why
+    const j = await resp.json().catch(() => ({}));
+    showHint(j.error || 'Phone is busy — that gesture was dropped.');
+  }
+}
+
+function showRing(px, py) {
+  holdRing.style.left = px + 'px';
+  holdRing.style.top = py + 'px';
+  holdRing.classList.remove('arming', 'done');
+  void holdRing.offsetWidth;            // reflow, so the animation restarts
+  holdRing.classList.add('arming');
+}
+function killRing() { holdRing.classList.remove('arming', 'done'); }
+function completeRing() {
+  holdRing.classList.remove('arming');
+  holdRing.classList.add('done');
+  setTimeout(killRing, 260);
+}
+
 let drag = null;
+function cancelHold() {
+  if (drag && drag.timer) { clearTimeout(drag.timer); drag.timer = null; }
+  killRing();
+}
+
+async function fireLongPress(cx, cy) {
+  if (!drag) return;
+  drag.timer = null;
+  drag.fired = true;                    // pointerup must not also tap or swipe
+  completeRing();
+  const r = screen.getBoundingClientRect();
+  const p = toPt(cx, cy, r);
+  await postGesture('/api/long_press',
+    {x: p.x, y: p.y, seconds: LONG_PRESS_SECONDS}, cx - r.left, cy - r.top);
+}
+
 screen.addEventListener('pointerdown', (ev) => {
   if (!points) return;
   screen.setPointerCapture(ev.pointerId);
-  drag = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+  drag = { x: ev.clientX, y: ev.clientY, t: Date.now(), timer: null, fired: false };
+  if (!inputEnabled || phoneBusy()) return;
+  const r = screen.getBoundingClientRect();
+  showRing(ev.clientX - r.left, ev.clientY - r.top);
+  drag.timer = setTimeout(() => fireLongPress(ev.clientX, ev.clientY), LONG_PRESS_MS);
 });
+
+screen.addEventListener('pointermove', (ev) => {
+  if (!drag || drag.fired || !drag.timer) return;
+  // Past the same 8px that already separates a tap from a swipe: it's a drag.
+  if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) >= 8) cancelHold();
+});
+
+screen.addEventListener('pointercancel', () => { cancelHold(); drag = null; });
+
 screen.addEventListener('pointerup', async (ev) => {
   if (!drag || !points) return;
+  cancelHold();
+  if (drag.fired) { drag = null; return; }   // already sent; send nothing more
   const start = drag; drag = null;
   const r = screen.getBoundingClientRect();
   showDot(start.x - r.left, start.y - r.top, inputEnabled && !busyLabel);
   if (!inputEnabled) return;
   if (phoneBusy()) return;  // aimed at a screen the long action is about to change
-  const clamp = (v, max) => Math.min(Math.max(v, 0), max);
-  const toPt = (cx, cy) => ({
-    x: clamp((cx - r.left) / r.width, 1) * points.width,
-    y: clamp((cy - r.top) / r.height, 1) * points.height,
-  });
-  const post = async (url, body) => {
-    const resp = await fetch(url, {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    if (resp.ok) return;
-    showDot(start.x - r.left, start.y - r.top, false);
-    if (resp.status === 409) {   // dropped as stale, not queued — say why
-      const j = await resp.json().catch(() => ({}));
-      showHint(j.error || 'Phone is busy — that gesture was dropped.');
-    }
-  };
   const moved = Math.hypot(ev.clientX - start.x, ev.clientY - start.y);
   if (moved < 8) {
-    const p = toPt(start.x, start.y);
-    await post('/api/tap', p);
+    const p = toPt(start.x, start.y, r);
+    await postGesture('/api/tap', p, start.x - r.left, start.y - r.top);
   } else {
-    const a = toPt(start.x, start.y), b = toPt(ev.clientX, ev.clientY);
+    const a = toPt(start.x, start.y, r), b = toPt(ev.clientX, ev.clientY, r);
     // Cap at 0.5s: iOS pages the home screen only on quick flicks.
     const seconds = Math.min(Math.max((Date.now() - start.t) / 1000, 0.1), 0.5);
-    await post('/api/swipe', {x1:a.x, y1:a.y, x2:b.x, y2:b.y, seconds});
+    await postGesture('/api/swipe', {x1:a.x, y1:a.y, x2:b.x, y2:b.y, seconds},
+                      start.x - r.left, start.y - r.top);
   }
 });
 
@@ -923,7 +996,24 @@ document.getElementById('btn-stop').onclick = async () => {
                                         body: JSON.stringify({stop: !stopped})});
   stopped = j.stopped; renderStop();
 };
-document.getElementById('btn-home').onclick = () => gesturePost('/api/home');
+// Walking to page 1 holds the phone for seconds, and _ACTION_WAIT is 2s, so
+// without the busy label every click during it comes back 409. An unlabelled
+// freeze is what makes someone click again in the first place.
+//
+// It must NOT go through gesturePost: that starts with a phoneBusy() guard, and
+// withBusy has just set busyLabel, so the post would refuse its own label and
+// silently do nothing. Guard first, then set the label, then send.
+document.getElementById('btn-home').onclick = () => {
+  if (phoneBusy()) return;   // something else already holds the phone
+  return withBusy('GOING HOME', async () => {
+    const r = await fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
+    if (r.ok) return;
+    const j = await r.json().catch(() => ({}));
+    showHint(j.error || (r.status === 409
+      ? 'Phone is busy — that gesture was dropped.'
+      : 'Could not reach page 1.'));
+  });
+};
 document.getElementById('btn-unlock').onclick = async () => {
   const btn = document.getElementById('btn-unlock');
   btn.disabled = true; btn.textContent = 'Unlocking…';

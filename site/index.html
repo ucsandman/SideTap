@@ -51,9 +51,10 @@ nav{position:sticky;top:0;z-index:10;background:rgba(16,20,24,.94);border-bottom
 .sub b{color:var(--ink);font-weight:600}
 .hero-ctas{margin-top:30px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
 .clone{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:11px 16px;font-family:var(--mono);font-size:14px;color:var(--ink)}
-.clone button{background:none;border:0;color:var(--blue);font-family:var(--mono);font-size:13px;cursor:pointer;padding:2px 4px}
+.clone button{background:none;border:0;color:var(--blue);font-family:var(--mono);font-size:13px;cursor:pointer;padding:9px 8px}
 .clone button:hover{color:var(--ink)}
-.cta2{font-size:14.5px;font-weight:500}
+.cta2{display:inline-block;background:var(--blue);color:var(--bg);font-size:14.5px;font-weight:600;padding:11px 20px;border-radius:8px}
+.cta2:hover{text-decoration:none;filter:brightness(1.1)}
 .oneliner{margin-top:14px;font-size:13px;color:var(--ink3)}
 .oneliner code{font-family:var(--mono);color:var(--ink2)}
 
@@ -62,7 +63,7 @@ nav{position:sticky;top:0;z-index:10;background:rgba(16,20,24,.94);border-bottom
 .frame-bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
 .dots{display:flex;gap:5px}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
-.frame video{display:block;width:100%;height:auto}
+.frame video{display:block;width:100%;height:auto;aspect-ratio:16/9}
 .feed{border-top:1px solid var(--line);padding:10px 14px;font-family:var(--mono);font-size:12px;min-height:96px;display:flex;flex-direction:column;justify-content:flex-end;gap:4px;background:var(--bg)}
 .feed-row{display:flex;gap:10px;color:var(--ink2);animation:rowin .25s ease}
 .feed-row .t{color:var(--ink3)}
@@ -71,15 +72,16 @@ nav{position:sticky;top:0;z-index:10;background:rgba(16,20,24,.94);border-bottom
 @keyframes rowin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .frame-foot{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-top:1px solid var(--line)}
 .frame-foot .hint{font-size:12px;color:var(--ink3)}
-.stopbtn{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:.08em;color:#fff;background:var(--red);border:0;border-radius:7px;padding:9px 22px;cursor:pointer}
-.stopbtn.resume{background:transparent;color:var(--red);border:1.5px solid var(--red)}
-.stopbtn:hover{filter:brightness(1.12)}
+.stopbtn{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:.08em;color:var(--red);background:rgba(248,81,73,.12);border:1.5px solid var(--red);border-radius:7px;padding:13px 22px;cursor:pointer}
+.stopbtn.resume{background:var(--red);color:var(--bg);box-shadow:0 0 0 3px rgba(248,81,73,.22)}
+.stopbtn:hover{background:rgba(248,81,73,.22)}
+.stopbtn.resume:hover{background:#ff6058}
 
 /* ---------- proof strip ---------- */
 .proof{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--surface)}
 .proof-in{display:flex;flex-wrap:wrap;gap:8px 34px;justify-content:center;padding:15px 24px;font-family:var(--mono);font-size:13px;color:var(--ink2)}
-.proof-in span::before{content:"× ";color:var(--ink3)}
-.proof-in span.yes::before{content:"✓ ";color:var(--green)}
+.proof-in span::before{content:"×";color:var(--ink3);margin-right:6px}
+.proof-in span.yes::before{content:"✓";color:var(--green)}
 
 /* ---------- sections ---------- */
 section{padding:72px 0}
@@ -106,13 +108,16 @@ h2{font-size:clamp(24px,3vw,32px);font-weight:800;letter-spacing:-.02em;line-hei
 .card p code{font-family:var(--mono);font-size:12.5px;color:var(--ink2);background:var(--bg);padding:1px 5px;border-radius:4px}
 .card .ic{width:8px;height:8px;border-radius:2px;background:var(--blue);flex:none}
 .card.kill .ic{background:var(--red)}
+.card.kill{grid-column:span 2}
+.grid .card:last-child{grid-column:1/-1}
 
 /* install */
 .install-cols{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.install-cols .termbox:first-child{border-color:var(--blue)}
 .termbox{background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .termbox header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--surface)}
 .termbox header span{font-family:var(--mono);font-size:12px;color:var(--ink3)}
-.termbox header button{background:none;border:1px solid var(--line);border-radius:6px;color:var(--blue);font-family:var(--mono);font-size:12px;padding:4px 10px;cursor:pointer}
+.termbox header button{background:none;border:1px solid var(--line);border-radius:6px;color:var(--blue);font-family:var(--mono);font-size:12px;padding:8px 12px;cursor:pointer}
 .termbox header button:hover{border-color:var(--blue)}
 .termbox pre{padding:16px;font-family:var(--mono);font-size:12.5px;line-height:1.65;color:var(--ink2);overflow-x:auto;white-space:pre-wrap;word-break:break-word}
 .termbox pre .c{color:var(--ink3)}
@@ -122,21 +127,23 @@ h2{font-size:clamp(24px,3vw,32px);font-weight:800;letter-spacing:-.02em;line-hei
 /* pro */
 .pro{border-top:1px solid var(--line);background:linear-gradient(180deg,var(--surface) 0,var(--bg) 100%)}
 .pro-grid{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
-.tier{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px}
+.tier{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px}
 .tier.paid{border-color:var(--blue)}
 .tier h3{font-size:17px;font-weight:800}
+.badge{font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.06em;color:var(--ink3);border:1px solid var(--line);border-radius:99px;padding:2px 8px;margin-left:8px;vertical-align:middle}
 .tier .price{margin-top:8px;font-size:30px;font-weight:800;letter-spacing:-.02em}
 .tier .price small{font-size:14px;color:var(--ink3);font-weight:500}
 .tier ul{margin:18px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14px;color:var(--ink2)}
-.tier li::before{content:"✓  ";color:var(--green);font-family:var(--mono)}
-.tier .ghost{margin-top:22px;display:inline-block;font-size:14px}
+.tier li::before{content:"✓";color:var(--green);font-family:var(--mono);margin-right:6px}
+.tier .ghost{margin-top:22px;display:inline-block;font-size:14px;padding:11px 16px;border:1px solid var(--blue);border-radius:8px}
+.tier .ghost:hover{background:var(--blue);color:var(--bg);text-decoration:none}
 .wl{margin-top:22px}
 .wl form{display:flex;gap:10px}
-.wl input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--sans);font-size:14.5px;padding:11px 14px}
+.wl input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--sans);font-size:14.5px;padding:11px 14px}
 .wl input::placeholder{color:var(--ink3)}
-.wl button{background:var(--blue);color:#fff;border:0;border-radius:8px;font-weight:600;font-size:14.5px;padding:11px 20px;cursor:pointer}
+.wl button{background:var(--blue);color:var(--bg);border:0;border-radius:8px;font-weight:600;font-size:14.5px;padding:11px 20px;cursor:pointer}
 .wl button:hover{filter:brightness(1.1)}
-.wl button:disabled{opacity:.55;cursor:default}
+.wl button:disabled{opacity:.45;cursor:not-allowed}
 .wl-msg{margin-top:10px;font-size:13.5px;color:var(--ink3);min-height:20px}
 .wl-msg.ok{color:var(--green)}
 .wl-msg.err{color:var(--red)}
@@ -153,9 +160,10 @@ footer{border-top:1px solid var(--line);padding:34px 0 46px;font-size:13.5px;col
 @media (max-width:880px){
   .hero{grid-template-columns:1fr;gap:40px;padding-top:48px}
   .grid{grid-template-columns:1fr 1fr}
+  .card.kill{grid-column:auto}
   .install-cols,.pro-grid{grid-template-columns:1fr}
   .chain{flex-direction:column}
-  .link-seg{justify-content:center;transform:rotate(90deg);height:34px}
+  .link-seg{justify-content:center;align-self:center;width:42px;height:34px;transform:rotate(90deg)}
 }
 @media (max-width:560px){.grid{grid-template-columns:1fr}.nav-links{gap:14px}}
 @media (prefers-reduced-motion:reduce){
@@ -210,6 +218,7 @@ body.stopped *{animation-play-state:paused!important}
   </div>
 </header>
 
+<main>
 <div class="proof">
   <div class="wrap proof-in">
     <span>Mac</span><span>Xcode</span><span>jailbreak</span><span>Appium server</span><span>paid developer account</span><span class="yes">free Apple ID + a USB cable</span>
@@ -218,7 +227,6 @@ body.stopped *{animation-play-state:paused!important}
 
 <section id="how">
   <div class="wrap">
-    <p class="eyebrow">How it works</p>
     <h2>One cable. Four hops. Real hands on a real phone.</h2>
     <p class="lead">Every other iPhone automation route assumes you own a Mac. SideTap does not. It drives the phone through WebDriverAgent, so the agent reads the actual UI element tree: exact buttons, exact labels, exact coordinates. Not OCR guesses.</p>
     <div class="chain">
@@ -251,7 +259,6 @@ body.stopped *{animation-play-state:paused!important}
 
 <section id="features" style="padding-top:0">
   <div class="wrap">
-    <p class="eyebrow">What you get</p>
     <h2>Built for agents. Supervised by you.</h2>
     <div class="grid">
       <div class="card">
@@ -296,12 +303,11 @@ body.stopped *{animation-play-state:paused!important}
 
 <section id="install">
   <div class="wrap">
-    <p class="eyebrow">Install</p>
     <h2>Let your agent set it up for you.</h2>
     <p class="lead">Paste the prompt into Claude Code (or Codex) on your Windows PC. It clones, installs, and walks you through the three steps that need your hands. About 20 minutes, one time.</p>
     <div class="install-cols">
       <div class="termbox">
-        <header><span>paste into your agent</span><button data-copy="agent-prompt">copy</button></header>
+        <header><span>paste into your agent · recommended</span><button data-copy="agent-prompt">copy</button></header>
         <pre id="agent-prompt">Set up SideTap (github.com/ucsandman/sidetap) on this
 Windows machine so LLM agents can drive my iPhone over USB.
 Follow the README section "Set it up with an agent",
@@ -343,7 +349,7 @@ python launch.py
         <a class="ghost" href="https://github.com/ucsandman/sidetap">Clone it free →</a>
       </div>
       <div class="tier paid">
-        <h3>Pro <span style="font-family:var(--mono);font-size:11px;color:var(--blue);vertical-align:middle;margin-left:6px">IN DEVELOPMENT</span></h3>
+        <h3>Pro <span class="badge">IN DEVELOPMENT</span></h3>
         <p class="price">$49<small>/year · early-bird price for the waitlist</small></p>
         <ul>
           <li>Multi-device: drive two or more iPhones from one PC</li>
@@ -363,6 +369,7 @@ python launch.py
     <p class="pro-foot">The core stays MIT and free. Pro is optional convenience for people who drive their phone every day. Joining the waitlist locks the early-bird price and helps decide what ships first. No spam, one email when it is ready.</p>
   </div>
 </section>
+</main>
 
 <footer>
   <div class="wrap foot-in">
@@ -386,6 +393,7 @@ const video=document.getElementById('demo');
 const feed=document.getElementById('feed');
 const hint=document.getElementById('stop-hint');
 let stopped=false,feedTimer=null;
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const actions=[
   ['tap','(182, 641)'],['type','14 chars'],['tap_text','"Send"'],
@@ -404,8 +412,9 @@ function tick(){
   feed.appendChild(row);
   while(feed.children.length>4)feed.removeChild(feed.firstChild);
 }
-function startFeed(){tick();feedTimer=setInterval(tick,1700)}
+function startFeed(){tick();if(!reduce)feedTimer=setInterval(tick,1700)}
 startFeed();
+if(reduce){video.removeAttribute('autoplay');video.pause();}
 
 stopBtn.addEventListener('click',()=>{
   stopped=!stopped;

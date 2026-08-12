@@ -46,6 +46,13 @@ none of which you can learn by looking at the screen.
 - **There is no `drag()`.** Moving Home Screen icons means jiggle mode plus a
   hand-built `client()._pointer_actions` gesture, and it fails *silently* if you
   skip jiggle mode. Recipe and the page-hiding flow are in `phone-gotchas`.
+  Same-page drags and folder-creation (drop icon A on icon B) are verified;
+  **cross-page drags are not** and degrade into plain swipes that look like
+  progress.
+- **"Organise my Home Screen" is not a quick job.** ~160 icons is hours of drags
+  and can strand half-sorted. Hiding pages via the `PageIndicator` editor is
+  ~10 taps, reversible, and does most of the work — read the costing section in
+  `phone-gotchas` before you promise anything.
 - **Full installed-app inventory:** `ios apps --list` (go-ios, on PATH as
   `ios.EXE`). Instant, and far cheaper than sweeping Home Screen pages.
 

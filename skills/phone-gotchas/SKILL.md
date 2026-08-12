@@ -61,20 +61,29 @@ The CLI harness and the MCP tools do NOT return the same shape. Verified:
   `ocr()` shows a text field's PLACEHOLDER ("Message", "Address"), not its
   contents, so you cannot tell an empty field from a full one by reading it.
 
-Two helpers worth pasting into any screen-heavy script:
+Three helpers worth pasting into any screen-heavy script:
 
 ```python
-def grid():   # {app name: (x, y)} for every icon on the current page
-    return {e["text"]: (round(e["x"]), round(e["y"]))
-            for e in ocr() if e["type"] == "Icon"}
-
-def retry(fn, n=4, wait=5):   # WDA drops constantly; see "When the link drops"
+def R(fn, n=6, wait=5):   # WDA drops constantly; see "When the link drops"
     for i in range(n):
         try: return fn()
         except Exception:
             if i == n - 1: raise
             time.sleep(wait)
+
+def grid():   # {app name: (x, y)} for every icon on the current page
+    return {e["text"]: (round(e["x"]), round(e["y"]))
+            for e in R(lambda: ocr()) if e["type"] == "Icon"}
+
+def sw(a, b, c, d, s=0.30):   # EVERY gesture goes through R(), not just reads
+    R(lambda: swipe(a, b, c, d, s)); time.sleep(1.2)
 ```
+
+**Wrap the gestures, not only the reads.** The natural instinct is to retry
+`ocr()` and call raw `swipe()`/`tap()` directly — and then a `RemoteDisconnected`
+inside a mid-script swipe kills the run and you lose every print the script had
+not yet emitted, while the phone keeps whatever half-state the gesture left. Put
+`tap`, `swipe`, `long_press` and `_pointer_actions` behind `R()` too.
 
 ## Batch with act()
 
@@ -134,10 +143,46 @@ tap_text("Done")                            # top-right; twice from the page edi
 | `press_home()` twice to reach page 1 | Unreliable — from App Library it read back App Library. Verify what you are on. |
 | Dock icons in a page survey | The dock repeats on every page (`y > ~820`). Filter it out or every page looks like it shares four apps. |
 | Needing a full app inventory | Do NOT sweep pages for it. `ios apps --list` returns all installed apps instantly, bundle id and version included. |
+| **A dedup sweep's two end stops are not pages** | Neither end of the swipe range is a Home Screen page, and counting either one shifts every page number you report. **Leftmost is Today View** ("page 0"): always present, cannot be hidden, never appears in the page editor. **Rightmost is App Library**: ~40 icons plus its own auto-category folders (Recently Added, Suggestions, Social, Utilities, Shopping & Food, Entertainment, Travel, Finance). Identify, then discard both, before you number anything. |
+| Telling Today View from a sparse Home Screen page | Do **not** guess from "it looks like widgets". The tree names its container `left-of-home-scroll-view` — that string is conclusive. Two more tells: it is a `ScrollView`, so a large element can report a `y` **greater than the screen height** and coordinates shift between reads; and it survives every `press_home()`. A page of widgets that reads as 5 sparse icons is almost always this. |
+| An `Icon` whose x is not ~69/170/270/371 | It is a **widget**, not an app. `ocr()` types widgets as `Icon` exactly like apps, so the tell is geometry: a 2-wide widget centres *between* the columns (x≈120 or 320). Check x against the grid before you move, count, or overwrite anything. |
+| Off-by-one page numbers | Counting Today View as page 1 shifts every later page by one, and the **page editor does not show Today View** — so hiding "pages 3-9" off that numbering unchecks the wrong thumbnails, including the user's organised page. Anchor the numbering to a known icon on a real page, then re-verify inside the editor by its thumbnails, never by the number you carried in. |
+| Dragging icon A onto icon B | **Works, and creates a folder** — verified. iOS auto-names it from its own App Library category guess, *not* from the apps inside, so two AI apps landed in a folder called `Productivity`. Renaming is a separate step. |
 
-**Untested, assume fragile:** dragging an icon from one page to another. It needs
-a hold at the screen edge to flip pages mid-drag. Prove it on one app before
-planning any work that depends on it.
+**Cross-page drag is still unproven, and it fails in two different disguises.**
+Two attempts, neither moved the icon:
+
+- A static `{"type":"pause"}` at the left edge (x=14–16) flips **nothing**. The
+  page never turned and the icon stayed where it was.
+- Gliding to the edge fast (5 segments × 130ms across ~260pt) and then jittering
+  there *did* flip the page — but the icon was never picked up, so the gesture
+  was only ever a **swipe**. A later sweep found the icon still on its origin
+  page. That is the trap: you end up on a different page and the read looks like
+  progress.
+
+Working hypothesis, untested: **the first movement after `pointerDown` must be
+slow.** The drag that provably works uses ~180ms per segment over short hops; the
+one that degraded into a swipe used 130ms per segment over a much longer
+distance. Same-page drags never hit this because they are short by nature.
+
+Prove it on one app before planning anything that depends on it, and verify by
+sweeping for the icon — never by which page you ended up on.
+
+### Price a bulk reorganisation before you offer it
+
+A drag plus its verifying read costs ~10–15s when nothing goes wrong, and WDA
+drops roughly five times per 25 minutes of Home Screen work. A phone with 9 pages
+and ~160 loose icons is therefore *hours* of gestures with a real chance of
+stranding half-sorted, which is worse than where it started. Cheap moves first:
+
+1. **Hide pages.** `PageIndicator` → uncheck. ~10 taps, instant, reversible, and
+   every app stays installed and stays in App Library + Spotlight. This is what
+   turns 9 pages into 2.
+2. **Let App Library categorise.** It already sorts every installed app into
+   Social / Utilities / Travel / Finance / Entertainment for free.
+3. **Hand-drag only the few icons that genuinely must sit on page 1.**
+
+Lead with 1. Only reach for mass drags after the user has been told the cost.
 
 ## The traps
 
@@ -235,15 +280,26 @@ without knowing the count, and it lands you on App Library rather than
 overshooting into it:
 
 ```python
-seen = set()
+def on_today_view():          # "page 0" — NOT a Home Screen page
+    # verified: plain CLI ocr() returns this ScrollView by name
+    return any(e["text"] == "left-of-home-scroll-view" for e in R(lambda: ocr()))
+
+seen, pages = set(), []
 while True:
+    if on_today_view():                      # leftmost end stop: skip, don't count
+        sw(400, 500, 40, 500, 0.25); continue
     body = [(e["text"], round(e["x"]), round(e["y"]))
-            for e in ocr() if e["type"] == "Icon" and e["y"] <= 820]   # drop dock
-    key = tuple(sorted(t for t, _, _ in body))
-    if key in seen: break
-    seen.add(key)
-    swipe(400, 500, 40, 500, 0.25); time.sleep(1.0)
+            for e in R(lambda: ocr()) if e["type"] == "Icon" and e["y"] <= 820]
+    key = tuple(sorted(t for t, _, _ in body))       # dock dropped by the y filter
+    if key in seen: break                            # rightmost end stop: App Library
+    seen.add(key); pages.append(body)                # pages[0] IS Home Screen page 1
+    sw(400, 500, 40, 500, 0.25)
 ```
+
+Both ends of that walk are end stops, not pages: Today View on the left, App
+Library on the right. Skip the first and drop the last, or every page number you
+report is wrong by one — and the page editor, which never shows Today View, will
+not agree with you.
 
 **Print what you need, not the tree.** Filter to a type and format one short line
 per element. A raw tree dump is thousands of tokens of `Other` wrappers.
@@ -257,3 +313,9 @@ per element. A raw tree dump is thousands of tokens of `Other` wrappers.
 - Reading `e["name"]` instead of `e["text"]` and concluding the screen is blank.
 - Treating a silent gesture as a successful one. Drags fail without raising.
 - Running `phone-harness up` on the first WDA error instead of retrying.
+- Retrying `ocr()` but calling `swipe()`/`tap()` raw, so one drop kills the run.
+- Reading "the page changed" as "the drag worked". A failed pickup IS a swipe.
+- Treating every `Icon` as an app. Off-grid x means widget; moving it wrecks a
+  dashboard the user built on purpose.
+- Quoting a reorganisation as a quick job. Count the drags × ~12s first, say the
+  number out loud, and offer page-hiding as the cheap alternative.

@@ -11,7 +11,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from phone_harness import viewer  # noqa: E402
+from phone_harness import helpers, viewer  # noqa: E402
 
 
 class StubClient:
@@ -23,18 +23,36 @@ class StubClient:
     session_id = "stub-session"
     window = None  # set to (w, h) to make /api/status succeed
 
-    def home(self):
-        self.calls.append("home")
+    def long_press(self, x, y, seconds):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.calls.append(("long_press", x, y, seconds))
 
-    def lock(self):
+    def source(self):  # noqa: vulture  (duck-typed: helpers.ui_tree calls it)
+        # /api/home walks with helpers.goto_home_page, which reads the
+        # PageIndicator. Reporting page 1 makes the walk a verified no-op.
+        return {
+            "type": "Application",
+            "children": [
+                {
+                    "type": "PageIndicator",
+                    "name": "Page control",
+                    "value": "Page 1 of 8",
+                    "children": [],
+                }
+            ],
+        }
+
+    def swipe(self, x1, y1, x2, y2, seconds=0.3):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.calls.append(("swipe", x1, y1, x2, y2))
+
+    def lock(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.calls.append("lock")
 
-    def window_size(self):
+    def window_size(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         if self.window is None:
             raise viewer.WDAError("no phone in tests")
         return self.window
 
-    def configure_mjpeg(self):
+    def configure_mjpeg(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         pass
 
     battery_info = None  # set to a dict to make battery() succeed
@@ -42,20 +60,20 @@ class StubClient:
     app = None  # set to a dict to make active_app() succeed
     up = True  # set False to simulate WDA not answering
 
-    def is_up(self):
+    def is_up(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         return self.up
 
-    def battery(self):
+    def battery(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         if self.battery_info is None:
             raise viewer.WDAError("no phone in tests")
         return self.battery_info
 
-    def is_locked(self):
+    def is_locked(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         if self.locked is None:
             raise viewer.WDAError("no phone in tests")
         return self.locked
 
-    def active_app(self):
+    def active_app(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         if self.app is None:
             raise viewer.WDAError("no phone in tests")
         return self.app
@@ -65,13 +83,22 @@ class StubClient:
 def base_url():
     server = ThreadingHTTPServer(("127.0.0.1", 0), viewer.Handler)
     original = viewer.Handler.client
-    viewer.Handler.client = StubClient()
+    stub = StubClient()
+    viewer.Handler.client = stub
+    # /api/home reaches the phone through helpers, whose client is a separate
+    # object from Handler.client. Without this the endpoint would build a real
+    # WDAClient and try to talk to a phone that is not there.
+    original_helpers_client = helpers._client
+    helpers._client = stub
+    helpers._invalidate_tree()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
     finally:
         server.shutdown()
         viewer.Handler.client = original
+        helpers._client = original_helpers_client
+        helpers._invalidate_tree()
 
 
 def test_same_origin_get_ok(base_url):
@@ -255,7 +282,7 @@ class TuneStub:
         self.session_id = session_id
         self.tuned = 0
 
-    def configure_mjpeg(self):
+    def configure_mjpeg(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.tuned += 1
 
 
@@ -435,7 +462,7 @@ def test_should_heal_honors_cooldown(monkeypatch):
 def test_unlock_endpoint_names_the_fix_when_link_down(base_url, monkeypatch):
     # Unlock's wake/swipe goes THROUGH WDA; with WDA dead the button used to
     # time out silently. It must say what to actually do instead.
-    def _no_unlock(*a, **k):
+    def _no_unlock(*_a, **_k):
         raise AssertionError("unlock must not run while the link is down")
 
     monkeypatch.setattr("phone_harness.helpers.unlock", _no_unlock)
@@ -551,12 +578,14 @@ def test_gesture_during_a_long_action_is_dropped_not_queued(base_url, monkeypatc
     """
     monkeypatch.setattr(viewer, "_ACTION_WAIT", 0.2)
     client = viewer.Handler.client
+    # /api/lock, not /api/home: home now walks through helpers, so it no longer
+    # records anything on the stub and "did it run late" would be unobservable.
     with viewer._ACTION_LOCK:  # stand in for the unlock holding the phone
-        r = requests.post(base_url + "/api/home", json={}, timeout=5)
+        r = requests.post(base_url + "/api/lock", json={}, timeout=5)
     assert r.status_code == 409
     assert r.json()["ok"] is False
     assert "busy" in r.json()["error"].lower()
-    assert "home" not in client.calls  # never ran, not even late
+    assert "lock" not in client.calls  # never ran, not even late
 
 
 def test_a_gesture_still_waits_for_a_quick_one_ahead_of_it(base_url):
@@ -572,7 +601,78 @@ def test_a_gesture_still_waits_for_a_quick_one_ahead_of_it(base_url):
     holder = threading.Thread(target=hold)
     holder.start()
     started.wait(2)
-    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    r = requests.post(base_url + "/api/lock", json={}, timeout=5)
     holder.join()
     assert r.status_code == 200
-    assert "home" in client.calls
+    assert "lock" in client.calls
+
+
+def test_long_press_passes_point_and_duration(base_url):
+    r = requests.post(
+        base_url + "/api/long_press",
+        json={"x": 100, "y": 200, "seconds": 0.8},
+        timeout=5,
+    )
+    assert r.status_code == 200
+    assert ("long_press", 100.0, 200.0, 0.8) in viewer.Handler.client.calls
+
+
+def test_long_press_clamps_duration(base_url):
+    requests.post(
+        base_url + "/api/long_press", json={"x": 1, "y": 2, "seconds": 99}, timeout=5
+    )
+    assert viewer.Handler.client.calls[-1][3] == 3.0
+
+
+def test_long_press_defaults_duration(base_url):
+    requests.post(base_url + "/api/long_press", json={"x": 1, "y": 2}, timeout=5)
+    assert viewer.Handler.client.calls[-1][3] == 0.8
+
+
+def test_home_walks_to_page_one(base_url, monkeypatch):
+    # press_home is a no-op between pages, so Home has to walk. Wiring only:
+    # the walk itself is covered in test_helpers.
+    seen = []
+    monkeypatch.setattr(helpers, "goto_home_page", lambda n=1: seen.append(n))
+    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    assert r.status_code == 200
+    assert seen == [1]
+
+
+def test_no_gesture_post_nested_inside_with_busy():
+    # withBusy sets busyLabel; gesturePost starts with a phoneBusy() guard that
+    # refuses to send while busyLabel is set. Nesting them makes a button set a
+    # label and then silently send nothing. That shipped for exactly one run of
+    # the Home button on 2026-08-12: the phone never moved off page 4.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    for match in re.finditer(r"withBusy\(", html):
+        start = match.start()
+        depth, i = 0, match.end() - 1
+        while i < len(html):
+            if html[i] == "(":
+                depth += 1
+            elif html[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body = html[start:i]
+        assert "gesturePost(" not in body, (
+            "gesturePost nested inside withBusy near offset "
+            f"{start}: the phoneBusy guard will refuse withBusy's own label, "
+            "so the request is never sent"
+        )
+
+
+def test_home_surfaces_a_failed_walk(base_url, monkeypatch):
+    # A transient WDA drop mid-walk leaves the phone part-way. That must reach
+    # the human as an error, never a silent no-op that looks like it worked.
+    def boom(n=1):
+        raise RuntimeError("wanted page 1, still on page 5")
+
+    monkeypatch.setattr(helpers, "goto_home_page", boom)
+    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    assert r.status_code >= 400
+    assert "page 5" in r.text

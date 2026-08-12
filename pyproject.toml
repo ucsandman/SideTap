@@ -1,0 +1,10 @@
+# Tool config only. This is deliberately NOT a packaging manifest: there is no
+# [project] or [build-system] section, so nothing here makes the repo pip
+# installable or changes how it is run.
+
+[tool.vulture]
+# pytest injects fixtures by name, which vulture cannot see, so every fixture
+# reads as dead code. The decorator rule covers fixture definitions; the names
+# cover the test parameters that receive them.
+ignore_decorators = ["@pytest.fixture"]
+ignore_names = ["sendable", "clean_taint", "gate_calls", "base_url", "stub"]

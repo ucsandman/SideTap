@@ -1220,3 +1220,167 @@ def test_open_app_suggests_system_apps_that_ios_apps_list_omits(monkeypatch):
     with pytest.raises(WDAError) as exc:
         helpers.open_app("Mesages")
     assert "messages" in str(exc.value).lower(), str(exc.value)
+
+
+# ---- Home Screen position ---------------------------------------------------
+
+
+def _tree_with_page(value):
+    """Minimal tree carrying a PageIndicator, shaped like the real one."""
+    node = {"type": "PageIndicator", "name": "Page control", "children": []}
+    if value is not None:
+        node["value"] = value
+    return {
+        "type": "Application",
+        "children": [{"type": "Other", "children": [node]}],
+    }
+
+
+class PageClient:
+    """Serves one fixed tree; enough for read-only page tests."""
+
+    def __init__(self, tree):
+        self.tree = tree
+
+    def source(self):
+        return self.tree
+
+
+def _use_tree(monkeypatch, tree):
+    helpers._invalidate_tree()
+    monkeypatch.setattr(helpers, "_client", PageClient(tree))
+
+
+def test_current_page_reads_home_page(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page("Page 4 of 8"))
+    assert helpers.current_page() == {"index": 4, "total": 8, "zone": "home"}
+
+
+def test_current_page_calls_today_view_page_zero(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page("Page 0 of 8"))
+    assert helpers.current_page()["zone"] == "today"
+
+
+def test_current_page_calls_app_library_past_the_end(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page("Page 9 of 8"))
+    assert helpers.current_page()["zone"] == "app_library"
+
+
+def test_current_page_none_when_an_app_is_open(monkeypatch):
+    _use_tree(monkeypatch, {"type": "Application", "children": []})
+    assert helpers.current_page() is None
+
+
+def test_current_page_none_on_unparseable_value(monkeypatch):
+    # An iOS update could change the string. Fail loudly, never guess.
+    _use_tree(monkeypatch, _tree_with_page("Seite 4 von 8"))
+    assert helpers.current_page() is None
+
+
+def test_current_page_none_when_value_missing(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page(None))
+    assert helpers.current_page() is None
+
+
+class PagingClient:
+    """Simulates paging: a left-to-right swipe moves toward page 1."""
+
+    def __init__(self, index, total=8, stuck=False):
+        self.index, self.total, self.stuck = index, total, stuck
+        self.swipes = []
+
+    def source(self):
+        return _tree_with_page(f"Page {self.index} of {self.total}")
+
+    def swipe(self, x1, y1, x2, y2, seconds=0.3):
+        self.swipes.append("toward" if x2 > x1 else "away")
+        if not self.stuck:
+            self.index += -1 if x2 > x1 else 1
+
+    def home(self):
+        pass
+
+
+def _paging(monkeypatch, index, total=8, stuck=False):
+    helpers._invalidate_tree()
+    stub = PagingClient(index, total, stuck)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    return stub
+
+
+def test_goto_home_page_walks_from_page_four(monkeypatch):
+    stub = _paging(monkeypatch, 4)
+    helpers.goto_home_page(1)
+    assert stub.swipes == ["toward"] * 3
+    assert stub.index == 1
+
+
+def test_goto_home_page_walks_from_the_last_page(monkeypatch):
+    stub = _paging(monkeypatch, 8)
+    helpers.goto_home_page(1)
+    assert stub.swipes == ["toward"] * 7
+
+
+def test_goto_home_page_swipes_away_from_today_view(monkeypatch):
+    stub = _paging(monkeypatch, 0)
+    helpers.goto_home_page(1)
+    assert stub.swipes == ["away"]
+    assert stub.index == 1
+
+
+def test_goto_home_page_walks_back_from_app_library(monkeypatch):
+    stub = _paging(monkeypatch, 9)
+    helpers.goto_home_page(1)
+    assert stub.swipes == ["toward"] * 8
+
+
+def test_goto_home_page_is_a_noop_when_already_there(monkeypatch):
+    stub = _paging(monkeypatch, 1)
+    helpers.goto_home_page(1)
+    assert stub.swipes == []
+
+
+def test_goto_home_page_rejects_a_target_off_the_home_screen(monkeypatch):
+    _paging(monkeypatch, 4)
+    with pytest.raises(ValueError):
+        helpers.goto_home_page(0)
+    helpers._invalidate_tree()
+    with pytest.raises(ValueError):
+        helpers.goto_home_page(9)
+
+
+def test_goto_home_page_raises_when_the_walk_never_lands(monkeypatch):
+    # A silent partial walk is the failure class this harness keeps producing.
+    stub = _paging(monkeypatch, 4, stuck=True)
+    with pytest.raises(RuntimeError) as err:
+        helpers.goto_home_page(1)
+    assert "4" in str(err.value)
+    assert stub.swipes  # it tried, including one corrective pass
+
+
+def test_goto_home_page_leaves_an_open_app_first(monkeypatch):
+    helpers._invalidate_tree()
+
+    class AppThenHome:
+        def __init__(self):
+            self.homed = False
+            self.swipes = []
+
+        def source(self):
+            if not self.homed:
+                return {"type": "Application", "children": []}
+            return _tree_with_page("Page 1 of 8")
+
+        def home(self):
+            self.homed = True
+
+        def swipe(self, *_a, **_k):
+            self.swipes.append("x")
+
+    stub = AppThenHome()
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    helpers.goto_home_page(1)
+    assert stub.homed
+    assert stub.swipes == []

@@ -466,9 +466,22 @@ class Handler(BaseHTTPRequestHandler):
                 with _action_slot():
                     self.client.type_text(str(payload.get("text", "")))
                 self._json({"ok": True})
-            elif path == "/api/home":
+            elif path == "/api/long_press":
                 with _action_slot():
-                    self.client.home()
+                    self.client.long_press(
+                        float(payload["x"]),
+                        float(payload["y"]),
+                        min(max(float(payload.get("seconds", 0.8)), 0.2), 3.0),
+                    )
+                self._json({"ok": True})
+            elif path == "/api/home":
+                from . import helpers
+
+                # Not client.home(): /wda/homescreen only exits an app to the
+                # springboard and is a no-op between Home Screen pages, so the
+                # button used to leave you wherever you already were.
+                with _action_slot():
+                    helpers.goto_home_page(1)
                 self._json({"ok": True})
             elif path == "/api/lock":
                 with _action_slot():

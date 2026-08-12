@@ -380,11 +380,105 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
 def press_home() -> None:
     """Go to the Home Screen, as if the physical Home gesture were used.
 
-    Leaves whatever app was open. Returns to the first Home Screen page, so it
-    is the reliable way back to a known state after a wrong tap.
+    Leaves whatever app was open. It does NOT change which Home Screen page you
+    are on: /wda/homescreen is a no-op once you are already on the Home Screen
+    (verified on device — two consecutive calls from page 4 both stayed on page
+    4). Use goto_home_page() to reach a specific page.
     """
     _invalidate_tree()
     client().home()
+
+
+_PAGE_VALUE = re.compile(r"Page (\d+) of (\d+)")
+
+
+def _find_page_indicator(node) -> dict | None:
+    if isinstance(node, dict):
+        if node.get("type") == "PageIndicator":
+            return node
+        for child in node.get("children") or []:
+            hit = _find_page_indicator(child)
+            if hit is not None:
+                return hit
+    elif isinstance(node, list):
+        for child in node:
+            hit = _find_page_indicator(child)
+            if hit is not None:
+                return hit
+    return None
+
+
+def current_page() -> dict | None:
+    """Where the Home Screen is: {"index", "total", "zone"}, or None.
+
+    Reads the PageIndicator's `value` ("Page 4 of 8"). Index 0 is Today View,
+    1..total are real Home Screen pages, and total+1 is the App Library — iOS
+    itself numbers Today View 0.
+
+    Returns None when no PageIndicator is on screen (an app is open) or when the
+    value does not parse: an iOS wording change must fail loudly, not guess.
+
+    NOTE: ocr() cannot see this. collect_texts prefers `label`, which is null on
+    this element, so it falls back to `name` ("Page control") and drops `value`.
+    """
+    node = _find_page_indicator(ui_tree())
+    if node is None:
+        return None
+    match = _PAGE_VALUE.search(str(node.get("value") or ""))
+    if not match:
+        return None
+    index, total = int(match.group(1)), int(match.group(2))
+    if index <= 0:
+        zone = "today"
+    elif index > total:
+        zone = "app_library"
+    else:
+        zone = "home"
+    return {"index": index, "total": total, "zone": zone}
+
+
+_PAGE_SETTLE = 0.55
+
+
+def goto_home_page(n: int = 1) -> None:
+    """Land on Home Screen page `n` from anywhere.
+
+    Works from any page, from Today View, from the App Library, and from inside
+    an open app. press_home() cannot do this: /wda/homescreen only exits an app
+    to the springboard and is a no-op between Home Screen pages.
+
+    Raises ValueError for a target that is not a Home Screen page, and
+    RuntimeError when the walk cannot get there — a partial walk that silently
+    leaves you two pages short is the failure this guards against.
+    """
+    page = current_page()
+    if page is None:  # an app is open
+        press_home()
+        time.sleep(_PAGE_SETTLE)
+        page = current_page()
+        if page is None:
+            raise RuntimeError(
+                "no PageIndicator after press_home; not on the Home Screen"
+            )
+    if not 1 <= n <= page["total"]:
+        raise ValueError(
+            f"page {n} is not a Home Screen page (1..{page['total']}); "
+            "Today View is 0 and the App Library is past the end"
+        )
+    for _ in range(2):  # walk, verify, then one corrective pass
+        delta = page["index"] - n
+        for _ in range(abs(delta)):
+            if delta > 0:
+                swipe(40, 500, 400, 500, 0.25)  # left->right: toward page 1
+            else:
+                swipe(400, 500, 40, 500, 0.25)
+            time.sleep(_PAGE_SETTLE)
+        page = current_page()
+        if page is None:
+            raise RuntimeError("lost the PageIndicator mid-walk")
+        if page["index"] == n:
+            return
+    raise RuntimeError(f"wanted page {n}, still on page {page['index']}")
 
 
 BUNDLE_IDS = {
@@ -1094,6 +1188,8 @@ __all__ = [
     "set_field_text",
     "compact",
     "press_home",
+    "current_page",
+    "goto_home_page",
     "open_app",
     "current_app",
     "wait_for_app",

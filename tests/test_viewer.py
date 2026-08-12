@@ -286,6 +286,28 @@ def test_viewer_html_has_no_duplicate_element_ids():
     assert not dupes, f"duplicate element ids: {sorted(dupes)}"
 
 
+def test_show_hint_clamps_and_names_the_lock():
+    # WDA answers a refused request with a ~1.4KB blob of nested NSError text,
+    # and pressing Home on a LOCKED phone earns one every time: /wda/homescreen
+    # cannot open the springboard while the device is locked, and both halves of
+    # the Home button reach it (goto_home_page calls press_home to leave an app).
+    # Rendered raw it filled a third of the page, reported 2026-08-12. Every UI
+    # error funnels through showHint, so the clamp and the plain-English lock
+    # message have to stay inside it.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    body = re.search(r"function showHint\(text\) \{(.*?)\n\}", html, re.S)
+    assert body, "showHint changed shape — the error clamp lives inside it"
+    src = body.group(1)
+    assert "HINT_MAX" in src, (
+        "showHint must clamp: no error may paste paragraphs into the pane"
+    )
+    assert "could not be, unlocked" in src, (
+        "showHint must name the lock, not dump the WDA blob"
+    )
+
+
 def test_viewer_html_javascript_parses():
     # The whole page is one inline <script>: a syntax error anywhere in it
     # leaves every button dead, and no Python test can see that — a stray

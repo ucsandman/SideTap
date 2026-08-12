@@ -553,8 +553,23 @@ let lastDoctor = [];
 // status poll rewrites every 5s; hold fresh feedback so the poll can't wipe
 // it before the human reads it.
 let hintHoldUntil = 0;
+// Every error the UI shows funnels through here, so the tidying belongs here
+// and not at each call site. WDA answers a refused request with a ~1.4KB blob
+// of nested NSError text, and pressing Home on a LOCKED phone is the everyday
+// way to earn one: /wda/homescreen cannot open the springboard while the device
+// is locked, and goto_home_page() calls press_home() to leave an app, so BOTH
+// halves of the Home button reach it. Rendered raw, that filled a third of the
+// page (reported 2026-08-12, on a phone still on its lock screen after a
+// restart). Name the fix the way doctor does, and never let any error paste
+// paragraphs into a pane whose whole layout policy is degrade-to-fit.
+const HINT_MAX = 160;
 function showHint(text) {
-  document.getElementById('click-hint').textContent = text;
+  let t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+  if (/could not be, unlocked|reason: Locked/i.test(t)) {
+    t = 'Phone is locked. Unlock it first.';
+  }
+  if (t.length > HINT_MAX) t = t.slice(0, HINT_MAX - 1) + '…';
+  document.getElementById('click-hint').textContent = t;
   hintHoldUntil = Date.now() + 6000;
 }
 

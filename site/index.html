@@ -108,7 +108,9 @@ h2{font-size:clamp(24px,3vw,32px);font-weight:800;letter-spacing:-.02em;line-hei
 .card p code{font-family:var(--mono);font-size:12.5px;color:var(--ink2);background:var(--bg);padding:1px 5px;border-radius:4px}
 .card .ic{width:8px;height:8px;border-radius:2px;background:var(--blue);flex:none}
 .card.kill .ic{background:var(--red)}
-.card.kill{grid-column:span 2}
+/* 9 single cards fill three rows exactly, then the injection card spans the
+   full width. The kill card keeps its emphasis through the red marker, not a
+   wider span, which would leave a hole in the last row. */
 .grid .card:last-child{grid-column:1/-1}
 
 /* install */
@@ -185,7 +187,7 @@ body.stopped *{animation-play-state:paused!important}
       <a href="#how">How it works</a>
       <a href="#install">Install</a>
       <a href="#pro">Pro</a>
-      <a class="gh" href="https://github.com/ucsandman/sidetap">GitHub</a>
+      <a class="gh" href="https://github.com/ucsandman/SideTap">GitHub</a>
     </div>
   </div>
 </nav>
@@ -196,7 +198,7 @@ body.stopped *{animation-play-state:paused!important}
     <p class="sub">SideTap lets an LLM agent see and control a real iPhone from a Windows desktop, over USB. <b>No Mac. No jailbreak. No Appium server.</b> A free Apple ID is enough. Open source, MIT.</p>
     <div class="hero-ctas">
       <div class="clone">
-        <span id="clone-cmd">git clone github.com/ucsandman/sidetap</span>
+        <span id="clone-cmd">git clone github.com/ucsandman/SideTap</span>
         <button id="copy-clone" aria-label="Copy clone command">copy</button>
       </div>
       <a class="cta2" href="#install">Set it up with an agent →</a>
@@ -270,6 +272,10 @@ body.stopped *{animation-play-state:paused!important}
         <p>An agent pays for every byte it reads. Screen reads drop wrappers, geometry, and labels that just repeat the button they sit inside. 64% fewer tokens, measured on real screens. <code>ocr(full=True)</code> when you want the raw tree.</p>
       </div>
       <div class="card">
+        <h3><span class="ic"></span>Waits for the screen, not the clock</h3>
+        <p>Checking whether the screen had settled used to cost a fixed half second even when it had already stopped moving. It now compares straight away: <b>877ms down to 318ms</b>, measured on a real phone. A scroll that hunts through nine screens gets <b>five seconds</b> back. Connection reuse takes another 46% off every call to the phone.</p>
+      </div>
+      <div class="card">
         <h3><span class="ic"></span>The loops agents hand-roll</h3>
         <p><code>scroll_until_found("Notifications")</code> keeps going until the row is genuinely tappable, instead of stopping on one hidden under the nav bar. <code>find_on_home_screen</code> sweeps pages for an icon.</p>
       </div>
@@ -279,7 +285,7 @@ body.stopped *{animation-play-state:paused!important}
       </div>
       <div class="card">
         <h3><span class="ic"></span>One-call flows</h3>
-        <p><code>send_message("Mom", "on my way")</code> opens Messages, finds the thread, types, sends. <code>read_messages</code> reads replies back.</p>
+        <p><code>send_message("Mom", "on my way")</code> opens Messages, finds the thread, types, sends. It empties the compose bar first, because iOS keeps an unsent draft per thread and typing lands after it. <code>read_messages</code> reads replies back.</p>
       </div>
       <div class="card">
         <h3><span class="ic"></span>Native MCP tools</h3>
@@ -295,7 +301,7 @@ body.stopped *{animation-play-state:paused!important}
       </div>
       <div class="card">
         <h3><span class="ic"></span>Prompt injection gate</h3>
-        <p>Anyone who can text you can put words in your agent's input. Once the agent has read your screen or your messages, a send stops and waits for you to approve the exact text. Running out of time refuses it. One click switches it between always, flagged only, and off, and no tool call can reach that setting. It bounds what an injection can send, not what it can tap, and the README says so plainly instead of pretending a filter catches everything.</p>
+        <p>Anyone who can text you can put words in your agent's input. Once the agent has read your screen or your messages, a send stops and waits for you to approve the exact text. Running out of time refuses it. One click switches it between always, flagged only, and off, and no tool call can reach that setting. The text you approve is also the text that sends: the compose bar is read back before the send, and anything that does not match what you approved is refused rather than delivered. It bounds what an injection can send, not what it can tap, and the README says so plainly instead of pretending a filter catches everything.</p>
       </div>
     </div>
   </div>
@@ -308,7 +314,7 @@ body.stopped *{animation-play-state:paused!important}
     <div class="install-cols">
       <div class="termbox">
         <header><span>paste into your agent · recommended</span><button data-copy="agent-prompt">copy</button></header>
-        <pre id="agent-prompt">Set up SideTap (github.com/ucsandman/sidetap) on this
+        <pre id="agent-prompt">Set up SideTap (github.com/ucsandman/SideTap) on this
 Windows machine so LLM agents can drive my iPhone over USB.
 Follow the README section "Set it up with an agent",
 run phone-harness doctor after every step, and loop
@@ -319,15 +325,15 @@ anything from my phone.</pre>
       <div class="termbox">
         <header><span>or by hand</span><button data-copy="quickstart">copy</button></header>
         <pre id="quickstart"><span class="c">:: Windows 10/11 · Python 3.10+ · Node.js · iPhone on iOS 17+</span>
-git clone https://github.com/ucsandman/sidetap
-cd sidetap
+git clone https://github.com/ucsandman/SideTap
+cd SideTap
 npm install -g go-ios
 pip install -r requirements.txt
 python launch.py
 <span class="c">:: live viewer opens at</span> <span class="g">http://127.0.0.1:8770</span></pre>
       </div>
     </div>
-    <p class="install-note">First time? <a href="https://github.com/ucsandman/sidetap/blob/main/docs/setup-windows.md">docs/setup-windows.md</a> covers the one-time phone setup: USB driver, Developer Mode, sideloading WebDriverAgent.</p>
+    <p class="install-note">First time? <a href="https://github.com/ucsandman/SideTap/blob/main/docs/setup-windows.md">docs/setup-windows.md</a> covers the one-time phone setup: USB driver, Developer Mode, sideloading WebDriverAgent.</p>
   </div>
 </section>
 
@@ -346,7 +352,7 @@ python launch.py
           <li>Expiry countdown and desktop notifications</li>
           <li>Community support on GitHub</li>
         </ul>
-        <a class="ghost" href="https://github.com/ucsandman/sidetap">Clone it free →</a>
+        <a class="ghost" href="https://github.com/ucsandman/SideTap">Clone it free →</a>
       </div>
       <div class="tier paid">
         <h3>Pro <span class="badge">IN DEVELOPMENT</span></h3>
@@ -379,9 +385,9 @@ python launch.py
     </span>
     <span>MIT license. Built on <a href="https://github.com/danielpaulus/go-ios">go-ios</a> and <a href="https://github.com/appium/WebDriverAgent">WebDriverAgent</a>.</span>
     <div class="foot-links">
-      <a href="https://github.com/ucsandman/sidetap">GitHub</a>
-      <a href="https://github.com/ucsandman/sidetap/blob/main/docs/setup-windows.md">Setup guide</a>
-      <a href="https://github.com/ucsandman/sidetap/issues">Issues</a>
+      <a href="https://github.com/ucsandman/SideTap">GitHub</a>
+      <a href="https://github.com/ucsandman/SideTap/blob/main/docs/setup-windows.md">Setup guide</a>
+      <a href="https://github.com/ucsandman/SideTap/issues">Issues</a>
     </div>
   </div>
 </footer>
@@ -440,7 +446,7 @@ stopBtn.addEventListener('click',()=>{
 // ---- copy buttons ----
 function flash(btn){const o=btn.textContent;btn.textContent='copied';setTimeout(()=>btn.textContent=o,1300)}
 document.getElementById('copy-clone').addEventListener('click',e=>{
-  navigator.clipboard.writeText('git clone https://github.com/ucsandman/sidetap');flash(e.target);
+  navigator.clipboard.writeText('git clone https://github.com/ucsandman/SideTap');flash(e.target);
 });
 document.querySelectorAll('[data-copy]').forEach(btn=>{
   btn.addEventListener('click',()=>{

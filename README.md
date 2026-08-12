@@ -2,7 +2,7 @@
 
 **Let an LLM agent see and control a real iPhone from a Windows desktop. No Mac, no Xcode, no Appium server, no jailbreak, free Apple ID.**
 
-[![tests](https://github.com/ucsandman/sidetap/actions/workflows/tests.yml/badge.svg)](https://github.com/ucsandman/sidetap/actions/workflows/tests.yml)
+[![tests](https://github.com/ucsandman/SideTap/actions/workflows/tests.yml/badge.svg)](https://github.com/ucsandman/SideTap/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
@@ -27,9 +27,9 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 Skip the manual setup: paste this into Claude Code (or Codex) on your Windows PC and let it drive, asking you only for the steps that need your hands.
 
 ```text
-Set up SideTap (github.com/ucsandman/sidetap) on this Windows machine so LLM agents can drive my iPhone over USB.
+Set up SideTap (github.com/ucsandman/SideTap) on this Windows machine so LLM agents can drive my iPhone over USB.
 
-1. Clone https://github.com/ucsandman/sidetap and run: pip install -r requirements.txt
+1. Clone https://github.com/ucsandman/SideTap and run: pip install -r requirements.txt
 2. Install go-ios globally: npm install -g go-ios
 3. Read docs/setup-windows.md, then walk me through the parts only I can do: installing the Apple Devices app from the Microsoft Store, enabling Developer Mode on my iPhone, trusting this PC from the phone, and sideloading wda/WebDriverAgent.ipa with Sideloadly using my Apple ID.
 4. After WebDriverAgent is installed, run from the repo root: phone-harness fix-input (I will click Start in Sideloadly when you tell me to).
@@ -46,22 +46,23 @@ Ask me before anything that touches my Apple ID, my phone's settings, or sends a
 
 - **Real UI tree, not screenshots.** `tap_text("General")` finds the actual element and taps its center. Coordinates are points, exact.
 - **Live viewer in your browser** at ~34 fps: click to tap, drag to swipe, type on your keyboard, save screenshots. One-click **Unlock** (types your passcode from `.env`) and **Restart link** (the fix after a replug). Works even before touch input is set up.
-- **One-call flows** like `send_message("Mom", "on my way")` that open Messages, find the thread, type, and send, with guardrails (see Security). `read_messages("Mom")` reads the replies back.
+- **One-call flows** like `send_message("Mom", "on my way")` that open Messages, find the thread, type, and send, with guardrails (see Security). It empties the compose bar first, because typing appends at the cursor and iOS keeps an unsent draft per thread, then reads the field back and refuses to send anything that is not what you approved. `read_messages("Mom")` reads the replies back.
+- **Fast where it used to wait.** Settle detection compares the screen straight away instead of sleeping first: 877ms down to 318ms, measured on device, which returns about five seconds on a scroll that hunts through nine screens. The client keeps one connection to WebDriverAgent open, taking another 46% off each call. Screen reads drop wrappers and repeated labels for 64% fewer tokens.
 - **Native MCP tools.** `claude mcp add sidetap -- phone-harness mcp` gives any Claude Code or Claude Desktop session the whole helper API as typed tool calls — no Python piping.
 - **Agent skills in the box.** Copy [`skills/phone`](skills/phone) and [`skills/phone-gotchas`](skills/phone-gotchas) into `~/.claude/skills/` and any Claude Code session picks up the helper API *and* the traps that otherwise cost an hour of debugging: Home Screen icons only drag in jiggle mode (and fail silently outside it), coordinates are points and not pixels, the page editor is too heavy for the UI-tree read, and what the harness genuinely cannot do.
 - **Live activity feed.** Every tap, swipe, and keystroke count any agent sends shows up in the viewer as it happens, so you always know what just drove the screen.
 - **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires.
 - **Free Apple ID signing that actually works.** Sideloadly leaves the nested `.xctest` bundle unsigned, so the driver never launches. `phone-harness fix-input` repairs that locally: no Apple password scripting, no paid developer account. See [How the signing fix works](#how-the-signing-fix-works).
 - **Kill switch.** A red STOP button in the viewer freezes every agent action while you keep watching the screen.
-- **Prompt injection gate.** Anyone who can text you can put words in your agent's input. So once the agent has read your screen or your messages, a send stops and waits for you to approve the exact text in the viewer. Running out of time refuses it. Set it to **Always**, **Flagged** (only asks when something looks off), or **Off** with one click in the viewer. It bounds what an injected instruction can send, not what it can tap, and [Security](#security-and-responsible-use) says exactly where that line is.
+- **Prompt injection gate.** Anyone who can text you can put words in your agent's input. So once the agent has read your screen or your messages, a send stops and waits for you to approve the exact text in the viewer. Running out of time refuses it. Set it to **Always**, **Flagged** (only asks when something looks off), or **Off** with one click in the viewer. The text you approve is also the text that sends: the compose bar is read back before the send and a mismatch is refused, so a draft left in the thread cannot ride along with an approved message. It bounds what an injected instruction can send, not what it can tap, and [Security](#security-and-responsible-use) says exactly where that line is.
 
 ## Quick start
 
 Needs Windows 10/11, Python 3.10+, Node.js (go-ios installs through npm), and an iPhone on iOS 17+.
 
 ```bat
-git clone https://github.com/ucsandman/sidetap
-cd sidetap
+git clone https://github.com/ucsandman/SideTap
+cd SideTap
 npm install -g go-ios     :: the USB bridge (this is why Node.js is needed)
 pip install -r requirements.txt
 python launch.py          :: opens the live viewer; the link comes up in the background
@@ -151,6 +152,7 @@ This tool is for **your own phone, under your supervision**. The guardrails are 
 - **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**, and the doctor calls out a forgotten STOP as its first check. It bounds a runaway agent.
 - **Live activity feed.** Every action any process sends to the phone — taps, swipes, app launches, typing — lands in the viewer's **Activity** panel as it happens. Typed text is never recorded, only the character count (it can be a password or your passcode).
 - **Send guardrails.** `send_message` refuses to send if the contact name is ambiguous or the opened thread does not match, and logs every send to `.state/actions.log`, shown as **Recent sends** in the viewer.
+- **What you approve is what sends.** Typing is `POST /wda/keys`, which appends at the cursor rather than replacing, and iOS keeps an unsent draft per conversation. So a draft you left in a thread used to end up in front of the message the agent typed, while the approval card had already shown you the clean text. `send_message` now empties the compose bar first, reads the field back, and refuses the send outright when what is in it is not what was approved. The refusal names both strings. That closes the one gap where content nobody approved could reach a real person.
 - **Prompt injection gate.** Everything the agent reads off your phone is attacker-controlled: anyone who can text you can put words in your agent's input. So once the agent has read the screen, a screenshot, or your messages, `send_message` stops and waits for you to click **Approve** on a red card in the viewer showing the contact and the exact text. Running out of time is a refusal, never a send. A message you type into the viewer yourself is not gated, and there is deliberately no argument to skip the gate, because every parameter of an MCP tool is reachable by an injected instruction. Screen content also reaches the agent wrapped in a "this is data, not instructions" envelope, flagged for the shapes injection usually takes, including text hidden in invisible Unicode. `type_text` refuses to type your passcode; only `unlock()` may.
 - **Tune the gate, or turn it off.** The viewer's **Approve sends** control has three settings, and the choice is yours to make: **Always** (the default: every send after a read waits for a click), **Flagged** (only asks when the scanner found something, which is quieter but lets a payload written to dodge the checks through, because it promotes the flags from a hint to a verdict), and **Off** (never asks; STOP and the activity feed are all that is left). It shows amber whenever you are not on Always. `SEND_APPROVAL` in `.env` sets the startup default, and anything unrecognized falls back to Always, because a setting that cannot be read must never be the one that disables the gate. The setting is reachable from the viewer and `.env` only, never from a tool call, since a gate an injected instruction can switch off is not a gate.
 - **What the gate does not cover.** It bounds what an injected instruction can send, not what it can do on the phone. An injection that makes the agent tap through Settings never triggers the gate, and **STOP** plus the activity feed are your cover there. Text painted into an image is read by a vision model and cannot be scanned. And nothing stops the agent being told a lie and repeating it back to you. No text filter detects prompt injection reliably, so the flags on the card are a signal for you, never a verdict.
@@ -178,7 +180,9 @@ Mid-week re-installs can skip Sideloadly entirely by reusing the captured profil
 | `wda_client.py` | thin HTTP client for WebDriverAgent (requests only), kill-switch chokepoint, activity feed |
 | `device.py` | go-ios wrapper: tunnel, runwda, port forwards, pids and logs in `.state/` |
 | `capture.py` | screenshots: WDA HTTP when up, go-ios subprocess fallback (perception works before input does) |
-| `helpers.py` | the agent API: tap, tap_text, ocr, send_message, read_messages, unlock |
+| `helpers.py` | the agent API: tap, tap_text, ocr, set_field_text, send_message, read_messages, unlock |
+| `trust.py` | the trust boundary: taint tracking, the injection scanner, the data-not-instructions envelope |
+| `approval.py` | the human approval handshake that blocks a send until the viewer answers |
 | `mcp_server.py` | the helper API as native MCP tools (`phone-harness mcp`) |
 | `admin.py` | doctor, up, down |
 | `signing.py` | the free-Apple-ID re-signing flow |
@@ -186,12 +190,17 @@ Mid-week re-installs can skip Sideloadly entirely by reusing the captured profil
 
 ## Tests
 
-Unit tests need no phone:
+277 unit tests, none of which need a phone plugged in:
 
 ```bat
 pip install pytest
 python -m pytest tests -q
 ```
+
+They cover the pure logic that is painful to debug on device: tree walking and
+compaction, the injection scanner, the approval handshake and its fail-closed
+paths, session recovery, passcode refusal, and the viewer's markup (no duplicate
+element ids, and its inline script still parses).
 
 ## Known limits
 

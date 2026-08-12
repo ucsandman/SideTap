@@ -11,7 +11,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from phone_harness import viewer  # noqa: E402
+from phone_harness import helpers, viewer  # noqa: E402
 
 
 class StubClient:
@@ -23,8 +23,26 @@ class StubClient:
     session_id = "stub-session"
     window = None  # set to (w, h) to make /api/status succeed
 
-    def home(self):
-        self.calls.append("home")
+    def long_press(self, x, y, seconds):
+        self.calls.append(("long_press", x, y, seconds))
+
+    def source(self):  # noqa: vulture  (duck-typed: helpers.ui_tree calls it)
+        # /api/home walks with helpers.goto_home_page, which reads the
+        # PageIndicator. Reporting page 1 makes the walk a verified no-op.
+        return {
+            "type": "Application",
+            "children": [
+                {
+                    "type": "PageIndicator",
+                    "name": "Page control",
+                    "value": "Page 1 of 8",
+                    "children": [],
+                }
+            ],
+        }
+
+    def swipe(self, x1, y1, x2, y2, seconds=0.3):
+        self.calls.append(("swipe", x1, y1, x2, y2))
 
     def lock(self):
         self.calls.append("lock")
@@ -65,13 +83,22 @@ class StubClient:
 def base_url():
     server = ThreadingHTTPServer(("127.0.0.1", 0), viewer.Handler)
     original = viewer.Handler.client
-    viewer.Handler.client = StubClient()
+    stub = StubClient()
+    viewer.Handler.client = stub
+    # /api/home reaches the phone through helpers, whose client is a separate
+    # object from Handler.client. Without this the endpoint would build a real
+    # WDAClient and try to talk to a phone that is not there.
+    original_helpers_client = helpers._client
+    helpers._client = stub
+    helpers._invalidate_tree()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
     finally:
         server.shutdown()
         viewer.Handler.client = original
+        helpers._client = original_helpers_client
+        helpers._invalidate_tree()
 
 
 def test_same_origin_get_ok(base_url):
@@ -551,12 +578,14 @@ def test_gesture_during_a_long_action_is_dropped_not_queued(base_url, monkeypatc
     """
     monkeypatch.setattr(viewer, "_ACTION_WAIT", 0.2)
     client = viewer.Handler.client
+    # /api/lock, not /api/home: home now walks through helpers, so it no longer
+    # records anything on the stub and "did it run late" would be unobservable.
     with viewer._ACTION_LOCK:  # stand in for the unlock holding the phone
-        r = requests.post(base_url + "/api/home", json={}, timeout=5)
+        r = requests.post(base_url + "/api/lock", json={}, timeout=5)
     assert r.status_code == 409
     assert r.json()["ok"] is False
     assert "busy" in r.json()["error"].lower()
-    assert "home" not in client.calls  # never ran, not even late
+    assert "lock" not in client.calls  # never ran, not even late
 
 
 def test_a_gesture_still_waits_for_a_quick_one_ahead_of_it(base_url):
@@ -572,7 +601,39 @@ def test_a_gesture_still_waits_for_a_quick_one_ahead_of_it(base_url):
     holder = threading.Thread(target=hold)
     holder.start()
     started.wait(2)
-    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    r = requests.post(base_url + "/api/lock", json={}, timeout=5)
     holder.join()
     assert r.status_code == 200
-    assert "home" in client.calls
+    assert "lock" in client.calls
+
+
+def test_long_press_passes_point_and_duration(base_url):
+    r = requests.post(
+        base_url + "/api/long_press",
+        json={"x": 100, "y": 200, "seconds": 0.8},
+        timeout=5,
+    )
+    assert r.status_code == 200
+    assert ("long_press", 100.0, 200.0, 0.8) in viewer.Handler.client.calls
+
+
+def test_long_press_clamps_duration(base_url):
+    requests.post(
+        base_url + "/api/long_press", json={"x": 1, "y": 2, "seconds": 99}, timeout=5
+    )
+    assert viewer.Handler.client.calls[-1][3] == 3.0
+
+
+def test_long_press_defaults_duration(base_url):
+    requests.post(base_url + "/api/long_press", json={"x": 1, "y": 2}, timeout=5)
+    assert viewer.Handler.client.calls[-1][3] == 0.8
+
+
+def test_home_walks_to_page_one(base_url, monkeypatch):
+    # press_home is a no-op between pages, so Home has to walk. Wiring only:
+    # the walk itself is covered in test_helpers.
+    seen = []
+    monkeypatch.setattr(helpers, "goto_home_page", lambda n=1: seen.append(n))
+    r = requests.post(base_url + "/api/home", json={}, timeout=5)
+    assert r.status_code == 200
+    assert seen == [1]

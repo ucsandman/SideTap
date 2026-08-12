@@ -20,11 +20,17 @@ number by one and made the real folder page "page 2". Had the page-hiding step
 run on that numbering it would have unchecked the wrong thumbnails, including the
 user's only organised page. The user caught it, not the tooling.
 
-The tree said so plainly and I read past it: the container is named
-`left-of-home-scroll-view`. **Verified discriminator** (both directions, on
-device): `any(e["text"] == "left-of-home-scroll-view" for e in ocr())` is `True`
-on Today View and `False` on a real Home Screen page. `press_home()` lands on
-Home Screen page 1 directly, so it is a cheaper anchor than swiping right.
+**The fix, found the next day:** the `PageIndicator`'s `value` states the
+position outright — `Page 4 of 8` on a Home Screen page, `Page 0 of 8` on Today
+View, `Page 9 of 8` in the App Library. One read gives index, total and zone, so
+there is nothing to detect and no end stop to miscount. It went unnoticed because
+`ocr()` cannot see it: `collect_texts` prefers `label`, which is null on that
+element, so it falls back to `name` (`"Page control"`) and drops `value`. Shipped
+as `helpers.current_page()`.
+
+`press_home()` is **not** an anchor either: `/wda/homescreen` only exits an app
+to the springboard. From page 4 two consecutive calls both stayed on page 4, and
+from the App Library it does not even leave. Use `helpers.goto_home_page(1)`.
 
 Secondary, and still true: **`ocr()` reports widgets with `type == "Icon"`,
 identical to apps.** The tell is geometry — widget centres sit *between* the four

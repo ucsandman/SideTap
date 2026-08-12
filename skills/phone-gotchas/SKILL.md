@@ -144,7 +144,9 @@ tap_text("Done")                            # top-right; twice from the page edi
 | Dock icons in a page survey | The dock repeats on every page (`y > ~820`). Filter it out or every page looks like it shares four apps. |
 | Needing a full app inventory | Do NOT sweep pages for it. `ios apps --list` returns all installed apps instantly, bundle id and version included. |
 | **A dedup sweep's two end stops are not pages** | Neither end of the swipe range is a Home Screen page, and counting either one shifts every page number you report. **Leftmost is Today View** ("page 0"): always present, cannot be hidden, never appears in the page editor. **Rightmost is App Library**: ~40 icons plus its own auto-category folders (Recently Added, Suggestions, Social, Utilities, Shopping & Food, Entertainment, Travel, Finance). Identify, then discard both, before you number anything. |
-| Telling Today View from a sparse Home Screen page | Do **not** guess from "it looks like widgets". The tree names its container `left-of-home-scroll-view` — that string is conclusive. Two more tells: it is a `ScrollView`, so a large element can report a `y` **greater than the screen height** and coordinates shift between reads; and it survives every `press_home()`. A page of widgets that reads as 5 sparse icons is almost always this. |
+| Working out which page you are on | Do not count swipes and do not guess from the icons. **`current_page()`** returns `{"index", "total", "zone"}` from the `PageIndicator`'s `value`, which reads `"Page 4 of 8"`. Today View is **`Page 0 of 8`** and the App Library is **`Page 9 of 8`** — iOS numbers them itself, so all three zones fall out of one read. |
+| `ocr()` not showing the page number | It cannot. `collect_texts` prefers `label`, which is **null** on the `PageIndicator`, so it falls back to `name` (`"Page control"`) and never reaches `value`. Only the raw `ui_tree()` has it — which is why this sat unnoticed. |
+| `press_home()` to reach page 1 | **It does nothing between pages.** `/wda/homescreen` only exits an app to the springboard; from page 4 two consecutive calls both stayed on page 4, and from the App Library it does not even leave. Use `goto_home_page(1)`, which reads position and swipes exactly that many times. |
 | An `Icon` whose x is not ~69/170/270/371 | It is a **widget**, not an app. `ocr()` types widgets as `Icon` exactly like apps, so the tell is geometry: a 2-wide widget centres *between* the columns (x≈120 or 320). Check x against the grid before you move, count, or overwrite anything. |
 | Off-by-one page numbers | Counting Today View as page 1 shifts every later page by one, and the **page editor does not show Today View** — so hiding "pages 3-9" off that numbering unchecks the wrong thumbnails, including the user's organised page. Anchor the numbering to a known icon on a real page, then re-verify inside the editor by its thumbnails, never by the number you carried in. |
 | Dragging icon A onto icon B | **Works, and creates a folder** — verified. iOS auto-names it from its own App Library category guess, *not* from the apps inside, so two AI apps landed in a folder called `Productivity`. Renaming is a separate step. |
@@ -274,32 +276,27 @@ g = grid()
 assert g.get("Calendar") == (220, 194), f"unexpected start: {g.get('Calendar')}"
 ```
 
-**Survey pages by deduping, not by counting.** Walk with `swipe()` and stop when
-the sorted tuple of icon names repeats — that is how you detect the last page
-without knowing the count, and it lands you on App Library rather than
-overshooting into it:
+**Survey pages by asking the phone where it is, not by deduping.** The page count
+is known before the first swipe, so there is nothing to detect and no end stop to
+trip over:
 
 ```python
-def on_today_view():          # "page 0" — NOT a Home Screen page
-    # verified: plain CLI ocr() returns this ScrollView by name
-    return any(e["text"] == "left-of-home-scroll-view" for e in R(lambda: ocr()))
-
-seen, pages = set(), []
-while True:
-    if on_today_view():                      # leftmost end stop: skip, don't count
-        sw(400, 500, 40, 500, 0.25); continue
-    body = [(e["text"], round(e["x"]), round(e["y"]))
-            for e in R(lambda: ocr()) if e["type"] == "Icon" and e["y"] <= 820]
-    key = tuple(sorted(t for t, _, _ in body))       # dock dropped by the y filter
-    if key in seen: break                            # rightmost end stop: App Library
-    seen.add(key); pages.append(body)                # pages[0] IS Home Screen page 1
-    sw(400, 500, 40, 500, 0.25)
+R(lambda: goto_home_page(1))
+total = R(lambda: current_page())["total"]          # "Page 1 of 8" -> 8
+pages = []
+for i in range(1, total + 1):
+    pages.append([(e["text"], round(e["x"]), round(e["y"]))
+                  for e in R(lambda: ocr())
+                  if e["type"] == "Icon" and e["y"] <= 820])   # y filter drops the dock
+    if i < total:
+        sw(400, 500, 40, 500, 0.25)                 # away from page 1
 ```
 
-Both ends of that walk are end stops, not pages: Today View on the left, App
-Library on the right. Skip the first and drop the last, or every page number you
-report is wrong by one — and the page editor, which never shows Today View, will
-not agree with you.
+`pages[0]` is Home Screen page 1, and Today View and the App Library never enter
+the list. The older dedup walk stopped when the icon signature repeated, which
+happens at **both** ends of the swipe range — so it silently counted Today View
+as a page and shifted every later number by one. The page editor never shows
+Today View, so acting on those numbers unchecks the wrong thumbnails.
 
 **Print what you need, not the tree.** Filter to a type and format one short line
 per element. A raw tree dump is thousands of tokens of `Other` wrappers.

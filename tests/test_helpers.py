@@ -941,3 +941,282 @@ def test_no_mode_gates_an_untainted_session(sendable, gate_calls, mode):
         mode(value)
         helpers.send_message("Mom", "on my way")
     assert calls == []
+
+
+# ---- review fixes: latency, bounds, field clearing, cross-process cache ----
+
+
+def test_wait_stable_does_not_pay_the_interval_on_an_already_still_screen(
+    monkeypatch,
+):
+    # The sleep sat BEFORE the first comparison, so the earliest possible
+    # return was one full interval even when the screen never moved. Callers
+    # (scroll_until_found, find_on_home_screen) already paid WDA's own ~0.7s
+    # server-side settle before calling this.
+    slept = []
+    monkeypatch.setattr(helpers.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(helpers.capture, "screenshot_png", lambda: b"same")
+
+    assert helpers.wait_stable(timeout=5.0, interval=0.5) is True
+    assert sum(slept) == 0, f"slept {sum(slept)}s on a screen that never moved"
+
+
+def test_wait_stable_still_waits_out_a_moving_screen(monkeypatch):
+    frames = [b"a", b"b", b"c", b"c"]
+    monkeypatch.setattr(helpers.time, "sleep", lambda s: None)
+    monkeypatch.setattr(helpers.capture, "screenshot_png", lambda: frames.pop(0))
+
+    assert helpers.wait_stable(timeout=5.0, interval=0.01) is True
+    assert frames == []
+
+
+def test_tap_text_out_of_range_index_reports_the_hit_count(monkeypatch):
+    # hits[index] raised a bare IndexError with no count, forcing the agent to
+    # spend another find_text()/ocr() round trip to learn what it already had.
+    monkeypatch.setattr(
+        helpers,
+        "ocr",
+        lambda: [
+            {"type": "Button", "text": "Send", "x": 10, "y": 20},
+            {"type": "Button", "text": "Send to", "x": 10, "y": 40},
+        ],
+    )
+    with pytest.raises(WDAError) as exc:
+        helpers.tap_text("Send", index=5)
+    msg = str(exc.value)
+    assert "2" in msg, f"error does not name the hit count: {msg}"
+    assert "Send" in msg
+
+
+class StubField:
+    """Focused-element endpoints, as WDA answers them."""
+
+    def __init__(self, value="", broken=False):
+        self.value = value
+        self.broken = broken
+        self.cleared = 0
+        self.typed = []
+
+    def active_element(self):
+        if self.broken:
+            raise WDAError("no focused element")
+        return "E1"
+
+    def element_clear(self, _eid):
+        if self.broken:
+            raise WDAError("clear unsupported")
+        self.cleared += 1
+        self.value = ""
+
+    def element_value(self, _eid):
+        if self.broken:
+            raise WDAError("no focused element")
+        return self.value
+
+
+def test_set_field_text_clears_the_field_before_typing(monkeypatch):
+    # type_text is POST /wda/keys, which APPENDS at the cursor. An iOS per-thread
+    # draft therefore gets the new text stuck onto the end of it.
+    stub = StubField(value="old draft")
+    events = []
+    field = {"type": "TextField", "text": "Message", "x": 100, "y": 800}
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    monkeypatch.setattr(helpers, "ocr", lambda: [field])
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers, "tap", lambda x, y: events.append(("tap", x, y)))
+    monkeypatch.setattr(helpers, "type_text", lambda t: events.append(("type", t)))
+
+    helpers.set_field_text(field, "On my way", verify=False)
+
+    assert stub.cleared == 1, "the field was never cleared before typing"
+    typed = [e[1] for e in events if e[0] == "type"]
+    assert typed == ["On my way"]
+
+
+def test_set_field_text_falls_back_to_backspaces_when_clear_is_unavailable(
+    monkeypatch,
+):
+    # If WDA cannot hand back a focused element, still do not append to a draft.
+    stub = StubField(value="old draft", broken=True)
+    typed = []
+    field = {"type": "TextField", "text": "Message", "x": 100, "y": 800}
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    monkeypatch.setattr(helpers, "ocr", lambda: [field])
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers, "tap", lambda x, y: None)
+    monkeypatch.setattr(helpers, "type_text", lambda t: typed.append(t))
+
+    # value is unreadable too, so nothing to backspace over; it must still type
+    # the requested text exactly once and never crash.
+    helpers.set_field_text(field, "On my way", verify=False)
+    assert typed[-1] == "On my way"
+
+
+def test_set_field_text_uses_an_explicit_clear_button_when_one_exists(monkeypatch):
+    stub = StubField(value="stale query")
+    taps = []
+    field = {"type": "SearchField", "text": "Search", "x": 100, "y": 60}
+    clear_btn = {"type": "Button", "text": "Clear text", "x": 330, "y": 60}
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    monkeypatch.setattr(helpers, "ocr", lambda: [field, clear_btn])
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(helpers, "type_text", lambda t: None)
+
+    helpers.set_field_text(field, "Mom", verify=False)
+
+    assert (330, 60) in taps, "the Clear text button was not used"
+    assert stub.cleared == 0, "tapped Clear and ALSO cleared: one is enough"
+
+
+def test_set_field_text_returns_what_actually_landed_not_what_was_asked(
+    monkeypatch,
+):
+    # The caller must not be told the requested string went in when the phone
+    # holds something else; send_message reported success either way.
+    stub = StubField(value="")
+    field = {"type": "TextField", "text": "Message", "x": 100, "y": 800}
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    monkeypatch.setattr(helpers, "ocr", lambda: [field])
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers, "tap", lambda x, y: None)
+    # the phone ends up holding something other than what we asked for
+    monkeypatch.setattr(
+        helpers, "type_text", lambda t: setattr(stub, "value", "draft + " + t)
+    )
+
+    assert helpers.set_field_text(field, "On my way") == "draft + On my way"
+
+
+def test_ui_tree_refetches_when_another_process_touched_the_phone(
+    monkeypatch, tmp_path
+):
+    # The viewer and the MCP server are separate processes. _invalidate_tree()
+    # only fires in the calling one, so a human tap in the viewer left the agent
+    # reading a stale screen for up to the 2s TTL and tapping the old layout.
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    fetches = []
+
+    class FakeClient:
+        def source(self):
+            fetches.append(1)
+            return {"type": "App", "children": []}
+
+    monkeypatch.setattr(helpers, "client", lambda: FakeClient())
+    helpers._invalidate_tree()
+
+    helpers.ui_tree()
+    helpers.ui_tree()
+    assert len(fetches) == 1, "the within-process cache stopped working"
+
+    from phone_harness import wda_client
+
+    wda_client.activity_file().parent.mkdir(parents=True, exist_ok=True)
+    wda_client.activity_file().write_text("someone else acted\n", encoding="utf-8")
+
+    helpers.ui_tree()
+    assert len(fetches) == 2, (
+        "another process acted but the cached tree was served anyway"
+    )
+
+
+def test_send_message_clears_the_compose_field_before_typing(
+    sendable, gate_calls, monkeypatch
+):
+    used = []
+
+    def fake_set(field, text, verify=True):
+        used.append(text)
+        return text
+
+    monkeypatch.setattr(helpers, "set_field_text", fake_set)
+    helpers.send_message("Mom", "on my way")
+    assert used == ["on my way"], (
+        "send_message typed straight into the compose bar without clearing it"
+    )
+
+
+def test_send_message_refuses_when_the_field_holds_something_unapproved(
+    sendable, gate_calls, monkeypatch
+):
+    # The approval card is shown the REQUESTED text, 15 lines before anything is
+    # typed. If the compose bar still holds a draft, tapping Send would put
+    # content on the wire that no human ever approved. Refuse instead.
+    monkeypatch.setattr(
+        helpers,
+        "set_field_text",
+        lambda field, text, verify=True: "old draft " + text,
+    )
+    taps = []
+    monkeypatch.setattr(helpers, "tap", lambda x, y: taps.append((x, y)))
+
+    with pytest.raises(WDAError) as exc:
+        helpers.send_message("Mom", "on my way")
+
+    assert "old draft on my way" in str(exc.value)
+    assert taps == [], "tapped Send even though the field held unapproved text"
+
+
+def test_send_message_returns_the_verified_text_on_the_happy_path(
+    sendable, gate_calls, monkeypatch
+):
+    monkeypatch.setattr(
+        helpers, "set_field_text", lambda field, text, verify=True: text
+    )
+    result = helpers.send_message("Mom", "on my way")
+    assert result["sent"] is True
+    assert result["text"] == "on my way"
+
+
+def test_compact_caps_a_dense_screen_and_says_it_truncated():
+    # collect_texts() has no limit, so a long Mail inbox or Settings list costs
+    # several times an average screen with nothing stopping it. Silent
+    # truncation is worse than none: a clipped screen must not read as complete.
+    rows = [
+        {
+            "text": f"Row {i}",
+            "type": "Cell",
+            "x": 100,
+            "y": 100 + i * 40,
+            "rect": {"x": 0, "y": 100 + i * 40, "width": 300, "height": 30},
+        }
+        for i in range(100)
+    ]
+
+    out = helpers.compact(rows, limit=60)
+    assert len(out) == 61, "expected 60 rows plus one truncation marker"
+    assert out[-1]["type"] == "Truncation"
+    assert "40 more" in out[-1]["text"]
+    assert "find_text()" in out[-1]["text"]
+
+    # The assertion is real: with no limit nothing is dropped and no marker exists.
+    uncapped = helpers.compact(rows, limit=None)
+    assert len(uncapped) == 100
+    assert all(r["type"] != "Truncation" for r in uncapped)
+
+
+def test_open_app_error_names_near_miss_app_names(monkeypatch):
+    # open_app already walks every installed app; discarding what it saw forces
+    # the agent to go and list them itself after a typo.
+    monkeypatch.setattr(
+        helpers.device,
+        "list_apps",
+        lambda: [
+            {"name": "Messages", "bundle_id": "com.apple.MobileSMS"},
+            {"name": "Photos", "bundle_id": "com.apple.mobileslideshow"},
+            {"name": "Calendar", "bundle_id": "com.apple.mobilecal"},
+        ],
+    )
+    with pytest.raises(WDAError) as exc:
+        helpers.open_app("Mesages")
+    msg = str(exc.value)
+    assert "Messages" in msg, f"error did not suggest the near match: {msg}"
+
+
+def test_open_app_suggests_system_apps_that_ios_apps_list_omits(monkeypatch):
+    # `ios apps --list` returns user apps only, so on a real device the pool was
+    # empty for a Messages/Settings typo and the agent got no suggestion.
+    monkeypatch.setattr(helpers.device, "list_apps", lambda: [])
+    with pytest.raises(WDAError) as exc:
+        helpers.open_app("Mesages")
+    assert "messages" in str(exc.value).lower(), str(exc.value)

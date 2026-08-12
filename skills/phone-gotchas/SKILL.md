@@ -48,14 +48,18 @@ The CLI harness and the MCP tools do NOT return the same shape. Verified:
 - **`ui_tree()` returns a nested dict**, not a list. Iterating it yields dict
   *keys* (strings), so `e.get(...)` dies with
   `'str' object has no attribute 'get'`. Use `ocr()` for a flat list.
-- **Sanitize before printing.** The Windows console is cp1252 and phone text is
-  not. iOS clock strings carry a narrow no-break space (U+202F) and app names
-  carry a smart apostrophe (U+2019, e.g. Jimmy John's), so a bare `print()`
-  dies with `UnicodeEncodeError` *after* the gesture already ran — you lose the
-  result, not the action. Always:
-  ```python
-  def s(t): return (t or "").encode("ascii", "replace").decode()
-  ```
+- **Printing phone text is safe now; you no longer need an ascii wrapper.** The
+  CLI forces UTF-8 on stdout and stderr, so the narrow no-break space in iOS
+  clock strings (U+202F) and smart apostrophes in app names (U+2019, e.g. Jimmy
+  John's) print fine. Before that fix a bare `print()` died with
+  `UnicodeEncodeError` *after* the gesture already ran, so you lost the result
+  and not the action, and rerunning the script could send a message twice.
+- **`type_text()` APPENDS at the cursor; it does not replace.** iOS keeps an
+  unsent draft per Messages thread, so typing into a field that already holds
+  something puts draft+text on the phone. Use `set_field_text(field, text)`,
+  which clears first, types, and returns what actually landed. Note that
+  `ocr()` shows a text field's PLACEHOLDER ("Message", "Address"), not its
+  contents, so you cannot tell an empty field from a full one by reading it.
 
 Two helpers worth pasting into any screen-heavy script:
 

@@ -60,7 +60,23 @@ def _exec_stdin() -> int:
             print(f"\n[SideTap] {trust.WARNING}", file=sys.stderr)
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr carry anything the phone can show.
+
+    A piped stream on Windows defaults to cp1252. Phone text routinely holds
+    U+202F (iOS clock strings) and emoji, so a print() of a result AFTER a real
+    gesture already landed raised UnicodeEncodeError: the agent saw a traceback
+    and no confirmation, and could rerun the script — a duplicate send.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # captured or wrapped streams may not support it
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     args = sys.argv[1:] if argv is None else argv
     cmd = args[0] if args else None
     if cmd in ("doctor", "--doctor"):

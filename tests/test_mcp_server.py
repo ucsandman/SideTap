@@ -291,3 +291,17 @@ def test_no_agent_tool_can_change_the_gate_setting():
     from phone_harness import helpers
 
     assert not {n for n in helpers.__all__ if "approval" in n or "mode" in n}
+
+
+def test_every_registered_tool_ships_a_description():
+    # FastMCP reads __doc__ at registration time and ships it as the tool's
+    # schema description. long_press, swipe and press_home had none, so the
+    # model had to guess the gesture from the name alone.
+    from phone_harness import mcp_server
+
+    missing = [
+        fn.__name__
+        for fn in mcp_server._TOOLS + mcp_server._READING_TOOLS
+        if not (fn.__doc__ or "").strip()
+    ]
+    assert missing == [], f"MCP tools registered with an empty description: {missing}"

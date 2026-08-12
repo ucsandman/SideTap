@@ -6,13 +6,14 @@ All coordinates are in points (what the UI tree uses), origin top-left.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import time
 from pathlib import Path
 
 from . import approval, capture, config, device, trust
-from .wda_client import WDAClient, WDAError
+from .wda_client import WDAClient, WDAError, activity_file
 
 _client: WDAClient | None = None
 
@@ -80,11 +81,28 @@ def collect_texts(node: dict, out: list | None = None) -> list[dict]:
 # reads reuse one fetch. Any action invalidates; the short TTL bounds staleness
 # when the screen changes on its own (animations, notifications).
 _TREE_TTL = 2.0
-_tree_cache: dict = {"tree": None, "ts": 0.0, "flags": []}
+_tree_cache: dict = {"tree": None, "ts": 0.0, "flags": [], "act": 0.0}
 
 
 def _invalidate_tree() -> None:
     _tree_cache["tree"] = None
+
+
+def _foreign_activity() -> float:
+    """mtime of the shared action log, which EVERY process appends to.
+
+    _invalidate_tree() only fires inside the process that acted, but the viewer
+    and the MCP server are separate processes. A human tap in the viewer used to
+    leave the agent serving a cached tree for up to the TTL, then tapping the
+    coordinates of a screen that had already changed. Every action POST already
+    records itself here (wda_client._request), so the mtime is a cross-process
+    "something moved" signal for free. Same shared-state-file pattern as the
+    WDA session id.
+    """
+    try:
+        return activity_file().stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def ui_tree() -> dict:
@@ -95,7 +113,12 @@ def ui_tree() -> dict:
     phone is attacker-controlled, and a send after this point needs a human.
     """
     now = time.monotonic()
-    if _tree_cache["tree"] is not None and now - _tree_cache["ts"] < _TREE_TTL:
+    act = _foreign_activity()
+    if (
+        _tree_cache["tree"] is not None
+        and now - _tree_cache["ts"] < _TREE_TTL
+        and act == _tree_cache["act"]
+    ):
         trust.mark("screen", _tree_cache["flags"])
         return _tree_cache["tree"]
     tree = client().source()
@@ -103,7 +126,7 @@ def ui_tree() -> dict:
     # flags shown on the approval card should come from what a human would
     # have seen (or, for hidden characters, would not have seen).
     flags = trust.scan_items([e["text"] for e in collect_texts(tree)])
-    _tree_cache.update(tree=tree, ts=time.monotonic(), flags=flags)
+    _tree_cache.update(tree=tree, ts=time.monotonic(), flags=flags, act=act)
     trust.mark("screen", flags)
     return tree
 
@@ -127,11 +150,22 @@ def tap(x: float, y: float) -> None:
 
 
 def long_press(x: float, y: float, seconds: float = 1.0) -> None:
+    """Press and hold at (x, y) in points for `seconds`, then release.
+
+    Opens context menus, the app icon jiggle/rearrange mode, and text selection.
+    """
     _invalidate_tree()
     client().long_press(x, y, seconds)
 
 
 def swipe(x1: float, y1: float, x2: float, y2: float, seconds: float = 0.3) -> None:
+    """Drag from (x1, y1) to (x2, y2) in points over `seconds`.
+
+    A raw physical drag: the finger travels exactly the path given, with no
+    direction abstraction. To scroll a list, prefer scroll(), which takes a
+    named direction and inverts it for you. Use this for edge gestures (swipe
+    down from the top edge for Notification Center) and for drag-and-drop.
+    """
     _invalidate_tree()
     client().swipe(x1, y1, x2, y2, seconds)
 
@@ -159,7 +193,12 @@ def scroll(direction: str = "down", amount: float = 0.4) -> None:
 
 
 def find_text(text: str, exact: bool = False) -> list[dict]:
-    """All elements whose text matches (case-insensitive)."""
+    """All elements whose text matches (case-insensitive), best match first.
+
+    Substring match by default; `exact=True` requires the whole text to match.
+    Results are ordered exact matches first, then shortest text, so index 0 is
+    the least noisy match. That order is what `tap_text(index=N)` selects from.
+    """
     needle = text.lower().strip()
     hits = []
     for el in ocr():
@@ -172,11 +211,24 @@ def find_text(text: str, exact: bool = False) -> list[dict]:
 
 
 def tap_text(text: str, index: int = 0, exact: bool = False) -> dict:
-    """Find text on screen and tap it. Returns the element tapped."""
+    """Find text on screen and tap it. Returns the element tapped.
+
+    `index` picks from find_text()'s order: exact matches first, then shortest
+    text. Use it to disambiguate two controls with the same label. `exact=True`
+    narrows the match instead of matching any substring.
+    """
     hits = find_text(text, exact=exact)
     if not hits:
         raise WDAError(
             f"Text not found on screen: {text!r}. Call ocr() to see what is visible."
+        )
+    if index >= len(hits) or index < -len(hits):
+        # Name what we already have: a bare IndexError cost the agent another
+        # find_text()/ocr() round trip just to learn the count.
+        labels = ", ".join(repr(h["text"]) for h in hits[:6])
+        raise WDAError(
+            f"index {index} is out of range for {text!r}: {len(hits)} match"
+            f"{'' if len(hits) == 1 else 'es'} on screen ({labels})."
         )
     el = hits[index]
     tap(el["x"], el["y"])
@@ -264,7 +316,73 @@ def type_text(text: str) -> None:
     client().type_text(text)
 
 
+# WebDriver key code for delete-backwards. WDA takes it in the /wda/keys list
+# exactly like a printable character.
+_BACKSPACE = chr(0xE003)
+
+
+def _focused_value() -> str | None:
+    """What the focused field really holds, or None if it cannot be read.
+
+    NOT collect_texts(): that prefers `label`, which for a text field is the
+    PLACEHOLDER ("Message" on the Messages compose bar), so it reads the same
+    whether the field is empty or holds a draft. The typed content is `value`.
+    """
+    try:
+        return client().element_value(client().active_element())
+    except WDAError:
+        return None
+
+
+def _clear_focused_field() -> None:
+    """Empty the focused field, in order of reliability."""
+    clear = [
+        e
+        for e in ocr()
+        if e["type"] == "Button" and e["text"].strip() in ("Clear text", "Clear")
+    ]
+    if clear:  # search fields carry an explicit button
+        tap(clear[0]["x"], clear[0]["y"])
+        return
+    try:  # WebDriver's own clear: one call, any content length
+        client().element_clear(client().active_element())
+        return
+    except WDAError:
+        pass
+    current = _focused_value() or ""  # last resort: backspace over what is there
+    if current:
+        type_text(_BACKSPACE * (len(current) + 2))
+
+
+def set_field_text(field: dict, text: str, verify: bool = True) -> str:
+    """Replace `field`'s contents with `text`. Returns what actually landed.
+
+    type_text() is POST /wda/keys, which APPENDS at the cursor: it does not
+    replace what is already there. iOS keeps an unsent draft per Messages
+    thread and resumes a search field mid-query, so typing into a field that
+    already holds something puts draft+text on the phone while the caller still
+    believes it typed `text`. Clear first, then read the field back, so a caller
+    can never report a message it did not send.
+
+    Pass the field element you are about to type into (the one you would tap).
+    `verify=False` skips the read-back round trip.
+    """
+    tap(field["x"], field["y"])
+    time.sleep(0.4)  # keyboard slide-up, or the first keys are dropped
+    _clear_focused_field()
+    type_text(text)
+    if not verify:
+        return text
+    landed = _focused_value()
+    return text if landed is None else landed
+
+
 def press_home() -> None:
+    """Go to the Home Screen, as if the physical Home gesture were used.
+
+    Leaves whatever app was open. Returns to the first Home Screen page, so it
+    is the reliable way back to a known state after a wrong tap.
+    """
     _invalidate_tree()
     client().home()
 
@@ -318,16 +436,30 @@ def open_app(name: str) -> None:
     """Open an app by friendly name ('Settings'), bundle id, or installed-app name."""
     key = name.lower().strip()
     bundle = BUNDLE_IDS.get(key) or (name if "." in name else None)
+    installed: list[str] = []
     if not bundle:
         for app in device.list_apps():
+            installed.append(app["name"])
             if key == app["name"].lower().strip():
                 bundle = app["bundle_id"]
                 break
     if not bundle:
-        raise WDAError(
-            f"Unknown app {name!r}. Use a bundle id, or check installed names with "
-            "`ios apps --list`."
+        # We just walked every installed name; hand back the near misses instead
+        # of making the agent spend another call to list them. BUNDLE_IDS is in
+        # the pool too: `ios apps --list` omits system apps, so without it a typo
+        # for Messages or Settings would get no suggestion at all.
+        pool = list(dict.fromkeys(installed + list(BUNDLE_IDS)))
+        near = difflib.get_close_matches(name, pool, n=3, cutoff=0.6)
+        if not near:
+            near = difflib.get_close_matches(key, pool, n=3, cutoff=0.6)
+        if not near:
+            near = [n for n in pool if key in n.lower()][:3]
+        hint = (
+            f" Did you mean: {', '.join(repr(n) for n in near)}?"
+            if near
+            else " Check installed names with `ios apps --list`."
         )
+        raise WDAError(f"Unknown app {name!r}.{hint}")
     _invalidate_tree()
     client().app_launch(bundle)
 
@@ -673,9 +805,19 @@ def send_message(contact: str, text: str) -> dict:
                 "Call ocr() to check."
             )
         field = max(fields, key=lambda e: e["y"])  # compose bar sits at the bottom
-        tap(field["x"], field["y"])
-        time.sleep(0.8)
-        type_text(text)
+        # Clear first: /wda/keys APPENDS, and iOS keeps an unsent draft per
+        # thread. Without this the phone sends draft+text while the human has
+        # already approved a card showing only `text`.
+        landed = set_field_text(field, text)
+        if landed.strip() != text.strip():
+            # The human approved `text`. Anything else in the bar is unapproved
+            # content, so it must not reach the wire.
+            _log_action(contact, title, text, sent=False)
+            raise WDAError(
+                "Refused: the compose field holds text that was not approved. "
+                f"Asked to send {text!r} but the field reads {landed!r}. "
+                "Clear the conversation's draft on the phone and try again."
+            )
         time.sleep(0.5)
         sends = [
             e
@@ -687,8 +829,8 @@ def send_message(contact: str, text: str) -> dict:
         _log_action(contact, title, text, sent=False)  # attempt, before the tap
         tap(sends[0]["x"], sends[0]["y"])
         time.sleep(1.5)
-        _log_action(contact, title, text, sent=True)  # confirmed
-    return {"contact": contact, "resolved_title": title, "text": text, "sent": True}
+        _log_action(contact, title, landed, sent=True)  # confirmed
+    return {"contact": contact, "resolved_title": title, "text": landed, "sent": True}
 
 
 def wait_for_text(
@@ -712,15 +854,24 @@ def wait_for_text(
 
 
 def wait_stable(timeout: float = 10.0, interval: float = 0.5) -> bool:
-    """Wait until two consecutive screenshots are identical. True if stable."""
+    """Wait until two consecutive screenshots are identical. True if stable.
+
+    The first comparison happens IMMEDIATELY. Callers reach here straight after
+    a gesture that WDA already settled server-side (~0.7s per swipe, measured —
+    see config.WDA_ANIM_COOLOFF), so the screen is usually still by the time we
+    are asked. Sleeping before the first compare made that common case cost a
+    guaranteed extra `interval`, up to 9 times per scroll_until_found and 17
+    times per find_on_home_screen. Two screenshots are a WDA round trip apart
+    (~50-100ms), which is far enough to differ mid-animation.
+    """
     prev = capture.screenshot_png()
     deadline = time.time() + timeout
     while time.time() < deadline:
-        time.sleep(interval)
         cur = capture.screenshot_png()
         if cur == prev:
             return True
         prev = cur
+        time.sleep(interval)
     return False
 
 
@@ -824,6 +975,106 @@ def unlock(c: WDAClient | None = None) -> None:
         )
 
 
+# ---- screen compaction -------------------------------------------------
+# Lives here, not at the MCP boundary, so a CLI-piped script gets the same
+# ~64% smaller read the MCP tools get. ocr()/find_text() still return the
+# raw list: viewer.py, send_message and the tests need the full tree.
+# Wrappers around the whole screen; never a target, never state. `Other` is
+# deliberately NOT here: the Home Screen search affordance is an `Other`, so
+# dropping the type loses a real tap target. Redundant `Other` containers are
+# handled by enclosure and duplicate collapsing below instead.
+_NOISE_TYPES = frozenset({"Application", "Window"})
+# Types worth keeping when the same text lands twice in the same place.
+_ACTIONABLE = frozenset(
+    {"Button", "Cell", "Switch", "SearchField", "TextField", "Icon"}
+)
+# Types that are only ever labels. Anything else may be independently tappable
+# — a Switch inside its row is the case that makes a blanket rule unsafe — so
+# only these are eligible to be dropped as duplicates of an enclosing element.
+_LABEL_TYPES = frozenset({"StaticText", "Image"})
+
+
+def _encloses(outer: dict, inner: dict) -> bool:
+    """True when outer's rect covers inner's and outer is the larger of the two."""
+    o, i = outer.get("rect"), inner.get("rect")
+    if not o or not i:
+        return False
+    return (
+        o["x"] <= i["x"]
+        and o["y"] <= i["y"]
+        and o["x"] + o["width"] >= i["x"] + i["width"]
+        and o["y"] + o["height"] >= i["y"] + i["height"]
+        and o["width"] * o["height"] > i["width"] * i["height"]
+    )
+
+
+def _overlaps(a: dict, b: dict) -> bool:
+    """True when the two rects intersect. Rows without geometry never match."""
+    ra, rb = a.get("rect"), b.get("rect")
+    if not ra or not rb:
+        return False
+    return not (
+        ra["x"] + ra["width"] <= rb["x"]
+        or rb["x"] + rb["width"] <= ra["x"]
+        or ra["y"] + ra["height"] <= rb["y"]
+        or rb["y"] + rb["height"] <= ra["y"]
+    )
+
+
+def _rank(el: dict) -> tuple[bool, float]:
+    """Tap-worthiness: an actionable type first, then the larger target."""
+    r = el.get("rect") or {}
+    return (el.get("type") in _ACTIONABLE, r.get("width", 0) * r.get("height", 0))
+
+
+def compact(rows: list[dict], limit: int | None = 60) -> list[dict]:
+    """Strip a screen read down to what the model can act on.
+
+    Two thirds of a raw read is noise: containers, and a label repeating the
+    text of the control that encloses it. Dropping the label is also the safer
+    target — tapping the inner StaticText instead of its Button is the classic
+    mis-tap. rect goes too; x/y is what a tap needs.
+    """
+    keep = [r for r in rows if r.get("type") not in _NOISE_TYPES]
+    survivors = [
+        r
+        for r in keep
+        if not (
+            r.get("type") in _LABEL_TYPES
+            and any(
+                o is not r and r["text"] in o["text"] and _encloses(o, r) for o in keep
+            )
+        )
+    ]
+    # Same text, same place, twice over (a row and its identical twin, repeated
+    # scroll-bar chrome): keep whichever is worth tapping, in original order.
+    chosen: list[dict] = []
+    for r in survivors:
+        twin = next(
+            (c for c in chosen if c["text"] == r["text"] and _overlaps(c, r)), None
+        )
+        if twin is None:
+            chosen.append(r)
+        elif _rank(r) > _rank(twin):
+            chosen[chosen.index(twin)] = r
+    order = {id(r): i for i, r in enumerate(survivors)}
+    chosen.sort(key=lambda r: order[id(r)])
+    out = [{k: v for k, v in r.items() if k != "rect"} for r in chosen]
+    if limit is not None and len(out) > limit:
+        dropped = len(out) - limit
+        out = out[:limit]
+        # Say so out loud: a silently truncated screen reads as a complete one.
+        out.append(
+            {
+                "text": f"[{dropped} more rows not shown; narrow with find_text()]",
+                "type": "Truncation",
+                "x": 0,
+                "y": 0,
+            }
+        )
+    return out
+
+
 __all__ = [
     "client",
     "screenshot",
@@ -840,6 +1091,8 @@ __all__ = [
     "scroll_until_found",
     "find_on_home_screen",
     "type_text",
+    "set_field_text",
+    "compact",
     "press_home",
     "open_app",
     "current_app",

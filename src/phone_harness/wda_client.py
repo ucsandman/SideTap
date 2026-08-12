@@ -135,6 +135,11 @@ class WDAClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session_id: str | None = None
+        # One Session, so the TCP connection to WDA is kept alive across calls.
+        # requests.request() builds and closes a throwaway Session per call, and
+        # EVERY helper funnels through _request, so a per-call connect is paid on
+        # every tap, read and screenshot.
+        self._http = requests.Session()
 
     # ---- plumbing ----------------------------------------------------------
 
@@ -149,7 +154,7 @@ class WDAClient:
             )
         url = self.base_url + path
         try:
-            resp = requests.request(method, url, json=payload, timeout=self.timeout)
+            resp = self._http.request(method, url, json=payload, timeout=self.timeout)
         except requests.Timeout as exc:
             raise WDAError(
                 f"{method} {path}: WebDriverAgent did not answer within "
@@ -273,6 +278,32 @@ class WDAClient:
 
     def active_app(self) -> dict:
         return self._session_request("GET", "/wda/activeAppInfo")
+
+    # ---- focused element -----------------------------------------------------
+    # Used only to clear and read back a text field before typing into it. NOT a
+    # perception path: /elements queries measured slower than /source on device,
+    # so screen reading stays on source(). This is one targeted lookup on a field
+    # the caller has already tapped.
+
+    def active_element(self) -> str:
+        """Element id of the focused field. Tap the field first."""
+        value = self._session_request("GET", "/element/active")
+        if isinstance(value, dict):
+            eid = value.get("ELEMENT") or value.get(
+                "element-6066-11e4-a52e-4f735466cecf"
+            )
+            if eid:
+                return str(eid)
+        raise WDAError("No focused element. Tap a text field first.")
+
+    def element_clear(self, element_id: str) -> None:
+        """Empty a text field outright, whatever length its contents."""
+        self._session_request("POST", f"/element/{element_id}/clear", {})
+
+    def element_value(self, element_id: str) -> str:
+        """The field's REAL typed contents, not its placeholder label."""
+        value = self._session_request("GET", f"/element/{element_id}/attribute/value")
+        return "" if value is None else str(value)
 
     def battery(self) -> dict:
         """Raw WDA battery info: {level: 0..1, state: int} (state 2 = charging)."""

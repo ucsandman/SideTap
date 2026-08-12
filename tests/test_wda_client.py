@@ -227,7 +227,9 @@ def test_slow_server_raises_wda_error_not_timeout(monkeypatch):
     def slow(*_args, **_kwargs):
         raise requests.exceptions.ReadTimeout("read timed out")
 
-    monkeypatch.setattr(requests, "request", slow)
+    # The client owns a persistent Session, so patch the method it actually
+    # calls; patching the module-level requests.request no longer intercepts it.
+    monkeypatch.setattr(requests.Session, "request", slow)
     client = WDAClient(base_url="http://127.0.0.1:1", timeout=1)
     with pytest.raises(WDAError, match="did not answer"):
         client.status()
@@ -388,3 +390,28 @@ def test_activity_feed_stays_bounded(wda, tmp_path, monkeypatch):
         wda.tap(1, 2)
     assert len(_feed_lines(tmp_path)) <= 6  # 5 kept + at most 1 fresh append
     assert activity_file().stat().st_size < 1000
+
+
+def test_client_does_not_build_a_session_per_request(wda, monkeypatch):
+    # requests.request() builds a throwaway Session (and connection pool) per
+    # call, so no TCP keep-alive to WDA ever survives. Every helper funnels
+    # through _request, so this is paid on every tap, read and screenshot.
+    import requests
+
+    built = []
+    real_init = requests.Session.__init__
+
+    def counting_init(self, *a, **kw):
+        built.append(self)
+        return real_init(self, *a, **kw)
+
+    monkeypatch.setattr(requests.Session, "__init__", counting_init)
+    client = WDAClient(base_url=wda.base_url, timeout=5)
+    client.status()
+    client.status()
+    client.status()
+
+    assert len(built) == 1, (
+        f"3 calls built {len(built)} Sessions; one per call means the "
+        "connection to WDA is never reused"
+    )

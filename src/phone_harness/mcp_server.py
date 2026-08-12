@@ -56,87 +56,8 @@ _READ_NOTE = (
 )
 
 
-# Wrappers around the whole screen; never a target, never state. `Other` is
-# deliberately NOT here: the Home Screen search affordance is an `Other`, so
-# dropping the type loses a real tap target. Redundant `Other` containers are
-# handled by enclosure and duplicate collapsing below instead.
-_NOISE_TYPES = frozenset({"Application", "Window"})
-# Types worth keeping when the same text lands twice in the same place.
-_ACTIONABLE = frozenset(
-    {"Button", "Cell", "Switch", "SearchField", "TextField", "Icon"}
-)
-# Types that are only ever labels. Anything else may be independently tappable
-# — a Switch inside its row is the case that makes a blanket rule unsafe — so
-# only these are eligible to be dropped as duplicates of an enclosing element.
-_LABEL_TYPES = frozenset({"StaticText", "Image"})
-
-
-def _encloses(outer: dict, inner: dict) -> bool:
-    """True when outer's rect covers inner's and outer is the larger of the two."""
-    o, i = outer.get("rect"), inner.get("rect")
-    if not o or not i:
-        return False
-    return (
-        o["x"] <= i["x"]
-        and o["y"] <= i["y"]
-        and o["x"] + o["width"] >= i["x"] + i["width"]
-        and o["y"] + o["height"] >= i["y"] + i["height"]
-        and o["width"] * o["height"] > i["width"] * i["height"]
-    )
-
-
-def _overlaps(a: dict, b: dict) -> bool:
-    """True when the two rects intersect. Rows without geometry never match."""
-    ra, rb = a.get("rect"), b.get("rect")
-    if not ra or not rb:
-        return False
-    return not (
-        ra["x"] + ra["width"] <= rb["x"]
-        or rb["x"] + rb["width"] <= ra["x"]
-        or ra["y"] + ra["height"] <= rb["y"]
-        or rb["y"] + rb["height"] <= ra["y"]
-    )
-
-
-def _rank(el: dict) -> tuple[bool, float]:
-    """Tap-worthiness: an actionable type first, then the larger target."""
-    r = el.get("rect") or {}
-    return (el.get("type") in _ACTIONABLE, r.get("width", 0) * r.get("height", 0))
-
-
-def _compact(rows: list[dict]) -> list[dict]:
-    """Strip a screen read down to what the model can act on.
-
-    Two thirds of a raw read is noise: containers, and a label repeating the
-    text of the control that encloses it. Dropping the label is also the safer
-    target — tapping the inner StaticText instead of its Button is the classic
-    mis-tap. rect goes too; x/y is what a tap needs.
-    """
-    keep = [r for r in rows if r.get("type") not in _NOISE_TYPES]
-    survivors = [
-        r
-        for r in keep
-        if not (
-            r.get("type") in _LABEL_TYPES
-            and any(
-                o is not r and r["text"] in o["text"] and _encloses(o, r) for o in keep
-            )
-        )
-    ]
-    # Same text, same place, twice over (a row and its identical twin, repeated
-    # scroll-bar chrome): keep whichever is worth tapping, in original order.
-    chosen: list[dict] = []
-    for r in survivors:
-        twin = next(
-            (c for c in chosen if c["text"] == r["text"] and _overlaps(c, r)), None
-        )
-        if twin is None:
-            chosen.append(r)
-        elif _rank(r) > _rank(twin):
-            chosen[chosen.index(twin)] = r
-    order = {id(r): i for i, r in enumerate(survivors)}
-    chosen.sort(key=lambda r: order[id(r)])
-    return [{k: v for k, v in r.items() if k != "rect"} for r in chosen]
+# Screen compaction moved to helpers so CLI scripts share it (helpers.compact).
+from .helpers import compact as _compact  # noqa: E402
 
 
 def ocr(full: bool = False) -> dict:

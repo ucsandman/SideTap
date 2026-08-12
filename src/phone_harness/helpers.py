@@ -387,6 +387,54 @@ def press_home() -> None:
     client().home()
 
 
+_PAGE_VALUE = re.compile(r"Page (\d+) of (\d+)")
+
+
+def _find_page_indicator(node) -> dict | None:
+    if isinstance(node, dict):
+        if node.get("type") == "PageIndicator":
+            return node
+        for child in node.get("children") or []:
+            hit = _find_page_indicator(child)
+            if hit is not None:
+                return hit
+    elif isinstance(node, list):
+        for child in node:
+            hit = _find_page_indicator(child)
+            if hit is not None:
+                return hit
+    return None
+
+
+def current_page() -> dict | None:
+    """Where the Home Screen is: {"index", "total", "zone"}, or None.
+
+    Reads the PageIndicator's `value` ("Page 4 of 8"). Index 0 is Today View,
+    1..total are real Home Screen pages, and total+1 is the App Library — iOS
+    itself numbers Today View 0.
+
+    Returns None when no PageIndicator is on screen (an app is open) or when the
+    value does not parse: an iOS wording change must fail loudly, not guess.
+
+    NOTE: ocr() cannot see this. collect_texts prefers `label`, which is null on
+    this element, so it falls back to `name` ("Page control") and drops `value`.
+    """
+    node = _find_page_indicator(ui_tree())
+    if node is None:
+        return None
+    match = _PAGE_VALUE.search(str(node.get("value") or ""))
+    if not match:
+        return None
+    index, total = int(match.group(1)), int(match.group(2))
+    if index <= 0:
+        zone = "today"
+    elif index > total:
+        zone = "app_library"
+    else:
+        zone = "home"
+    return {"index": index, "total": total, "zone": zone}
+
+
 BUNDLE_IDS = {
     "settings": "com.apple.Preferences",
     "safari": "com.apple.mobilesafari",
@@ -1094,6 +1142,7 @@ __all__ = [
     "set_field_text",
     "compact",
     "press_home",
+    "current_page",
     "open_app",
     "current_app",
     "wait_for_app",

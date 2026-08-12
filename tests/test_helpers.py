@@ -1220,3 +1220,63 @@ def test_open_app_suggests_system_apps_that_ios_apps_list_omits(monkeypatch):
     with pytest.raises(WDAError) as exc:
         helpers.open_app("Mesages")
     assert "messages" in str(exc.value).lower(), str(exc.value)
+
+
+# ---- Home Screen position ---------------------------------------------------
+
+
+def _tree_with_page(value):
+    """Minimal tree carrying a PageIndicator, shaped like the real one."""
+    node = {"type": "PageIndicator", "name": "Page control", "children": []}
+    if value is not None:
+        node["value"] = value
+    return {
+        "type": "Application",
+        "children": [{"type": "Other", "children": [node]}],
+    }
+
+
+class PageClient:
+    """Serves one fixed tree; enough for read-only page tests."""
+
+    def __init__(self, tree):
+        self.tree = tree
+
+    def source(self):
+        return self.tree
+
+
+def _use_tree(monkeypatch, tree):
+    helpers._invalidate_tree()
+    monkeypatch.setattr(helpers, "_client", PageClient(tree))
+
+
+def test_current_page_reads_home_page(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page("Page 4 of 8"))
+    assert helpers.current_page() == {"index": 4, "total": 8, "zone": "home"}
+
+
+def test_current_page_calls_today_view_page_zero(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page("Page 0 of 8"))
+    assert helpers.current_page()["zone"] == "today"
+
+
+def test_current_page_calls_app_library_past_the_end(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page("Page 9 of 8"))
+    assert helpers.current_page()["zone"] == "app_library"
+
+
+def test_current_page_none_when_an_app_is_open(monkeypatch):
+    _use_tree(monkeypatch, {"type": "Application", "children": []})
+    assert helpers.current_page() is None
+
+
+def test_current_page_none_on_unparseable_value(monkeypatch):
+    # An iOS update could change the string. Fail loudly, never guess.
+    _use_tree(monkeypatch, _tree_with_page("Seite 4 von 8"))
+    assert helpers.current_page() is None
+
+
+def test_current_page_none_when_value_missing(monkeypatch):
+    _use_tree(monkeypatch, _tree_with_page(None))
+    assert helpers.current_page() is None

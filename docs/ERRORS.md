@@ -5,6 +5,35 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-13 — Error 103 while the signature check was green: a bare Sideloadly install replaced the fixed one
+
+**Symptom.** WDA died mid-week with `Failed to load the test bundle (Error
+code: 103, XCTestErrorDomain)` on every launch, while the doctor showed ten
+green checks — including "input signature good for 2 more day(s)". Working at
+16:44, dead by 19:01, same day.
+
+**Root cause.** Sideloadly ran on the desktop that afternoon (sessions.json
+17:12, installations.db 19:00 — one minute before the first 103) and its Start
+click did a bare install of WDA, which leaves the nested `.xctest` unsigned.
+The green signature check was telling the truth about the wrong thing: it
+parses the LOCAL `.state/profile.mobileprovision`, not what is installed on
+the phone, so a mid-week Sideloadly click reintroduces 103 with every local
+check green. A 17:12 `fix-input` attempt had also stalled before its signing
+step (wda.p12 rebuilt, signed IPA untouched) — likely a capture window that
+timed out before the 19:00 Start click.
+
+**Fix.** `phone-harness fix-input .state/profile.mobileprovision` run to
+completion with the phone unlocked. Re-signed the nested `.xctest` with the
+still-valid captured profile, installed, WDA answered.
+
+**Lesson.** Error 103 + green signature check = the phone-side install is
+bare, not the profile expired. The timestamps that told the story:
+`.state/wda_session` (last time WDA answered), Sideloadly's
+`installations.db` (when a bare install landed), `wda/WebDriverAgent-signed.ipa`
+(whether fix-input ever reached its signing step).
+
+---
+
 ## 2026-08-12 — WDA calls a message bubble "the focused element", so sends refused themselves
 
 **Symptom.** The viewer's Text someone walked the whole flow correctly — opened

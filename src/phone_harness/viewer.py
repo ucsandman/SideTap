@@ -390,8 +390,16 @@ class Handler(BaseHTTPRequestHandler):
                 # Never cached: the page reads it to tell "the link is still
                 # coming up" apart from "the link is broken".
                 starting = admin.bringing_up()
+                # First run = WDA has never published a session on this
+                # machine; the page swaps its checks auto-open for the guided
+                # setup wizard until it has, and shows the Setup guide button.
+                fresh = {
+                    "starting": starting,
+                    "setup_done": (config.STATE_DIR / "wda_session").exists(),
+                    "app_dir": str(config.REPO_ROOT),
+                }
                 if _ACTION_LOCK.locked() and _LAST_STATUS is not None:
-                    self._json({**_LAST_STATUS, "starting": starting})
+                    self._json({**_LAST_STATUS, **fresh})
                     return
                 try:
                     w, h = self.client.window_size()
@@ -403,7 +411,7 @@ class Handler(BaseHTTPRequestHandler):
                         "lan_exposed": _LAN_STATE["exposed"],
                         "boot": _BOOT_ID,
                     }
-                    self._json({**_LAST_STATUS, "starting": starting})
+                    self._json({**_LAST_STATUS, **fresh})
                 except WDAError:
                     pw, ph = _png_size(capture.screenshot_png(max_age=0.4))
                     self._json(
@@ -413,7 +421,7 @@ class Handler(BaseHTTPRequestHandler):
                             "mjpeg": None,
                             "lan_exposed": _LAN_STATE["exposed"],
                             "boot": _BOOT_ID,
-                            "starting": starting,
+                            **fresh,
                         }
                     )
             elif path == "/api/phone":

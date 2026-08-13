@@ -2,6 +2,11 @@
 
 Do these steps once. After this, `python launch.py` is all you need.
 
+> **Shortcut:** `irm https://sidetap.io/install.ps1 | iex` in PowerShell does the
+> PC half of this page for you (Python, go-ios, the app, the Apple Devices app,
+> a Desktop shortcut) and the viewer's setup guide walks you through the phone
+> half. This page is the manual path and the reference when a check stays red.
+
 ## Step 1 — iPhone: enable Developer Mode
 
 The Developer Mode menu is **hidden by default**. Apple only shows it after the

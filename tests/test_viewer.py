@@ -981,3 +981,26 @@ def test_stale_viewer_kill_spares_the_phone_link(tmp_path, monkeypatch):
     assert (tmp_path / "viewer.pid").read_text(encoding="utf-8").strip() == str(
         os.getpid()
     )
+
+
+def test_setup_wizard_waits_on_real_check_names():
+    # Each wizard step completes when its named doctor checks pass. A renamed
+    # check in admin.CHECKS would strand that step forever (the wizard shows
+    # "▶" on it for eternity), so the names are pinned to each other here.
+    import re
+
+    from phone_harness import admin
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    block = re.search(r"const SETUP_STEPS = \[(.*?)\n\];", html, re.S)
+    assert block, "SETUP_STEPS gone from viewer.html — was the setup wizard removed?"
+    step_check_lists = re.findall(r"\[\s*'[^']*',\s*\[([^\]]*)\]", block.group(1))
+    assert len(step_check_lists) >= 4, "SETUP_STEPS shape changed; update this scan"
+    known = {name for name, _ in admin.CHECKS}
+    for raw in step_check_lists:
+        for check in re.findall(r"'([^']+)'", raw):
+            assert check in known, f"wizard waits on unknown check {check!r}"
+    # The wizard is one of the overlay's bodies, and first-run failures open IT
+    # rather than the wall-of-red checks panel.
+    assert "'setup'" in html.split("const OV_BODIES")[1].split(";")[0]
+    assert "if (setupNeeded) { renderSetup(); openOverlay('setup'" in html

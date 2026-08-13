@@ -293,3 +293,31 @@ it — ask what is *covering* the edge, not whether the swipe was big enough. A
 tree read shows the keyboard's buttons but not that they occupy the region you
 are aiming at; only the picture makes the occlusion obvious. Codified as two
 rows in `skills/phone-gotchas/SKILL.md` (and the `~/.claude/skills/` copy).
+
+## 2026-08-13 — bash double quotes ate the `$env:` safety overrides and launched a second SideTap for real
+
+Testing `site/install.ps1` (the sidetap.io one-line installer) from the Bash
+tool: the command wrapped `powershell -Command "..."` in DOUBLE quotes, so bash
+interpolated `$env:SIDETAP_INSTALL_ROOT` and `$env:SIDETAP_NO_LAUNCH` to empty
+strings before PowerShell ever saw them. The script then did exactly what it
+ships to do — installed to the real `%LOCALAPPDATA%\SideTap` and launched it.
+The rogue viewer double-bound :8770 next to the live one (Windows allows the
+second bind; Python's http.server sets SO_REUSEADDR), so clicks could land on
+either instance.
+
+**Recovery that worked.** Its own `.state` named everything it owned (only
+`viewer.pid` — its `up()` never got a tunnel), so: kill that pid (PID-based,
+never by name), delete the directory it created, re-run the real repo's
+`scripts/install_shortcut.ps1` to point the shortcuts back.
+
+**Lessons.**
+1. Bash→PowerShell env vars: single-quote the whole `-Command` string, or `$env:`
+   is silently gone. An eaten override does not error — the run just proceeds
+   without its safety rails.
+2. Before running anything whose failure mode is "does the real thing", verify
+   the override reached the child: `powershell -Command '...; Write-Output
+   "override=$env:X"'` costs one second. (L1 again: a guard never observed
+   working has been written, not verified.)
+3. A second viewer on :8770 does not fail loudly — SO_REUSEADDR means both
+   listen and traffic splits between them. `netstat -ano | findstr :8770`
+   showing TWO pids is the tell.

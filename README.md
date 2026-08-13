@@ -51,14 +51,22 @@ Ask me before anything that touches my Apple ID, my phone's settings, or sends a
 - **Native MCP tools.** `claude mcp add sidetap -- phone-harness mcp` gives any Claude Code or Claude Desktop session the whole helper API as typed tool calls — no Python piping.
 - **Agent skills in the box.** Copy [`skills/phone`](skills/phone) and [`skills/phone-gotchas`](skills/phone-gotchas) into `~/.claude/skills/` and any Claude Code session picks up the helper API *and* the traps that otherwise cost an hour of debugging: Home Screen icons only drag in jiggle mode (and fail silently outside it), coordinates are points and not pixels, the page editor is too heavy for the UI-tree read, and what the harness genuinely cannot do.
 - **Live activity feed.** Every tap, swipe, and keystroke count any agent sends shows up in the viewer as it happens, so you always know what just drove the screen.
-- **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires. The viewer runs the same checks and re-runs them by itself while any of them fails, so a link that is still coming up settles to green with nothing to click.
+- **A doctor that names the fix.** `phone-harness doctor` walks the whole chain and every FAIL tells you the exact command or click that repairs it, including a countdown before the 7-day free-ID signature expires. The viewer runs the same checks and re-runs them by itself while any of them fails, so a link that is still coming up settles to green with nothing to click. On a first run it opens a guided setup instead of a wall of red: five steps, each turning green as its checks pass, with the exact next action spelled out.
 - **Free Apple ID signing that actually works.** Sideloadly leaves the nested `.xctest` bundle unsigned, so the driver never launches. `phone-harness fix-input` repairs that locally: no Apple password scripting, no paid developer account. See [How the signing fix works](#how-the-signing-fix-works).
 - **Kill switch.** A red STOP button in the viewer freezes every agent action while you keep watching the screen.
 - **Prompt injection gate.** Anyone who can text you can put words in your agent's input. So once the agent has read your screen or your messages, a send stops and waits for you to approve the exact text in the viewer. Running out of time refuses it. Set it to **Always**, **Flagged** (only asks when something looks off), or **Off** with one click in the viewer. The text you approve is also the text that sends: the compose bar is read back before the send and a mismatch is refused, so a draft left in the thread cannot ride along with an approved message. It bounds what an injected instruction can send, not what it can tap, and [Security](#security-and-responsible-use) says exactly where that line is.
 
 ## Quick start
 
-Needs Windows 10/11, Python 3.10+, Node.js (go-ios installs through npm), and an iPhone on iOS 17+.
+Needs Windows 10/11 and an iPhone on iOS 17+. One line in PowerShell installs the PC side — Python and go-ios included, no Node.js needed:
+
+```powershell
+irm https://sidetap.io/install.ps1 | iex
+```
+
+It puts the app in `%LOCALAPPDATA%\SideTap`, adds a **SideTap** shortcut to your Desktop and Start Menu, and starts the viewer, which walks you through the phone side (Developer Mode, WebDriverAgent). Re-running it later updates SideTap and keeps your `.env` and state. Everything it does is plain to read: [site/install.ps1](site/install.ps1).
+
+Working from a clone instead? (Python 3.10+, Node.js for go-ios):
 
 ```bat
 git clone https://github.com/ucsandman/SideTap

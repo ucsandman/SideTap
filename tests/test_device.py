@@ -25,9 +25,22 @@ def test_ios_path_falls_back_to_npm_global_dir(monkeypatch, tmp_path):
     assert device.ios_path() == str(exe)
 
 
+def test_ios_path_falls_back_to_installer_bin_dir(monkeypatch, tmp_path):
+    # The sidetap.io one-line installer puts ios.exe in %LOCALAPPDATA%\SideTap\bin
+    # (no Node/npm on the machine at all), so PATH lookup and the npm dir both miss.
+    monkeypatch.setattr(device.shutil, "which", lambda _: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    exe = tmp_path / "SideTap" / "bin" / "ios.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert device.ios_path() == str(exe)
+
+
 def test_ios_path_none_when_missing_everywhere(monkeypatch, tmp_path):
     monkeypatch.setattr(device.shutil, "which", lambda _: None)
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert device.ios_path() is None
 
 

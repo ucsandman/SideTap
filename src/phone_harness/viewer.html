@@ -256,6 +256,13 @@
   .fstep.done { color:var(--ok); }
   .fstep.err { color:var(--warn); }
 
+  /* ---- first-run setup wizard (same step look as fix-input) ------------ */
+  #setup .fstep { font-size:13.5px; }
+  #setup .shelp { margin:2px 0 var(--s2) 20px; color:var(--dim); font-size:12.5px; line-height:1.55; }
+  #setup .shelp a { color:var(--accent); }
+  #setup .shelp code { font-family:var(--mono); background:var(--panel); padding:1px 4px; border-radius:3px; }
+  #setup .sdone { color:var(--ok); margin-bottom:var(--s2); }
+
   /* ---- live activity feed / recent sends (dashboard columns) ---------- */
   #col-agent #activity, #col-agent #sent { flex:1 1 0; min-height:0; overflow:hidden; display:flex; flex-direction:column; margin-top:0; }
   #col-agent #activity { flex-grow:1.6; }   /* 10 rows vs Recent sends' 6 */
@@ -404,6 +411,7 @@
         <button id="btn-refresh">Refresh checks</button>
         <button id="btn-up" hidden>Restart link</button>
         <button id="btn-fix" hidden>Fix input</button>
+        <button id="btn-setup" hidden>📱 Setup guide</button>
         <button id="btn-lock-ports" hidden>Lock ports</button>
       </div>
       <div id="paste-row" hidden>
@@ -525,6 +533,7 @@
           </div>
           <div id="fix-steps"></div>
         </div>
+        <div id="setup" hidden></div>
         <div id="full-activity" hidden></div>
         <div id="full-apps" hidden></div>
         <div id="full-sends" hidden></div>
@@ -643,6 +652,11 @@ async function loadStatus() {
         ? 'Click to tap · drag to swipe · type to send keys.'
         : 'Live view is on. Touch input needs the signed driver (see checks →).';
     }
+    // First run (WDA has never published a session): offer the setup wizard.
+    setupNeeded = s.setup_done === false;
+    setupAppDir = s.app_dir || '';
+    document.getElementById('btn-setup').hidden = !setupNeeded;
+    if (ovOpen === 'setup') renderSetup();
     // Show the fix affordance only while input is off and no job is running.
     if (!fixRunning) {
       document.getElementById('btn-fix').hidden = inputEnabled;
@@ -675,7 +689,7 @@ function escapeHtml(s) {
 
 // ---- overlay controller: one shell, five hidden bodies, exactly one visible.
 let ovOpen = null;
-const OV_BODIES = ['doctor','fix-panel','full-activity','full-apps','full-sends','full-console','full-approval'];
+const OV_BODIES = ['doctor','fix-panel','setup','full-activity','full-apps','full-sends','full-console','full-approval'];
 let ovReturnFocus = null;
 function openOverlay(id, title) {
   OV_BODIES.forEach(b => document.getElementById(b).hidden = b !== id);
@@ -1168,6 +1182,8 @@ function scheduleDoctor(failing) {
 let linkStarting = true;
 let sawIdleFail = false;
 let checksAutoOpened = false;
+let setupNeeded = false;
+let setupAppDir = '';
 async function loadDoctor() {
   const el = document.getElementById('doctor');
   el.innerHTML = '<div class="dim">Running checks…</div>';
@@ -1227,6 +1243,7 @@ async function loadDoctor() {
     document.getElementById('sig-banner').hidden = !sigBad;
     if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
     lastDoctor = results;
+    if (ovOpen === 'setup') renderSetup();   // live: steps go green as checks pass
     const fails = failing.length;
     document.getElementById('checks-dots').innerHTML = results.map(r =>
       '<span class="dot' + (r.ok ? '' : (linkStarting ? ' wait' : ' bad')) + '"></span>').join('');
@@ -1243,7 +1260,10 @@ async function loadDoctor() {
     if (idleFail && sawIdleFail && !checksAutoOpened && !fixRunning
         && document.getElementById('ov').hidden) {
       checksAutoOpened = true;
-      openOverlay('doctor', 'Checks');
+      // A first run fails these checks BECAUSE setup is not done yet: the
+      // guided wizard is the useful thing to show, not a wall of red.
+      if (setupNeeded) { renderSetup(); openOverlay('setup', '📱 Set up your iPhone'); }
+      else openOverlay('doctor', 'Checks');
     }
     sawIdleFail = idleFail;
     degradeChecksToFit();  // re-render may have restored fix text; re-fit
@@ -1348,6 +1368,61 @@ async function startFixInput() {
 }
 document.getElementById('btn-fix').onclick = startFixInput;
 document.getElementById('btn-sig-fix').onclick = startFixInput;
+
+// ---- first-run setup wizard -------------------------------------------------
+// The human-only Apple steps, driven by the same doctor results as the checks
+// panel: each step is "done" when its named checks pass. Auto-opens instead of
+// Checks until WDA has published a session once (setup_done on /api/status).
+// Only the FIRST unfinished step shows its instructions: later steps cannot be
+// acted on yet, and a first-run user needs one next action, not five.
+const SETUP_STEPS = [
+  ['PC tools (go-ios)', ['go-ios installed'],
+   'The installer normally does this. Still red? Re-run the installer from ' +
+   'sidetap.io, or <code>npm install -g go-ios</code> in a terminal.'],
+  ['iPhone plugged in + trusted', ['iPhone on USB'],
+   'Use a USB cable. Unlock the phone and tap <b>Trust</b> when it asks. No prompt? ' +
+   'Install the free <a href="https://apps.microsoft.com/detail/9np83lwlpz9k" target="_blank" rel="noopener">Apple Devices app</a>, then replug.'],
+  ['Developer Mode on', ['tunnel', 'developer image (DDI)'],
+   'On the iPhone: Settings → Privacy &amp; Security → Developer Mode → On. The phone restarts. ' +
+   'Menu not there? Run <code>ios devmode reveal</code> in a terminal ' +
+   '<button class="copy-btn" data-cmd="ios devmode reveal">⧉ copy</button> and reopen Settings.'],
+  ['WebDriverAgent on the phone', ['WDA installed (input)'],
+   'Install <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a>. Download the newest ' +
+   '<code>WebDriverAgentRunner-Runner-*.ipa</code> from ' +
+   '<a href="https://github.com/appium/WebDriverAgent/releases" target="_blank" rel="noopener">WDA releases</a> ' +
+   'and save it as <code>WebDriverAgent.ipa</code> in <code>%WDA_DIR%</code>. ' +
+   'In Sideloadly: pick that ipa, pick your iPhone, sign in with your free Apple ID, Start. ' +
+   'Then on the phone: Settings → General → VPN &amp; Device Management → trust your profile.'],
+  ['Touch input signed', ['WDA responding (input)', 'input signature (7-day)'],
+   'Click <button id="setup-fix">🔧 Fix input</button> and press Start in Sideloadly when it asks. ' +
+   'A free Apple ID means repeating this weekly — SideTap reminds you before it expires.'],
+];
+function renderSetup() {
+  const el = document.getElementById('setup');
+  const byName = {};
+  (lastDoctor || []).forEach(r => { byName[r.name] = r.ok; });
+  const stepOk = SETUP_STEPS.map(([, names]) => names.every(n => byName[n] === true));
+  const cur = stepOk.indexOf(false);   // -1: everything green
+  const wdaDir = setupAppDir ? setupAppDir + '\\wda' : 'the SideTap app folder, subfolder wda,';
+  const head = !lastDoctor
+    ? '<div class="dim">Running checks…</div>'
+    : (cur < 0 ? '<div class="sdone">✓ All set. Close this and click the phone screen — it taps.</div>' : '');
+  el.innerHTML = head + SETUP_STEPS.map(([label, , help], i) => {
+    const mark = stepOk[i] ? '✓' : (i === cur ? '▶' : '·');
+    const cls = 'fstep' + (stepOk[i] ? ' done' : (i === cur ? ' on' : ''));
+    const showHelp = lastDoctor && i === cur;
+    return `<div class="${cls}"><span class="m">${mark}</span><span>${i + 1}. ${label}</span></div>` +
+      (showHelp ? `<div class="shelp">${help.replace('%WDA_DIR%', escapeHtml(wdaDir))}</div>` : '');
+  }).join('');
+  el.querySelectorAll('.copy-btn[data-cmd]').forEach(b => b.onclick = async () => {
+    await navigator.clipboard.writeText(b.dataset.cmd);
+    b.textContent = '✓ copied';
+    setTimeout(() => { b.textContent = '⧉ copy'; }, 1500);
+  });
+  const fix = document.getElementById('setup-fix');
+  if (fix) fix.onclick = startFixInput;
+}
+document.getElementById('btn-setup').onclick = () => { renderSetup(); openOverlay('setup', '📱 Set up your iPhone'); };
 
 // ---- Actions column ---------------------------------------------------------
 function pins(key) {

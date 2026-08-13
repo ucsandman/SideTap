@@ -32,7 +32,15 @@ def ios_path() -> str | None:
     # logon environment, so shortcut/Startup launches can miss the npm global
     # dir even though terminals (which rebuild PATH in shell profiles) see it.
     npm_exe = Path(os.environ.get("APPDATA", "")) / "npm" / "ios.exe"
-    return str(npm_exe) if npm_exe.is_file() else None
+    if npm_exe.is_file():
+        return str(npm_exe)
+    # The sidetap.io one-line installer downloads go-ios here directly (no
+    # Node/npm at all), so this is the only place ios.exe exists on a machine
+    # set up that way.
+    installer_exe = (
+        Path(os.environ.get("LOCALAPPDATA", "")) / "SideTap" / "bin" / "ios.exe"
+    )
+    return str(installer_exe) if installer_exe.is_file() else None
 
 
 def _run(args: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
@@ -145,7 +153,7 @@ def lockdown_ready() -> bool:  # noqa: vulture
         return False
 
 
-def tunnel_running() -> bool:
+def tunnel_running() -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     try:
         proc = _run(["tunnel", "ls"], timeout=10)
     except (DeviceError, subprocess.TimeoutExpired):
@@ -309,7 +317,7 @@ def log_tail(name: str, lines: int = 5) -> str:
     )
 
 
-def stop_all() -> list[str]:
+def stop_all() -> list[str]:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     """Kill every process we started. Returns names of processes stopped."""
     exe = ios_path()
     expected = Path(exe).name.lower() if exe else "ios"
@@ -332,7 +340,7 @@ def stop_all() -> list[str]:
 # ---- bring-up --------------------------------------------------------------
 
 
-def start_tunnel() -> None:
+def start_tunnel() -> None:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     """Start the iOS 17+ tunnel. Tries userspace mode first (no admin needed)."""
     _spawn("tunnel", ["tunnel", "start", "--userspace"])
     time.sleep(3)
@@ -344,7 +352,7 @@ def start_tunnel() -> None:
         )
 
 
-def start_wda(bundle_id: str) -> None:
+def start_wda(bundle_id: str) -> None:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     _spawn(
         "runwda",
         [
@@ -399,7 +407,7 @@ def _free_port(port: int) -> None:
             )
 
 
-def port_exposed_to_lan(port: int) -> bool:
+def port_exposed_to_lan(port: int) -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     """True if `port` is LISTENING on any address other than loopback.
 
     go-ios 1.2.1 has no bind-address flag, so `ios forward` listens on 0.0.0.0 —
@@ -429,7 +437,7 @@ def port_exposed_to_lan(port: int) -> bool:
     return False
 
 
-def lan_block_rule_active(rule_name: str = "phone-harness block LAN") -> bool:
+def lan_block_rule_active(rule_name: str = "phone-harness block LAN") -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     """True if the firewall rule that blocks LAN access to the ports is enabled.
 
     A block rule drops inbound LAN packets but does NOT rebind the socket, so
@@ -461,7 +469,7 @@ def lan_block_rule_active(rule_name: str = "phone-harness block LAN") -> bool:
         return False
 
 
-def start_forwards() -> None:
+def start_forwards() -> None:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
     _free_port(config.WDA_PORT)
     _free_port(config.MJPEG_PORT)
     _spawn("forward8100", ["forward", str(config.WDA_PORT), "8100"])

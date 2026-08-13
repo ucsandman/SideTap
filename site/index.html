@@ -198,8 +198,8 @@ body.stopped *{animation-play-state:paused!important}
     <p class="sub">SideTap lets an LLM agent see and control a real iPhone from a Windows desktop, over USB. <b>No Mac. No jailbreak. No Appium server.</b> A free Apple ID is enough. Open source, MIT.</p>
     <div class="hero-ctas">
       <div class="clone">
-        <span id="clone-cmd">git clone github.com/ucsandman/SideTap</span>
-        <button id="copy-clone" aria-label="Copy clone command">copy</button>
+        <span id="clone-cmd">irm sidetap.io/install.ps1 | iex</span>
+        <button id="copy-clone" aria-label="Copy install command">copy</button>
       </div>
       <a class="cta2" href="#install">Set it up with an agent →</a>
     </div>
@@ -309,11 +309,15 @@ body.stopped *{animation-play-state:paused!important}
 
 <section id="install">
   <div class="wrap">
-    <h2>Let your agent set it up for you.</h2>
-    <p class="lead">Paste the prompt into Claude Code (or Codex) on your Windows PC. It clones, installs, and walks you through the three steps that need your hands. About 20 minutes, one time.</p>
+    <h2>One line installs the PC side.</h2>
+    <p class="lead">Paste this into PowerShell. It installs Python, go-ios, and SideTap, and puts a shortcut on your Desktop. The viewer then opens and walks you through the phone side: Developer Mode and WebDriverAgent. About 10 minutes of Apple steps, one time.</p>
+    <div class="termbox" style="margin-bottom:14px">
+      <header><span>powershell · recommended</span><button data-copy="ps-install">copy</button></header>
+      <pre id="ps-install">irm https://sidetap.io/install.ps1 | iex</pre>
+    </div>
     <div class="install-cols">
       <div class="termbox">
-        <header><span>paste into your agent · recommended</span><button data-copy="agent-prompt">copy</button></header>
+        <header><span>or paste into your agent</span><button data-copy="agent-prompt">copy</button></header>
         <pre id="agent-prompt">Set up SideTap (github.com/ucsandman/SideTap) on this
 Windows machine so LLM agents can drive my iPhone over USB.
 Follow the README section "Set it up with an agent",
@@ -446,7 +450,7 @@ stopBtn.addEventListener('click',()=>{
 // ---- copy buttons ----
 function flash(btn){const o=btn.textContent;btn.textContent='copied';setTimeout(()=>btn.textContent=o,1300)}
 document.getElementById('copy-clone').addEventListener('click',e=>{
-  navigator.clipboard.writeText('git clone https://github.com/ucsandman/SideTap');flash(e.target);
+  navigator.clipboard.writeText('irm https://sidetap.io/install.ps1 | iex');flash(e.target);
 });
 document.querySelectorAll('[data-copy]').forEach(btn=>{
   btn.addEventListener('click',()=>{

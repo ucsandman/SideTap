@@ -261,3 +261,35 @@ stops those, by their own pid files, and keeps the tree kill.
 **Lesson.** `/T` is not a stronger `taskkill`, it is a different one. Before
 using it, ask what is parented to the process — detached service processes are
 frequently children of whatever launched them.
+
+---
+
+## 2026-08-12 — Stuck in Spotlight: five gestures failed because the keyboard owned the bottom of the screen
+
+**Symptom.** After using Spotlight to prove a hidden app was still searchable,
+the phone would not return to the Home Screen. `current_app()` reported
+`com.apple.Spotlight` and `current_page()` returned `None` through five
+consecutive attempts: `press_home()`, a bottom-edge swipe at 47%/0.45s, a swipe
+down, then edge swipes at 79%/0.8s and 91%/0.6s.
+
+**Root cause.** Two independent things, and fixing only one never helps.
+
+1. `press_home()` is `POST /wda/homescreen`, which only exits a real app to the
+   springboard. Spotlight is an overlay, so it is a no-op there.
+2. Every "stronger" edge swipe started at y≈950 on a 956pt screen — **inside the
+   keyboard**, which was up and owned the bottom ~40%. The gesture never
+   reached the screen edge, so making it longer and slower could not work. The
+   start point was wrong, not the shape.
+
+The escalation was the bug: three of the five attempts were the same hypothesis
+("the swipe is too weak") retried with bigger numbers. One screenshot showed the
+keyboard immediately and the next attempt worked first try.
+
+**Fix.** Tap the empty blurred area between the results and the search bar
+(mid-screen, ~y=477). One tap → `com.apple.springboard`, page 1 of 1.
+
+**Lesson.** When a system edge gesture does nothing, screenshot before resizing
+it — ask what is *covering* the edge, not whether the swipe was big enough. A
+tree read shows the keyboard's buttons but not that they occupy the region you
+are aiming at; only the picture makes the occlusion obvious. Codified as two
+rows in `skills/phone-gotchas/SKILL.md` (and the `~/.claude/skills/` copy).

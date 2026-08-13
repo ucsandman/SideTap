@@ -137,6 +137,9 @@ tap_text("Done")                            # top-right; twice from the page edi
 | Grabbing an icon near its corner in jiggle mode | Every icon grows a `DeleteButton` at its top-left. Grab the icon **centre**. |
 | Assuming a drag worked | It fails silently. Re-read `grid()` and compare coordinates. |
 | Deleting/hiding pages | Tap the `PageIndicator` element (find it via `ocr()`, `type=="PageIndicator"`). You get every page as a thumbnail with a checkmark; uncheck to **hide** (reversible, apps stay installed and stay in App Library + Spotlight). |
+| Hiding pages, then trying to promote one of those apps | **iOS still counts a hidden page's apps as "on the Home Screen".** So App Library's long-press menu offers **no `Add to Home Screen`** for any of them — verified on Brave, whose menu was New Tab / New Private Tab / Scan QR Code / Share App / Require Face ID / Delete App. The only route onto a visible page is to unhide its page and drag across, i.e. the **unproven** cross-page drag. Decide what belongs on page 1 *before* you hide. |
+| Long-pressing a Spotlight search result | Gives **no app context menu** — you get the keyboard and `Search in App`, nothing else. Anything needing the app's own menu has to go through App Library search. |
+| A result whose menu says `Share Bookmark` / `Delete Bookmark` | Not a native app — it is a **web bookmark / PWA** someone added to the Home Screen. No App Library entry, no `Add to Home Screen`. Check the menu before assuming the icon is an app. |
 | Reading the page editor with `ocr()` | **`/source` times out (30s)** — that screen renders every page's icons at once and the tree is too heavy. `screenshot()` is the only way to read it. |
 | Exiting | `Done`, top-right. From the page editor that takes **two** taps: editor → jiggle → Home Screen. |
 | Swiping right to reach page 1 | One swipe too many lands in **Today View** (widgets), not page 1. Confirm by looking for a known page-1 icon, not by counting swipes. |
@@ -203,6 +206,8 @@ Lead with 1. Only reach for mass drags after the user has been told the cost.
 | `find_text()` empty for something you just saw | It only sees the **current** screen. Sweep Home Screen pages with a batched `act()` before concluding it is gone. |
 | Used "Add to Home Screen" | The icon lands in the first free slot, usually the **last** page, not page 1. |
 | Error wall containing `FBSOpenApplication... Locked` | The phone is locked. Make `unlock` step 1 of the batch. |
+| A bottom-edge swipe does nothing | **Look for a keyboard first.** It owns the bottom ~40% of the screen, so a system edge gesture started at y≈950 begins *inside the keyboard* and is swallowed. Longer and slower does not help — the start point is wrong, not the shape. |
+| Stuck in Spotlight after a search | `press_home()` does **not** leave it (`/wda/homescreen` only exits real apps), and every bottom-edge gesture fails for the keyboard reason above. Tap the **empty blurred area** between the results and the search bar (mid-screen, ~y=477 on a 956pt screen) — one tap and you are on the springboard. Five gestures failed here before anyone took a screenshot. |
 
 ## What the harness cannot do
 

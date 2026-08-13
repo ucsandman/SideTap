@@ -321,3 +321,31 @@ never by name), delete the directory it created, re-run the real repo's
 3. A second viewer on :8770 does not fail loudly — SO_REUSEADDR means both
    listen and traffic splits between them. `netstat -ano | findstr :8770`
    showing TWO pids is the tell.
+
+## 2026-08-13 — the first clean-machine test found two shipped defects in one run
+
+An OpenClaw agent ran the sidetap.io installer on a laptop with no phone and
+no prior install (the two branches this machine could never exercise). Both
+findings were real:
+
+1. **`/api/status` returned 500 with no phone**, because the WDA-less fallback
+   takes a go-ios screenshot, and with no device that raises uncaught. The
+   wizard rides on that JSON, so the entire first-run experience silently
+   never appeared — on exactly the machine it was built for. Fix: the
+   screenshot fallback is wrapped; `window` is null and the page treats it
+   like its own fetch-failed state. A test pins the phoneless 200.
+2. **Updating while SideTap ran destroyed the install.** `Remove-Item` on the
+   locked app dir deleted everything deletable (.env and launch.py included)
+   before hitting the locked `.state` logs and throwing. Fix: rename-first —
+   `Move-Item app app.old` fails on an open file handle BEFORE anything is
+   touched, so a running SideTap aborts the update with instructions and zero
+   changes. Keeps restore from `app.old` afterwards; a `_keep` stash stranded
+   by the old installer is healed on the next run. Note: a directory that is
+   only a process's CWD renames FINE on Windows — the lock that matters is an
+   open file handle, which the real product always holds (`.state` logs), and
+   the test holds one for real.
+
+**Lesson.** The untested branches were where both bugs lived. "Works on the
+dev machine" tested the wrong half: the dev machine has a phone, so the
+phoneless path never ran, and it was never updated while running. A clean
+machine plus "report, don't fix" found both in under two minutes of runtime.

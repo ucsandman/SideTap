@@ -1004,3 +1004,21 @@ def test_setup_wizard_waits_on_real_check_names():
     # rather than the wall-of-red checks panel.
     assert "'setup'" in html.split("const OV_BODIES")[1].split(";")[0]
     assert "if (setupNeeded) { renderSetup(); openOverlay('setup'" in html
+
+
+def test_status_answers_without_phone_or_screenshot(base_url, monkeypatch):
+    # A phoneless machine — a fresh install with nothing plugged in — must
+    # still get this JSON: the first-run wizard rides on setup_done, and a 500
+    # here is exactly what hid the wizard on the first clean-machine test
+    # (2026-08-13, OpenClaw laptop). window is null; the page treats that the
+    # same as its own fetch-failed state.
+    def boom(**_kw):
+        raise RuntimeError("no phone, no go-ios screenshot")
+
+    monkeypatch.setattr(viewer.capture, "screenshot_png", boom)
+    r = requests.get(base_url + "/api/status", timeout=10)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["window"] is None
+    assert j["input"] is False
+    assert j["setup_done"] in (True, False)

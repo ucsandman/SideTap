@@ -69,21 +69,33 @@ $extract = Join-Path $root '_extract'
 if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
 Expand-Archive -Path $zip -DestinationPath $extract
 $inner = Get-ChildItem -Path $extract -Directory | Select-Object -First 1
-# Keep what the user/setup already earned across updates.
-$keep = Join-Path $root '_keep'
+# Update = rename-first. Renaming a folder a process is running from fails
+# BEFORE anything is touched (Windows treats it as locked), so a running
+# SideTap aborts the update cleanly instead of being half-deleted — the
+# Remove-Item this replaces gutted a live install on the first clean-machine
+# test (2026-08-13), .env included.
+$old = Join-Path $root 'app.old'
 if (Test-Path $app) {
-    if (Test-Path $keep) { Remove-Item -Recurse -Force $keep }
-    New-Item -ItemType Directory -Path $keep | Out-Null
-    foreach ($p in @('.env', '.state', 'wda')) {
-        $src = Join-Path $app $p
-        if (Test-Path $src) { Copy-Item -Recurse -Force $src (Join-Path $keep $p) }
+    if (Test-Path $old) { Remove-Item -Recurse -Force $old }
+    try {
+        Move-Item $app $old -ErrorAction Stop
+    } catch {
+        Remove-Item -Recurse -Force $extract
+        Remove-Item -Force $zip
+        throw 'SideTap is running, so its folder is locked. Close the SideTap console window, then run this installer again. Nothing was changed.'
     }
-    Remove-Item -Recurse -Force $app
 }
 Move-Item $inner.FullName $app
-if (Test-Path $keep) {
-    Get-ChildItem $keep -Force | ForEach-Object { Copy-Item -Recurse -Force $_.FullName (Join-Path $app $_.Name) }
-    Remove-Item -Recurse -Force $keep
+# Carry what the user/setup already earned across the update. _keep first (a
+# rescue stash left by installers before the rename-first fix), then app.old
+# (the just-renamed install — the current truth, so it wins on overlap).
+foreach ($stash in @((Join-Path $root '_keep'), $old)) {
+    if (-not (Test-Path $stash)) { continue }
+    foreach ($p in @('.env', '.state', 'wda')) {
+        $src = Join-Path $stash $p
+        if (Test-Path $src) { Copy-Item -Recurse -Force $src (Join-Path $app $p) }
+    }
+    Remove-Item -Recurse -Force $stash -ErrorAction SilentlyContinue
 }
 Remove-Item -Recurse -Force $extract
 Remove-Item -Force $zip

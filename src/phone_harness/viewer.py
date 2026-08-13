@@ -413,10 +413,20 @@ class Handler(BaseHTTPRequestHandler):
                     }
                     self._json({**_LAST_STATUS, **fresh})
                 except WDAError:
-                    pw, ph = _png_size(capture.screenshot_png(max_age=0.4))
+                    # No WDA. The go-ios screenshot gives pixel size — but on a
+                    # phoneless machine (fresh install, nothing plugged in) it
+                    # raises too, and this endpoint must STILL answer: the
+                    # first-run wizard rides on setup_done, and the 500 this
+                    # used to raise is what hid the wizard on the first
+                    # clean-machine test (2026-08-13).
+                    try:
+                        pw, ph = _png_size(capture.screenshot_png(max_age=0.4))
+                        window = {"width": pw, "height": ph}
+                    except Exception:
+                        window = None
                     self._json(
                         {
-                            "window": {"width": pw, "height": ph},
+                            "window": window,
                             "input": False,
                             "mjpeg": None,
                             "lan_exposed": _LAN_STATE["exposed"],

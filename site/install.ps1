@@ -128,22 +128,31 @@ if ($existing) {
 }
 
 # ---- 5/6 Apple USB driver --------------------------------------------------
+# Without this app Windows has no iPhone USB driver, go-ios sees nothing, and
+# SideTap sits on "FAIL: No iPhone found over USB" forever. So this step never
+# trusts winget's exit code: it re-checks that the app actually landed, and on
+# failure it opens the Store page itself instead of printing a link that
+# scrolls away when SideTap launches (that exact miss shipped once, 2026-08-13).
+function Test-AppleDriver {
+    [bool]((Get-Service -Name 'Apple Mobile Device Service' -ErrorAction SilentlyContinue) -or
+           (Get-AppxPackage -Name 'AppleInc.AppleDevices*' -ErrorAction SilentlyContinue) -or
+           (Get-AppxPackage -Name 'AppleInc.iTunes*' -ErrorAction SilentlyContinue))
+}
 Step '5/6 Apple Devices app (USB driver)'
-$haveDriver = (Get-Service -Name 'Apple Mobile Device Service' -ErrorAction SilentlyContinue) -or
-              (Get-AppxPackage -Name 'AppleInc.AppleDevices*' -ErrorAction SilentlyContinue) -or
-              (Get-AppxPackage -Name 'AppleInc.iTunes*' -ErrorAction SilentlyContinue)
-if ($haveDriver) {
+if (Test-AppleDriver) {
     Write-Host '    found'
 } else {
-    $ok = $false
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host '    installing Apple Devices (Microsoft Store)...'
         winget install -e --id 9NP83LWLPZ9K -s msstore --accept-package-agreements --accept-source-agreements | Out-Null
-        if ($LASTEXITCODE -eq 0) { $ok = $true; Write-Host '    installed' }
     }
-    if (-not $ok) {
-        Write-Host '    could not install it for you. Get it here (free):' -ForegroundColor Yellow
-        Write-Host '    https://apps.microsoft.com/detail/9np83lwlpz9k' -ForegroundColor Yellow
+    if (Test-AppleDriver) {
+        Write-Host '    installed'
+    } else {
+        Write-Host '    Could not install it automatically. Opening the Microsoft Store page --' -ForegroundColor Yellow
+        Write-Host '    click Get there (free, made by Apple). SideTap cannot see your iPhone without it.' -ForegroundColor Yellow
+        Write-Host '    Link if the Store did not open: https://apps.microsoft.com/detail/9np83lwlpz9k' -ForegroundColor Yellow
+        Start-Process 'ms-windows-store://pdp/?ProductId=9NP83LWLPZ9K' -ErrorAction SilentlyContinue
     }
 }
 
@@ -155,6 +164,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'scripts\ins
 Write-Host ''
 Write-Host 'SideTap is installed.' -ForegroundColor Green
 Write-Host ''
+if (-not (Test-AppleDriver)) {
+    Write-Host 'ONE THING IS STILL MISSING: the Apple Devices app (the USB driver).' -ForegroundColor Red
+    Write-Host 'Until you install it, SideTap will say "No iPhone found over USB".' -ForegroundColor Red
+    Write-Host '  1. Microsoft Store -> search "Apple Devices" (free, made by Apple) -> Get' -ForegroundColor Red
+    Write-Host '     or: https://apps.microsoft.com/detail/9np83lwlpz9k' -ForegroundColor Red
+    Write-Host '  2. Replug the iPhone, unlock it, tap Trust.' -ForegroundColor Red
+    Write-Host ''
+}
 Write-Host 'Apple makes you do the last steps yourself (about 10 minutes, once):'
 Write-Host '  1. Plug in your iPhone. Unlock it. Tap Trust.'
 Write-Host '  2. The SideTap window that opens next walks you through the rest'

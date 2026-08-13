@@ -64,7 +64,7 @@ Needs Windows 10/11 and an iPhone on iOS 17+. One line in PowerShell installs th
 irm https://sidetap.io/install.ps1 | iex
 ```
 
-It puts the app in `%LOCALAPPDATA%\SideTap`, adds a **SideTap** shortcut to your Desktop and Start Menu, and starts the viewer, which walks you through the phone side (Developer Mode, WebDriverAgent). Re-running it later updates SideTap and keeps your `.env` and state. Everything it does is plain to read: [site/install.ps1](site/install.ps1).
+It puts the app in `%LOCALAPPDATA%\SideTap`, adds a **SideTap** shortcut to your Desktop and Start Menu, and starts the viewer, which walks you through the phone side (Developer Mode, WebDriverAgent). It also installs the free **[Apple Devices](https://apps.microsoft.com/detail/9np83lwlpz9k)** app from the Microsoft Store. That app is Apple's USB driver, and Windows cannot see an iPhone without it: if it is missing, SideTap stops at "No iPhone found over USB". When the automatic install fails, the installer opens the Store page so you can click **Get** yourself, then replug the iPhone and tap **Trust**. Re-running the installer later updates SideTap and keeps your `.env` and state. Everything it does is plain to read: [site/install.ps1](site/install.ps1).
 
 Working from a clone instead? (Python 3.10+, Node.js for go-ios):
 
@@ -200,7 +200,7 @@ Mid-week re-installs can skip Sideloadly entirely by reusing the captured profil
 
 ## Tests
 
-277 unit tests, none of which need a phone plugged in:
+330 unit tests, none of which need a phone plugged in:
 
 ```bat
 pip install pytest

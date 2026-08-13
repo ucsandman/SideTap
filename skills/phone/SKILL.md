@@ -6,8 +6,9 @@ description: Use when the user asks to text or message someone from their iPhone
 # Drive the user's iPhone (SideTap)
 
 The user's real iPhone is connected to this PC over USB and fully controllable.
-Replace `/path/to/sidetap` below with the SideTap clone. Driving the phone works
-from any project directory.
+Replace `/path/to/sidetap` below with the SideTap folder — a git clone, or
+`%LOCALAPPDATA%\SideTap\app` when it was installed with the sidetap.io
+one-liner. Driving the phone works from any project directory.
 
 ## Run
 

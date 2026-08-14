@@ -23,6 +23,13 @@ class WDAError(RuntimeError):
     """A WebDriverAgent call failed. The message says what and why."""
 
 
+class WDATimeout(WDAError):
+    """WDA did not answer in time. Says nothing about whether it acted: a
+    gesture that timed out may still be landing on the phone, so a caller may
+    never replay it. A WDAError subclass, so every existing handler still
+    catches it."""
+
+
 def stop_file():
     """Path of the kill-switch file. Read dynamically so tests can relocate it."""
     return config.STATE_DIR / "STOP"
@@ -46,6 +53,26 @@ def session_file():
     when the published one is dead.
     """
     return config.STATE_DIR / "wda_session"
+
+
+# A session that has been through a display SLEEP is poisoned: its first
+# /actions hangs ~16.2s inside XCTest's snapshot timeout before failing
+# "point.x != INFINITY" (16.25s measured on device after 16 minutes asleep and
+# again after 5, 2026-08-14). The trigger is the display WAKING, not the lock:
+# in the same run a real tap on the still-dark screen answered in 0.59s, and
+# the gesture right after the wake was the one that hung. Nothing cheap tells a
+# poisoned session from a healthy one — /status, /wda/locked and orientation
+# all answer in ~0.01s either way — so the only way not to pay the hang is not
+# to gesture on a session that predates a sleep. A fresh one is 0.01s (same
+# run). The clock is this client's own last SUCCESSFUL GESTURE, and nothing
+# else may refresh it: a `press_button("home")` — the call that wakes the
+# display in the first place — answered in 0.47s on the very session that hung
+# 16.25s a moment later, so a wake proves nothing about whether the session can
+# still act. Keying this on "any action" instead let the wake reset the clock
+# and the rule never fired (measured live before this line was written).
+# Kept below every plausible iOS auto-lock: minting when it was not needed
+# costs one 0.01s call.
+_SLEEP_SUSPECT_SECONDS = 30.0
 
 
 def _read_shared_session() -> str | None:
@@ -166,6 +193,12 @@ class WDAClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session_id: str | None = None
+        # The id a gesture timed out on; the next gesture replaces it.
+        self._suspect_session: str | None = None
+        # When this client last landed a gesture (monotonic). 0.0 = never, so a
+        # process whose first act is a gesture mints: it adopted a published
+        # session of unknown age, which may already have slept.
+        self._last_gesture_ok = 0.0
         # One Session, so the TCP connection to WDA is kept alive across calls.
         # requests.request() builds and closes a throwaway Session per call, and
         # EVERY helper funnels through _request, so a per-call connect is paid on
@@ -187,7 +220,7 @@ class WDAClient:
         try:
             resp = self._http.request(method, url, json=payload, timeout=self.timeout)
         except requests.Timeout as exc:
-            raise WDAError(
+            raise WDATimeout(
                 f"{method} {path}: WebDriverAgent did not answer within "
                 f"{self.timeout:g}s. It may be busy or wedged; try again or "
                 "run `phone-harness up`."
@@ -212,6 +245,11 @@ class WDAClient:
             raise WDAError(f"{method} {path}: HTTP {resp.status_code}: {body}")
         if method == "POST" and path != "/session":
             _log_activity(path, payload)  # only actions that actually happened
+            if path.endswith("/actions"):
+                # A gesture LANDED, so this session can act and the display was
+                # awake. Stamped here, at the one place every successful call
+                # passes, so retries and healed calls count too.
+                self._last_gesture_ok = time.monotonic()
         return value
 
     @staticmethod
@@ -231,10 +269,32 @@ class WDAClient:
         Recovery prefers the published shared id: if another process already
         replaced the session, adopt theirs instead of evicting it right back.
         """
+        # Gestures only, both rules below: a poisoned session still answers
+        # reads perfectly, and re-minting for those would churn the one session
+        # WDA allows for nothing.
+        if path.endswith("/actions"):
+            bad, self._suspect_session = self._suspect_session, None
+            if bad:
+                # A gesture on this session timed out, so the error that would
+                # have named it never arrived — the heal below can only fire on
+                # an error it SEES. Replace the session rather than reuse an id
+                # that may be unusable forever.
+                shared = _read_shared_session()
+                if shared and shared != bad:
+                    self.session_id = shared  # already replaced (unlock, or
+                else:  # another process) — adopt it
+                    self.fresh_session()
+            elif time.monotonic() - self._last_gesture_ok > _SLEEP_SUSPECT_SECONDS:
+                # This client has not landed a gesture in a while, so the
+                # display may have slept and this session may be poisoned.
+                # Minting is 0.01s; discovering the poison costs ~16s (above).
+                self.fresh_session()
         sid = self.ensure_session()
         try:
             return self._request(method, f"/session/{sid}{path}", payload)
         except WDAError as exc:
+            if isinstance(exc, WDATimeout) and path.endswith("/actions"):
+                self._suspect_session = sid  # replaced on the NEXT gesture
             if not self._session_unusable(exc):
                 raise
         shared = _read_shared_session()
@@ -315,7 +375,7 @@ class WDAClient:
         value = self._session_request("GET", "/window/size")
         return float(value["width"]), float(value["height"])
 
-    def orientation(self) -> str:
+    def orientation(self) -> str:  # noqa: vulture  (called by helpers.py, viewer.py)
         """Screen orientation (PORTRAIT/LANDSCAPE) — the cheap guard for a
         cached window_size().
 
@@ -329,11 +389,11 @@ class WDAClient:
         """
         return str(self._session_request("GET", "/orientation"))
 
-    def source(self) -> dict:
+    def source(self) -> dict:  # noqa: vulture  (called by helpers.py)
         """Full UI element tree as nested dicts (type, label, name, value, rect, children)."""
         return self._session_request("GET", "/source?format=json")
 
-    def active_app(self) -> dict:
+    def active_app(self) -> dict:  # noqa: vulture  (called by helpers.py, viewer.py)
         return self._session_request("GET", "/wda/activeAppInfo")
 
     # ---- targeted element lookups --------------------------------------------
@@ -354,7 +414,7 @@ class WDAClient:
     # Resolve the field you mean with find_first + a class chain instead
     # (helpers._field_element). Measured on device 2026-08-12; docs/ERRORS.md.
 
-    def find_first(self, class_chain: str) -> str | None:
+    def find_first(self, class_chain: str) -> str | None:  # noqa: vulture  (called by helpers.py)
         """Element id of the first match for an iOS class chain, or None.
 
         Returns ONE id and never a list, on purpose: a bounded lookup is what
@@ -370,11 +430,11 @@ class WDAClient:
                 return eid
         return None
 
-    def element_clear(self, element_id: str) -> None:
+    def element_clear(self, element_id: str) -> None:  # noqa: vulture  (called by helpers.py)
         """Empty a text field outright, whatever length its contents."""
         self._session_request("POST", f"/element/{element_id}/clear", {})
 
-    def element_value(self, element_id: str) -> str:
+    def element_value(self, element_id: str) -> str:  # noqa: vulture  (called by helpers.py)
         """The field's REAL typed contents, not its placeholder label."""
         value = self._session_request("GET", f"/element/{element_id}/attribute/value")
         return "" if value is None else str(value)
@@ -417,7 +477,7 @@ class WDAClient:
             ]
         )
 
-    def long_press(self, x: float, y: float, seconds: float = 1.0) -> None:
+    def long_press(self, x: float, y: float, seconds: float = 1.0) -> None:  # noqa: vulture  (called by helpers.py, viewer.py)
         self._pointer_actions(
             [
                 {"type": "pointerMove", "duration": 0, "x": x, "y": y},
@@ -447,7 +507,7 @@ class WDAClient:
             ]
         )
 
-    def set_wait_for_idle(self, seconds: float) -> None:
+    def set_wait_for_idle(self, seconds: float) -> None:  # noqa: vulture  (called by helpers.py)
         """Session waitForIdleTimeout. 0 makes gestures fire without waiting
         for the app to settle — right for a burst at a static screen (the
         passcode pad), wrong as a resting state: the setting rides the SHARED
@@ -468,7 +528,7 @@ class WDAClient:
     def home(self) -> None:
         self._request("POST", "/wda/homescreen")
 
-    def unlock(self) -> None:
+    def unlock(self) -> None:  # noqa: vulture  (called by viewer.py, mcp_server.py)
         """Wake + swipe up. Only unlocks fully if the phone has no passcode."""
         self._request("POST", "/wda/unlock")
 
@@ -478,7 +538,7 @@ class WDAClient:
         treat that error as cosmetic, not a failure to lock."""
         self._request("POST", "/wda/lock")
 
-    def app_launch(self, bundle_id: str) -> None:
+    def app_launch(self, bundle_id: str) -> None:  # noqa: vulture  (called by helpers.py)
         self._session_request("POST", "/wda/apps/launch", {"bundleId": bundle_id})
 
     def configure_mjpeg(  # noqa: vulture  (called by admin.py/viewer.py)

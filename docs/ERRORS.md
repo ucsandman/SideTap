@@ -5,6 +5,65 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-14 — The 17s first-gesture-after-sleep block: a recovery path that could only fire on an error it never received
+
+**Symptom.** Wes: the 17s block a previous session saw during live verification
+and filed as "pre-existing, separate issue" without trying to fix it.
+
+**What it is.** Reproduced on device: after the phone sleeps, the first
+`/actions` on a session that predates the sleep hangs **16.25s** inside
+XCTest's snapshot timeout, then fails `point.x != INFINITY`. A fresh session is
+0.01s and its swipe 1.18s. The trigger is the display **WAKING**, not the lock:
+in the same run a real tap on the still-dark screen answered in 0.59s, and the
+gesture right after `press_button("home")` was the one that hung. Reproduced at
+16 minutes asleep and again at 5. Three earlier attempts (lock + 2s/30s/90s
+dark) never reproduced it — because none of them woke the display, which is
+what made it look unreproducible at first.
+
+**Why only unlock() was safe.** `unlock()` mints a fresh session before it
+wakes anything, so it never meets the poison (10.28s end-to-end from 16 minutes
+asleep). Every other gesture path met it and relied on `_session_request`
+healing after the fact — and that heal can only fire on an error it SEES:
+
+- On a patient client (unlock's 45s clone) the INFINITY error does arrive, so
+  it self-heals — at the cost of the whole 16s. That is exactly the 17.58s in
+  the activity log at 11:02:20.
+- On any client whose timeout is SHORTER than the hang, it never arrives.
+  `viewer.py`'s `Handler.client` is `timeout=10` and serves every human tap,
+  swipe and keystroke. Reproduced against a fake WDA hanging 16.2s: tap #1
+  failed at 10.01s, the session was NOT replaced, tap #2 failed at 10.02s —
+  unchanged forever, because a timeout message matches neither string in
+  `_session_unusable`.
+
+**Fix.** `requests.Timeout` now raises `WDATimeout(WDAError)`; an `/actions`
+timeout marks the session and the NEXT gesture replaces it (adopting a
+published replacement if one exists, else minting). The timed-out gesture is
+NEVER replayed — a timeout does not cancel it, the gesture may still be
+landing, and a replay double-taps. And because that only saves the second
+gesture, a gesture following 30s without this client landing one now mints up
+front (0.01s) rather than paying 16s to discover the poison. Verified live on
+the same sequence that produced the control: the first gesture after a
+5-minute sleep and a wake went **16.25s → 0.59s**, with the session id changing
+to prove the mint is what did it.
+
+**The trap, found only by running it live.** The first version keyed "nothing
+has driven the phone lately" on the shared activity log, which every action
+POST stamps. The `press_button("home")` that wakes the display is such a POST,
+so the wake reset the clock and the rule never fired on the one sequence it
+exists for — the live run showed the control hanging 16.25s and the fix sitting
+there doing nothing, with a fully green suite. The clock now counts only LANDED
+GESTURES: a wake answered in 0.47s on the very session whose next gesture hung
+16.25s, so it proves nothing about whether that session can still act.
+
+**Lesson.** A recovery keyed off an error message can only fire on an error it
+actually receives; when the failure it guards is a HANG, every client with a
+shorter timeout is unprotected — and here the shortest-timeout client was the
+human-facing one. Second lesson: five sabotage runs against the new tests found
+two that could not fail (one derived its own threshold from the constant it was
+testing), including the one that should have caught the trap above.
+
+---
+
 - **2026-08-14 — Passcode digits typed in visibly slowly (~5s for six)** (Wes: "still typing in the numbers really slowly, that used to be instantly fast"). Root cause: each pad tap paid the session's `waitForIdleTimeout` (2s ceiling) plus a 0.15s sleep — the pre-2026-08-13 "instant" was `/wda/keys`, the exact path a lock-screen notification eats digits through, so a revert was off the table. Fix: `_enter_passcode` runs the tap burst at `waitForIdleTimeout` 0 (the pad is static; nothing to settle) and restores `WDA_IDLE_WAIT` in a finally — 4.94s → 2.6-3.1s live, every digit in order. **Two traps found proving alternatives on Calculator first, NEVER retry them on the pad:** (1) six down/up cycles batched in ONE pointer source enter deterministically WRONG digits (`246810` came out `426861010`, identical across three timings) — on the pad that is wrong passcode attempts toward a lockout; (2) six parallel pointer sources in one `/actions` KILL WDA outright, same class as the unbounded `**/*` query. Prevention: mechanism-test tap experiments in Calculator (its digits are `Key` elements like the pad), never on the lock screen.
 
 - **2026-08-14 — Unlock held the viewer busy ~5s over a visibly unlocked phone** (Wes: "I have to sit here and look at an unlocked phone for like 5 seconds"). Root cause: the wrong-passcode guard after the last digit tap was `sleep(0.7)` + one full `/source` of the freshly unlocked Home Screen — `/source`'s worst case, 3.0-5.7s measured — while `_ACTION_LOCK` kept the busy overlay up. Prevention: ask single-element questions with a bounded `find_first`, never a tree read — the same probe answered in 0.11s (measured), and the live tail is now 0.23s. The guard itself stays: a straight revert would have resurrected the lying-success bug fixed 2026-08-13.

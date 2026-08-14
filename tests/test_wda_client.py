@@ -4,6 +4,7 @@ import base64
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -32,6 +33,8 @@ class FakeWDA(BaseHTTPRequestHandler):
     last_settings = None
     valid_sessions = set()
     infinity_sessions = set()  # sessions whose /actions fail with INFINITY
+    hanging_sessions = set()  # sessions whose /actions hang past the timeout
+    hang_seconds = 1.0
 
     def log_message(self, *args):  # noqa: vulture
         pass
@@ -72,6 +75,10 @@ class FakeWDA(BaseHTTPRequestHandler):
             if self._session_dead():
                 return
             sid = self.path.split("/")[2]
+            if sid in FakeWDA.hanging_sessions:
+                # XCTest's snapshot timeout: the real one blocks ~16s before
+                # it answers at all (measured on device 2026-08-14).
+                time.sleep(FakeWDA.hang_seconds)
             if sid in FakeWDA.infinity_sessions:
                 self._reply(
                     {
@@ -116,6 +123,7 @@ def wda(tmp_path, monkeypatch):
     FakeWDA.session_counter = 0
     FakeWDA.valid_sessions = set()
     FakeWDA.infinity_sessions = set()
+    FakeWDA.hanging_sessions = set()
     client = WDAClient(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5)
     yield client
     server.shutdown()
@@ -131,7 +139,11 @@ def test_screenshot_decodes_base64(wda):
 
 
 def test_session_created_once_and_reused(wda):
-    wda.window_size()
+    # Back-to-back gestures share one session: WDA holds exactly one, and
+    # minting per call would evict whoever else is driving the phone. The
+    # deliberate exception is a gesture that follows a long idle gap — see
+    # test_first_gesture_after_an_idle_gap_mints_before_acting.
+    wda.tap(1, 1)
     wda.tap(10, 20)
     session_posts = [
         p for m, p in FakeWDA.requests_seen if m == "POST" and p == "/session"
@@ -184,6 +196,136 @@ def test_infinity_frame_error_heals_like_dead_session(wda):
     wda.tap(10, 20)  # must heal to sess-2 and succeed, not raise
     assert wda.session_id == "sess-2"
     assert FakeWDA.session_counter == 2
+
+
+def test_actions_timeout_replaces_the_session_but_never_replays(wda):
+    # The heal above only fires once the INFINITY error ARRIVES, and the real
+    # poisoned session hangs ~16s inside XCTest's snapshot timeout before it
+    # answers. Any client with a shorter timeout — the viewer's is 10s
+    # (viewer.py Handler.client) — gives up first, so it never sees the error
+    # that identifies the session and reuses the same dead id forever:
+    # reproduced against a hanging fake WDA, every later gesture timed out
+    # again at 10s (2026-08-14).
+    #
+    # The gesture itself is NEVER retried here. A timeout does not cancel it:
+    # the swipe may still land on the phone, and replaying it double-taps.
+    wda.tap(1, 1)  # sess-1, and stamps the activity log
+    FakeWDA.hanging_sessions = {"sess-1"}
+    wda.timeout = 0.3
+    FakeWDA.requests_seen = []
+    with pytest.raises(WDAError):
+        wda.tap(10, 20)
+    posts = [p for m, p in FakeWDA.requests_seen if m == "POST"]
+    assert posts.count("/session/sess-1/actions") == 1, (
+        "a timed-out gesture must never be replayed"
+    )
+
+    # The phone recovers; the NEXT gesture must not go to the suspect session.
+    FakeWDA.hanging_sessions = set()
+    wda.timeout = 5
+    FakeWDA.requests_seen = []
+    wda.tap(10, 20)
+    posts = [p for m, p in FakeWDA.requests_seen if m == "POST"]
+    assert "/session" in posts, "a session that timed out mid-gesture is suspect"
+    assert not any(p.startswith("/session/sess-1/") for p in posts)
+    assert wda.session_id == "sess-2"
+
+
+def test_a_session_replaced_after_the_timeout_is_adopted_not_evicted(wda):
+    # unlock() mints a fresh session of its own, and the everyday sequence is
+    # gesture times out -> human clicks Unlock -> human taps again. Minting a
+    # SECOND session there would evict the one unlock just made (and retune the
+    # viewer's stream) for nothing, so prefer the published id like every other
+    # recovery in this class does.
+    wda.tap(1, 1)  # sess-1, and stamps the activity log
+    FakeWDA.hanging_sessions = {"sess-1"}
+    wda.timeout = 0.3
+    with pytest.raises(WDAError):
+        wda.tap(10, 20)
+    # sess-1 stays VALID and still hanging: reusing it would succeed eventually
+    # (that is the 16s on the phone), so only the timing and the adopted id
+    # tell the two behaviours apart.
+    wda.timeout = 5
+    (config.STATE_DIR / "wda_session").write_text("sess-9", encoding="utf-8")
+    FakeWDA.valid_sessions = {"sess-1", "sess-9"}  # someone else replaced it
+    FakeWDA.requests_seen = []
+    start = time.perf_counter()
+    wda.tap(10, 20)
+    assert time.perf_counter() - start < FakeWDA.hang_seconds, (
+        "the suspect session was used again — on the phone that is the 16s hang"
+    )
+    assert wda.session_id == "sess-9"
+    assert "/session" not in [p for m, p in FakeWDA.requests_seen if m == "POST"]
+
+
+def test_first_gesture_after_an_idle_gap_mints_before_acting(wda):
+    # Measured on device 2026-08-14: after 16 minutes asleep, the first
+    # /actions on the pre-sleep session hung 16.25s before failing point.x !=
+    # INFINITY, while a fresh session took 0.01s and its swipe 1.18s. Nothing
+    # cheap distinguishes the two, so a gesture that follows an idle gap long
+    # enough for the display to have slept mints first instead of paying it.
+    wda.tap(1, 1)  # sess-1, and stamps the gesture clock
+    # A REAL gap, not one derived from the threshold — 2 minutes is the gap in
+    # the live incident (11:01:59 lock, 11:02:20 the 17.58s swipe). Deriving it
+    # from _SLEEP_SUSPECT_SECONDS would make this test move with the constant
+    # and pass at any value, including "never".
+    wda._last_gesture_ok -= 120  # nothing has landed since
+    FakeWDA.requests_seen = []
+    wda.tap(2, 2)
+    assert wda.session_id == "sess-2"
+    posts = [p for m, p in FakeWDA.requests_seen if m == "POST"]
+    assert posts[0] == "/session", "the mint must come BEFORE the gesture"
+    assert "/session/sess-2/actions" in posts
+
+
+def test_a_gesture_while_the_phone_is_being_driven_does_not_mint(wda):
+    # The phone cannot sleep while it is being driven, so back-to-back gestures
+    # must not churn the one session WDA allows.
+    wda.tap(1, 1)  # sess-1
+    FakeWDA.requests_seen = []
+    wda.tap(2, 2)
+    wda.tap(3, 3)
+    assert wda.session_id == "sess-1"
+    assert "/session" not in [p for m, p in FakeWDA.requests_seen if m == "POST"]
+
+
+def test_a_wake_press_does_not_count_as_a_landed_gesture(wda):
+    # The call that WAKES the display is a POST too, and keying the clock on
+    # "any action" let that wake refresh it — so the rule never fired on the
+    # one sequence it exists for. Measured live 2026-08-14: press_button("home")
+    # answered in 0.47s on the very session whose next gesture then hung 16.25s,
+    # and the fix sat there doing nothing because the wake had reset the clock.
+    wda.tap(1, 1)  # sess-1
+    wda._last_gesture_ok -= 120  # ...and then the phone slept
+    wda.home()  # the wake: a POST, but not a gesture
+    FakeWDA.requests_seen = []
+    wda.tap(2, 2)
+    assert wda.session_id == "sess-2", "a wake must not vouch for the session"
+    assert "/session" in [p for m, p in FakeWDA.requests_seen if m == "POST"]
+
+
+def test_a_read_after_an_idle_gap_does_not_mint(wda):
+    # Reads work fine on a poisoned session; re-minting for them would evict
+    # whoever holds the session every time a poll goes quiet.
+    wda.tap(1, 1)  # sess-1
+    wda._last_gesture_ok -= 120
+    assert wda.window_size() == (390.0, 844.0)
+    assert wda.session_id == "sess-1"
+
+
+def test_perception_survives_an_actions_timeout(wda):
+    # Only /actions is suspect. A poisoned session still answers GETs, and
+    # re-minting on every read would churn the one session WDA allows (and
+    # retune the viewer's stream) for a screen read that works fine.
+    wda.tap(1, 1)  # sess-1, and stamps the activity log
+    FakeWDA.hanging_sessions = {"sess-1"}
+    wda.timeout = 0.3
+    with pytest.raises(WDAError):
+        wda.tap(10, 20)
+    FakeWDA.hanging_sessions = set()
+    wda.timeout = 5
+    assert wda.window_size() == (390.0, 844.0)
+    assert wda.session_id == "sess-1", "a read must not evict the session"
 
 
 def test_both_current_and_shared_dead_creates_fresh(wda):

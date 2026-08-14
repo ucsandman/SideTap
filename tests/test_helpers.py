@@ -211,6 +211,8 @@ class StubPhone:
         self.ops = []  # gesture/session events in order, for ordering tests
         self.swipes = 0
         self.source_calls = 0
+        self.finds = 0  # bounded find_first probes
+        self.idle_waits = []  # set_wait_for_idle calls, in order
         self.type_error = type_error
         self.unlock_error = unlock_error
         self.app = app
@@ -248,6 +250,22 @@ class StubPhone:
     def source(self):
         self.source_calls += 1
         return self.tree
+
+    def find_first(self, _class_chain):
+        # The bounded "is a digit key still on screen" probe. Answers from
+        # the same tree source() serves, like the real WDA endpoint would.
+        self.finds += 1
+        for e in helpers.collect_texts(self.tree):
+            if (
+                e["type"] in ("Button", "Key")
+                and len(e["text"]) == 1
+                and e["text"].isdigit()
+            ):
+                return "pad-digit"
+        return None
+
+    def set_wait_for_idle(self, seconds):
+        self.idle_waits.append(seconds)
 
     def type_text(self, text):
         if self.type_error:
@@ -313,6 +331,53 @@ def test_unlock_taps_key_digits_like_the_real_pad(fast):
     helpers.unlock()
     assert stub.tapped == list("246810")
     assert stub.typed == []
+
+
+def test_unlock_digit_taps_drop_the_idle_wait_and_restore_it(fast):
+    """Each pad tap paid the session's waitForIdleTimeout (2s ceiling) plus a
+    0.15s sleep — six digits took 4.94s of visible one-finger typing (measured
+    live 2026-08-14). The pad is static, so idle settling buys nothing there:
+    the burst must run at waitForIdleTimeout 0 and put the configured value
+    back afterwards, because the setting rides the shared session everyone
+    else gestures on. (Do NOT batch the taps into one /actions request
+    instead: six down/up cycles in one pointer source entered
+    deterministically WRONG digits, and six parallel pointer sources KILLED
+    WDA outright — both on device 2026-08-14.)"""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"), kind="Key")))
+    helpers.unlock()
+    assert stub.tapped == list("246810")
+    assert stub.idle_waits == [0, config.WDA_IDLE_WAIT]
+
+
+def test_enter_passcode_restores_idle_wait_when_a_tap_raises(fast):
+    """The idle-wait restore is a finally, not a happy-path tail: a tap that
+    dies mid-entry must still put the shared session's settings back."""
+
+    class Dies(StubPhone):
+        def tap(self, x, y):
+            super().tap(x, y)
+            if len(self.tapped) == 2:
+                raise WDAError("boom")
+
+    stub = fast(Dies(_buttons_tree(list("1234567890"), kind="Key")))
+    with pytest.raises(WDAError, match="boom"):
+        helpers._enter_passcode(stub, "246810", stub.tree)
+    assert stub.idle_waits == [0, config.WDA_IDLE_WAIT]
+
+
+def test_unlock_pad_gone_check_is_a_bounded_probe_not_a_source(fast):
+    """After the last digit tap the phone is visibly unlocked, but unlock()
+    still held the viewer busy ~5s: a fixed 0.7s sleep plus one full /source
+    of the freshly unlocked Home Screen — /source's worst case, 3.0-5.7s
+    measured — just to ask "is the pad gone?". A bounded find_first answers
+    the same question in 0.11s (no-match, measured on device 2026-08-14), so
+    the success path must pay exactly ONE full /source: the read that found
+    the pad and aimed the digit taps."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"), kind="Key")))
+    helpers.unlock()
+    assert stub.tapped == list("246810")
+    assert stub.source_calls == 1
+    assert stub.finds >= 1
 
 
 def test_unlock_falls_back_to_typing_for_alphanumeric_passcode(fast, monkeypatch):

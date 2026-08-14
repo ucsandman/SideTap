@@ -1115,6 +1115,28 @@ def _passcode_pad_visible(tree: dict) -> bool:
     return any("passcode" in e["text"].lower() for e in texts)
 
 
+def _pad_digit_probe(pad_tree: dict) -> str:
+    """Class chain matching one digit of the pad we are about to tap.
+
+    The post-type "is the pad still on screen" question does not need a tree:
+    a bounded find_first answers it in 0.11s where the full /source of the
+    freshly unlocked Home Screen — /source's worst case — costs 3.0-5.7s
+    (both measured on device 2026-08-14). Probing a digit the pad actually
+    showed, by its own element type, keeps the check honest for a
+    Button-shaped pad too.
+    """
+    for e in collect_texts(pad_tree):
+        if (
+            e["type"] in ("Button", "Key")
+            and len(e["text"]) == 1
+            and e["text"].isdigit()
+        ):
+            return f'**/XCUIElementType{e["type"]}[`label == "{e["text"]}"`]'
+    # Alphanumeric fallback: the passcode keyboard's keys. Best-effort — the
+    # digit pad above is the real device's shape.
+    return '**/XCUIElementTypeKey[`label == "5"`]'
+
+
 def _scrub_secret(message: str, secret: str | None) -> str:
     """Blank a secret out of an error message before it reaches logs/output."""
     return message.replace(secret, "•••") if secret else message
@@ -1155,10 +1177,27 @@ def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:
     if passcode and all(ch in centers for ch in passcode):
         # The tap coordinates ARE the digits — keep them out of the live feed.
         with redact_actions("passcode entry"):
-            for ch in passcode:
-                x, y = centers[ch]
-                c.tap(x, y)
-                time.sleep(0.15)
+            # Each tap paid the session's waitForIdleTimeout (2s ceiling) plus
+            # a 0.15s sleep: six digits took 4.94s of visible one-finger
+            # typing (measured live 2026-08-14). The pad is static, so idle
+            # settling buys nothing — at waitForIdleTimeout 0 the same six
+            # taps run 2.8s with every digit in order (3/3 device runs).
+            # Restore is a finally: the setting rides the SHARED session. Do
+            # NOT batch the taps into one /actions request instead: six
+            # down/up cycles in one pointer source enter deterministically
+            # WRONG digits, and six parallel pointer sources KILL WDA
+            # outright (both on device 2026-08-14; docs/ERRORS.md).
+            c.set_wait_for_idle(0)
+            try:
+                for ch in passcode:
+                    x, y = centers[ch]
+                    c.tap(x, y)
+            finally:
+                try:
+                    c.set_wait_for_idle(config.WDA_IDLE_WAIT)
+                except WDAError:
+                    pass  # digits are in; a session on eager waits self-heals
+                    # at the next fresh session, failing here would be a lie
         return
     try:
         c.type_text(passcode)
@@ -1294,13 +1333,26 @@ def unlock(c: WDAClient | None = None) -> None:
         wake_and_swipe()
         pad_tree = c.source()  # the screen was redrawn: re-aim the digit taps
     _enter_passcode(c, config.PHONE_PASSCODE, pad_tree)
-    time.sleep(0.7)
-    if _passcode_pad_visible(c.source()):
-        raise WDAError(
-            "Typed the passcode but the pad is still on screen — wrong "
-            "PHONE_PASSCODE, or the screen slept mid-type. Not retrying "
-            "automatically (repeated wrong attempts lock the phone out)."
-        )
+    # Success = the pad leaves the screen. This used to be sleep(0.7) plus a
+    # full /source of the just-unlocked Home Screen — /source's worst case,
+    # 3.0-5.7s measured — so the viewer sat ~5s behind its busy label over a
+    # phone that was visibly unlocked (Wes, live 2026-08-14). A bounded probe
+    # for one of the pad's own digits answers in 0.11s. Attempt-counted with
+    # a wall-clock cap, same shape as pad_appears: tests with a no-op sleep
+    # stay instant, and a slow probe cannot stretch the check past ~3s.
+    probe = _pad_digit_probe(pad_tree)
+    start = time.monotonic()
+    for i in range(8):
+        if c.find_first(probe) is None:
+            return  # pad gone: unlocked
+        if i >= 1 and time.monotonic() - start > 3.0:
+            break
+        time.sleep(0.3)
+    raise WDAError(
+        "Typed the passcode but the pad is still on screen — wrong "
+        "PHONE_PASSCODE, or the screen slept mid-type. Not retrying "
+        "automatically (repeated wrong attempts lock the phone out)."
+    )
 
 
 # ---- screen compaction -------------------------------------------------

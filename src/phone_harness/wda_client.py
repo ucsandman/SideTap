@@ -447,6 +447,16 @@ class WDAClient:
             ]
         )
 
+    def set_wait_for_idle(self, seconds: float) -> None:
+        """Session waitForIdleTimeout. 0 makes gestures fire without waiting
+        for the app to settle — right for a burst at a static screen (the
+        passcode pad), wrong as a resting state: the setting rides the SHARED
+        session, so a caller that drops it must restore config.WDA_IDLE_WAIT
+        in a finally."""
+        self._session_request(
+            "POST", "/appium/settings", {"settings": {"waitForIdleTimeout": seconds}}
+        )
+
     def type_text(self, text: str) -> None:
         """Type into the focused field (tap a field first)."""
         self._session_request("POST", "/wda/keys", {"value": list(text)})

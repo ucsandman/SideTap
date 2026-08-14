@@ -5,6 +5,10 @@ entries only. Newest first.
 
 ---
 
+- **2026-08-14 — Passcode digits typed in visibly slowly (~5s for six)** (Wes: "still typing in the numbers really slowly, that used to be instantly fast"). Root cause: each pad tap paid the session's `waitForIdleTimeout` (2s ceiling) plus a 0.15s sleep — the pre-2026-08-13 "instant" was `/wda/keys`, the exact path a lock-screen notification eats digits through, so a revert was off the table. Fix: `_enter_passcode` runs the tap burst at `waitForIdleTimeout` 0 (the pad is static; nothing to settle) and restores `WDA_IDLE_WAIT` in a finally — 4.94s → 2.6-3.1s live, every digit in order. **Two traps found proving alternatives on Calculator first, NEVER retry them on the pad:** (1) six down/up cycles batched in ONE pointer source enter deterministically WRONG digits (`246810` came out `426861010`, identical across three timings) — on the pad that is wrong passcode attempts toward a lockout; (2) six parallel pointer sources in one `/actions` KILL WDA outright, same class as the unbounded `**/*` query. Prevention: mechanism-test tap experiments in Calculator (its digits are `Key` elements like the pad), never on the lock screen.
+
+- **2026-08-14 — Unlock held the viewer busy ~5s over a visibly unlocked phone** (Wes: "I have to sit here and look at an unlocked phone for like 5 seconds"). Root cause: the wrong-passcode guard after the last digit tap was `sleep(0.7)` + one full `/source` of the freshly unlocked Home Screen — `/source`'s worst case, 3.0-5.7s measured — while `_ACTION_LOCK` kept the busy overlay up. Prevention: ask single-element questions with a bounded `find_first`, never a tree read — the same probe answered in 0.11s (measured), and the live tail is now 0.23s. The guard itself stays: a straight revert would have resurrected the lying-success bug fixed 2026-08-13.
+
 ## 2026-08-14 — Unlock took 30-50s "because of priority notifications": the real 16s was a lock-poisoned session, and the notification only made it reliable
 
 **Symptom.** The viewer's Unlock button took ~30s whenever a priority

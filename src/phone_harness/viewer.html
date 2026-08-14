@@ -1778,6 +1778,29 @@ document.getElementById('btn-text-send').onclick = async () => {
   finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; btn.textContent = 'Send'; }
   loadSent(); renderContactChips();
 };
+// ---- Enter sends; Shift/Ctrl+Enter breaks the line ------------------------
+// Both boxes are "type it, send it" fields, so a bare Enter means the button.
+// Shift+Enter inserts its own newline, but Ctrl+Enter inserts NOTHING in
+// Chromium (measured), so that one is typed in by hand. ANY modifier takes the
+// newline path: a send drives a real phone, so no combo may fire one by
+// surprise. The disabled check is what keeps Enter from double-sending while a
+// send is already in flight — the button is the flag for that (updateActionAvail).
+function enterSends(boxId, btnId) {
+  const box = document.getElementById(boxId);
+  box.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' || ev.isComposing) return;   // IME: Enter picks a candidate
+    if (ev.shiftKey) return;                            // the browser's own newline
+    ev.preventDefault();                                // else a newline lands before the send
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) {
+      box.setRangeText('\n', box.selectionStart, box.selectionEnd, 'end');
+      return;
+    }
+    const btn = document.getElementById(btnId);
+    if (!btn.disabled) btn.click();
+  });
+}
+enterSends('text-msg', 'btn-text-send');
+enterSends('paste-text', 'btn-paste-send');
 // Action controls need the input driver; grey them out with a reason otherwise.
 function updateActionAvail() {
   const tip = inputEnabled ? '' : 'Touch input is down — see checks';

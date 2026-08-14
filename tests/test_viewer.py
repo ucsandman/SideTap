@@ -108,9 +108,9 @@ def base_url():
     # StubClient whose session_id defaults to the same "stub-session" string,
     # so a stale cache from a previous test would otherwise be served here
     # without ever calling window_size() again.
-    viewer._WINDOW_SESSION = None
-    viewer._WINDOW_SIZE = None
-    viewer._WINDOW_ORIENT = None
+    viewer._WINDOW_SESSION = None  # noqa: vulture  (viewer.py reads these)
+    viewer._WINDOW_SIZE = None  # noqa: vulture  (viewer.py reads these)
+    viewer._WINDOW_ORIENT = None  # noqa: vulture  (viewer.py reads these)
     # helpers keeps its own size memo, on the same reasoning, and /api/home
     # reaches the phone through it.
     helpers._size_cache.update({"wh": None, "session_id": None, "orientation": None})
@@ -122,9 +122,9 @@ def base_url():
         viewer.Handler.client = original
         helpers._client = original_helpers_client
         helpers._invalidate_tree()
-        viewer._WINDOW_SESSION = None
-        viewer._WINDOW_SIZE = None
-        viewer._WINDOW_ORIENT = None
+        viewer._WINDOW_SESSION = None  # noqa: vulture  (viewer.py reads these)
+        viewer._WINDOW_SIZE = None  # noqa: vulture  (viewer.py reads these)
+        viewer._WINDOW_ORIENT = None  # noqa: vulture  (viewer.py reads these)
         helpers._size_cache.update(
             {"wh": None, "session_id": None, "orientation": None}
         )
@@ -1134,6 +1134,30 @@ def test_gesture_buttons_give_focus_back_to_the_phone():
     assert "ev.detail > 0" in body
     # The guard that makes the blur necessary in the first place.
     assert "input,textarea,button,select,[tabindex]" in html
+
+
+def test_enter_sends_and_only_a_bare_enter_does():
+    # Enter in the message box sends; Shift/Ctrl+Enter break the line. Ctrl is
+    # the half that cannot be left to the browser: Chromium inserts NOTHING for
+    # Ctrl+Enter in a textarea (measured headless 2026-08-14), so the newline is
+    # typed in by hand there while Shift+Enter keeps the browser's own.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("function enterSends(")
+    body = html[start : html.index("enterSends('text-msg'", start)]
+    assert "if (ev.shiftKey) return;" in body, "Shift+Enter must keep its newline"
+    assert "setRangeText('\\n'" in body, "Ctrl+Enter inserts no newline on its own"
+    # Any modifier takes the newline path: a send drives a real phone, so no
+    # combo may fire one by surprise.
+    assert "ev.ctrlKey || ev.altKey || ev.metaKey" in body
+    # An IME's Enter picks a candidate; sending there would ship half a word.
+    assert "ev.isComposing" in body
+    # updateActionAvail disables the button while a send is in flight — Enter
+    # must respect that or it re-fires the send.
+    assert "if (!btn.disabled) btn.click();" in body
+    # Both "type it, send it" boxes, and nothing else.
+    assert "enterSends('text-msg', 'btn-text-send');" in html
+    assert "enterSends('paste-text', 'btn-paste-send');" in html
+    assert html.count("enterSends(") == 3  # the definition plus those two
 
 
 def test_thread_bubbles_are_never_innerhtml():

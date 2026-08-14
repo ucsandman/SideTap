@@ -233,6 +233,9 @@ class StubPhone:
     def window_size(self):
         return (390.0, 844.0)
 
+    def orientation(self):
+        return "PORTRAIT"
+
     def swipe(self, *_args):
         self.swipes += 1
 
@@ -822,10 +825,16 @@ def test_conversation_cells_exact_name_ordered_first():
 def clean_taint():
     # The UI tree cache is module-global with a 2s TTL, so without this a test
     # reads the previous test's screen (and its flags) instead of its own.
+    # The window_size() memo is guarded by session id only, and most fake
+    # clients in this file have none (getattr default None) — without this
+    # reset, the first test to populate the memo would silently serve its
+    # cached (w, h) to every later test whose stub also reports no session id.
     helpers._invalidate_tree()
+    helpers._size_cache.update(wh=None, session_id=None)
     trust.clear()
     yield
     helpers._invalidate_tree()
+    helpers._size_cache.update(wh=None, session_id=None)
     trust.clear()
 
 
@@ -1129,6 +1138,80 @@ def test_wait_stable_still_waits_out_a_moving_screen(monkeypatch):
     assert frames == []
 
 
+class _SizedClient:
+    """Mirrors real WDAClient's session_id attribute (existing test stubs in
+    this file lack it), so the memo's session-guard has something to key on."""
+
+    def __init__(self, session_id, wh=(390.0, 844.0), orientation="PORTRAIT"):
+        self.session_id = session_id
+        self.wh = wh
+        self.orient = orientation
+        self.calls = 0
+
+    def window_size(self):
+        self.calls += 1
+        return self.wh
+
+    def orientation(self):
+        return self.orient
+
+
+def _fresh_size_cache(monkeypatch):
+    """The memo is module state; a leftover entry would fake a hit or a miss."""
+    monkeypatch.setattr(
+        helpers, "_size_cache", {"wh": None, "session_id": None, "orientation": None}
+    )
+
+
+def test_window_size_is_memoised_within_a_session(monkeypatch):
+    # window_size() is a measured 201ms round trip. scroll(),
+    # scroll_until_found(), find_on_home_screen(), read_messages() and unlock()
+    # all paid it fresh every time.
+    stub = _SizedClient(session_id="abc")
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    _fresh_size_cache(monkeypatch)
+
+    assert helpers._window_size() == (390.0, 844.0)
+    assert helpers._window_size() == (390.0, 844.0)
+
+    assert stub.calls == 1, f"window_size() was called {stub.calls} times, want 1"
+
+
+def test_window_size_refetches_after_a_session_change(monkeypatch):
+    # A stale (w, h) served across a session change is one half of the
+    # regression this guards against; rotation is the other half, below.
+    stub = _SizedClient(session_id="abc", wh=(390.0, 844.0))
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    _fresh_size_cache(monkeypatch)
+    helpers._window_size()
+
+    stub.session_id = "def"
+    stub.wh = (428.0, 926.0)
+    assert helpers._window_size() == (428.0, 926.0)
+
+    assert stub.calls == 2, f"window_size() was called {stub.calls} times, want 2"
+
+
+def test_window_size_refetches_after_a_rotation(monkeypatch):
+    # /window/size reports the ACTIVE APPLICATION's frame, so width and height
+    # swap when the device rotates — the session id cannot see that, and the
+    # memo outlives the whole MCP session. Serving a stale landscape 844x390
+    # makes unlock() swipe from x=422 on a 390-point-wide portrait lock screen,
+    # so the bottom-edge swipe never lands and the pad never appears: exactly
+    # the "Unlock did nothing" symptom in docs/ERRORS.md. orientation() is
+    # 7.7ms against 201ms, which is why the guard is affordable.
+    stub = _SizedClient(session_id="abc", wh=(390.0, 844.0))
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    _fresh_size_cache(monkeypatch)
+    assert helpers._window_size() == (390.0, 844.0)
+
+    stub.orient = "LANDSCAPE"
+    stub.wh = (844.0, 390.0)
+    assert helpers._window_size() == (844.0, 390.0), "served a stale portrait size"
+
+    assert stub.calls == 2, f"window_size() was called {stub.calls} times, want 2"
+
+
 def test_tap_text_out_of_range_index_reports_the_hit_count(monkeypatch):
     # hits[index] raised a bare IndexError with no count, forcing the agent to
     # spend another find_text()/ocr() round trip to learn what it already had.
@@ -1301,6 +1384,27 @@ def test_set_field_text_returns_what_actually_landed_not_what_was_asked(
     )
 
     assert helpers.set_field_text(field, "On my way") == "draft + On my way"
+
+
+def test_set_field_text_never_calls_ocr_for_a_text_field(monkeypatch):
+    # _clear_field() used to open with ocr() -> ui_tree() -> client().source()
+    # looking for a Clear-text button that is a SearchField-only affordance.
+    # Because the tap that just happened invalidated the tree cache, that read
+    # was ALWAYS cold: a guaranteed 3.5-7.4s on send_message's TextField path,
+    # for a search that can never find anything there.
+    stub = StubField(value="old draft")
+    ocr_calls = []
+    field = {"type": "TextField", "text": "Message", "x": 100, "y": 800}
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    monkeypatch.setattr(helpers, "ocr", lambda: ocr_calls.append(1) or [])
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers, "tap", lambda x, y: None)
+    monkeypatch.setattr(helpers, "type_text", lambda t: None)
+
+    helpers.set_field_text(field, "On my way", verify=False)
+
+    assert ocr_calls == [], f"ocr() was called {len(ocr_calls)} time(s) for a TextField"
+    assert stub.cleared == 1, "the field still needs clearing via element_clear"
 
 
 def test_ui_tree_refetches_when_another_process_touched_the_phone(
@@ -1628,6 +1732,9 @@ def test_find_on_home_screen_starts_the_scan_at_page_one(monkeypatch):
         def window_size(self):
             return (440.0, 956.0)
 
+        def orientation(self):
+            return "PORTRAIT"
+
         def find_first(self, _chain):
             return "42"
 
@@ -1667,6 +1774,70 @@ def test_find_on_home_screen_starts_the_scan_at_page_one(monkeypatch):
     el = helpers.find_on_home_screen("Wanted", max_pages=3)
     assert el["type"] == "Icon"
     assert stub.scanned[0] == 1, f"scan began on page {stub.scanned[0]}, not page 1"
+
+
+def test_find_on_home_screen_does_not_pay_wait_stable_per_page(monkeypatch):
+    # wait_stable() cost 299ms/page on an already-still screen. The loop
+    # already re-reads via find_text() to confirm what landed after each
+    # swipe (WDA_IDLE_WAIT already absorbs the settle inside /actions, same
+    # evidence that retired goto_home_page()'s old _PAGE_SETTLE sleep), so
+    # this wait bought nothing. Unlike scroll_until_found, which keeps it.
+    helpers._invalidate_tree()
+
+    class Pages:
+        """Two Home Screen pages; the wanted icon lives only on page 2."""
+
+        def __init__(self):
+            self.index = 1
+
+        def window_size(self):
+            return (440.0, 956.0)
+
+        def orientation(self):
+            return "PORTRAIT"
+
+        def find_first(self, _chain):
+            return "42"
+
+        def element_value(self, _eid):
+            return f"Page {self.index} of 2"
+
+        def swipe(self, x1, _y1, x2, _y2, _seconds=0.3):
+            self.index += -1 if x2 > x1 else 1
+
+        def home(self):
+            pass
+
+        def active_app(self):
+            return {"bundleId": "com.apple.springboard"}
+
+        def source(self):
+            label = "Wanted" if self.index == 2 else "Other"
+            return {
+                "type": "Application",
+                "rect": {"x": 0, "y": 0, "width": 440, "height": 956},
+                "children": [
+                    {
+                        "type": "Icon",
+                        "label": label,
+                        "isVisible": "1",
+                        "rect": {"x": 80, "y": 300, "width": 80, "height": 100},
+                    }
+                ],
+            }
+
+    stub = Pages()
+    calls = []
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(helpers, "wait_stable", lambda *a, **k: calls.append(1))
+
+    el = helpers.find_on_home_screen("Wanted", max_pages=3)
+
+    assert el["type"] == "Icon"
+    assert calls == [], (
+        f"wait_stable() was called {len(calls)} time(s) in the page loop"
+    )
 
 
 def test_goto_home_page_leaves_an_open_app_first(monkeypatch):

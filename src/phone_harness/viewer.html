@@ -628,6 +628,7 @@ function startStream(port) {
 }
 
 async function loadStatus() {
+  if (document.hidden) return;   // hidden tab: don't re-open the MJPEG stream
   try {
     const s = await getJSON('/api/status');
     // A restarted viewer serves new endpoints this page's JS may not know
@@ -861,6 +862,7 @@ function appName(app) {
   return (app && (app.name || String(app.bundleId || '').split('.').pop())) || '?';
 }
 async function loadPhone() {
+  if (document.hidden) return;   // hidden tab: stop touching the phone over USB
   try {
     const p = await getJSON('/api/phone');
     const bits = [];
@@ -907,6 +909,28 @@ window.addEventListener('load', () => {
     clearTimeout(refit);
     refit = setTimeout(() => { renderAppChips(); renderThread(); }, 150);
   });
+});
+
+// A hidden tab still pulls ~334 KB/s of MJPEG video plus two phone-touching
+// polls (loadStatus, loadPhone), contending with an agent's own WDA session
+// over the same USB link. Closing screen.src here is not enough by itself:
+// loadStatus's own `if (s.mjpeg) startStream(...)` would re-open the stream
+// the next time its 5s setInterval fires, because Chrome only coalesces
+// hidden-tab timers to 1s granularity for the first 5 minutes — it does not
+// stop them running. loadStatus and loadPhone each early-return on
+// document.hidden instead (top of each function), so the interval still
+// fires but does nothing. loadApproval is left running untouched here on
+// purpose: the send-approval gate must stay armed while the tab is hidden.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    screen.onload = null;
+    screen.onerror = null;
+    screen.src = '';
+    streaming = false;
+  } else {
+    // Instant restore, not a wait for the next poll tick.
+    loadStatus(); loadPhone(); poll();
+  }
 });
 
 // ---- kill switch: blocks all agent actions until resumed -------------------

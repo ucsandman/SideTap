@@ -6,11 +6,13 @@ their pids and logs kept in .state/ so `up` and `down` can manage them.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -22,6 +24,35 @@ class DeviceError(RuntimeError):
 
 
 PROCS = ("tunnel", "runwda", "forward8100", "forward9100")
+
+
+# ---- per-run subprocess memoization -----------------------------------------
+# `ios list`, `ios apps --list` and netstat each get called more than once
+# inside a SINGLE doctor pass (see admin._check_wda_installed / _check_ports_local).
+# At a 207ms-per-spawn floor that is real, repeated cost for nothing — but a
+# stale check is a lying check, so this must never survive past one call to
+# `memoized_run()`. Nothing outside that contextmanager is ever cached.
+# threading.local()-backed, not a module global: viewer.py runs a
+# ThreadingHTTPServer (one thread per request) plus _heal_loop and
+# _refresh_lan_state background threads, and a doctor pass takes ~4s. A shared
+# global let two overlapping blocks' exits stomp each other's restore, leaving
+# a non-None dict frozen forever after both had exited, and let a thread that
+# never entered memoized_run() at all read whatever thread currently had a
+# block open. Each thread now gets its own independent `.cache`.
+_run_cache = threading.local()
+
+
+@contextlib.contextmanager
+def memoized_run():
+    """Scope subprocess results to one caller-defined "run" (e.g. one doctor
+    pass). Entering resets the cache to empty; exiting restores whatever was
+    there before (supports nesting, though nothing today nests it)."""
+    previous = getattr(_run_cache, "cache", None)
+    _run_cache.cache = {}
+    try:
+        yield
+    finally:
+        _run_cache.cache = previous
 
 
 def ios_path() -> str | None:
@@ -72,15 +103,35 @@ def _json_lines(text: str) -> list[dict]:
 
 def list_devices() -> list[str]:
     """UDIDs of USB-connected iPhones."""
+    cache = getattr(_run_cache, "cache", None)
+    if cache is not None and "list_devices" in cache:
+        return cache["list_devices"]
     proc = _run(["list"])
+    result = []
     for obj in _json_lines(proc.stdout + proc.stderr):
         if "deviceList" in obj:
-            return list(obj["deviceList"])
-    return []
+            result = list(obj["deviceList"])
+            break
+    if cache is not None:
+        cache["list_devices"] = result
+    return result
+
+
+def _apps_cache_file() -> Path:
+    return config.STATE_DIR / "apps_cache.json"
 
 
 def list_apps() -> list[dict]:
-    """Installed apps as [{bundle_id, name}]. Parses go-ios output tolerantly."""
+    """Installed apps as [{bundle_id, name}]. Parses go-ios output tolerantly.
+
+    Deep sleep EMPTIES `ios apps --list` while the apps stay installed (same
+    failure mode as detect_wda_bundle's own cache, docs/ERRORS.md) — a live
+    empty result never overwrites a good persisted list, and a live non-empty
+    result always does (so a newly installed app is still findable).
+    """
+    cache = getattr(_run_cache, "cache", None)
+    if cache is not None and "list_apps" in cache:
+        return cache["list_apps"]
     proc = _run(["apps", "--list"], timeout=15)
     apps = []
     for obj in _json_lines(proc.stdout):
@@ -95,15 +146,27 @@ def list_apps() -> list[dict]:
                     "name": obj.get("CFBundleName") or obj.get("name", ""),
                 }
             )
+    if not apps:
+        # fallback: plain "bundleid name" lines
+        for line in proc.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) >= 1 and "." in parts[0]:
+                apps.append(
+                    {"bundle_id": parts[0], "name": parts[1] if len(parts) > 1 else ""}
+                )
     if apps:
-        return apps
-    # fallback: plain "bundleid name" lines
-    for line in proc.stdout.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) >= 1 and "." in parts[0]:
-            apps.append(
-                {"bundle_id": parts[0], "name": parts[1] if len(parts) > 1 else ""}
-            )
+        try:
+            config.STATE_DIR.mkdir(exist_ok=True)
+            _apps_cache_file().write_text(json.dumps(apps), encoding="utf-8")
+        except OSError:
+            pass
+    else:
+        try:
+            apps = json.loads(_apps_cache_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            apps = []
+    if cache is not None:
+        cache["list_apps"] = apps
     return apps
 
 
@@ -407,14 +470,13 @@ def _free_port(port: int) -> None:
             )
 
 
-def port_exposed_to_lan(port: int) -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
-    """True if `port` is LISTENING on any address other than loopback.
-
-    go-ios 1.2.1 has no bind-address flag, so `ios forward` listens on 0.0.0.0 —
-    reachable by the whole LAN. Reuses the netstat parse from `_free_port`.
-    """
-    if sys.platform != "win32":
-        return False
+def _netstat_ano_lines() -> list[str]:
+    """`netstat -ano -p tcp` output lines, memoized within one memoized_run()
+    block (doctor checks WDA_PORT and MJPEG_PORT with two separate calls that
+    would otherwise spawn netstat twice for the identical output)."""
+    cache = getattr(_run_cache, "cache", None)
+    if cache is not None and "netstat" in cache:
+        return cache["netstat"]
     try:
         proc = subprocess.run(
             ["netstat", "-ano", "-p", "tcp"],
@@ -422,9 +484,23 @@ def port_exposed_to_lan(port: int) -> bool:  # noqa: vulture  (called from admin
             text=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+        lines = proc.stdout.splitlines()
     except OSError:
+        lines = []
+    if cache is not None:
+        cache["netstat"] = lines
+    return lines
+
+
+def port_exposed_to_lan(port: int) -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
+    """True if `port` is LISTENING on any address other than loopback.
+
+    go-ios 1.2.1 has no bind-address flag, so `ios forward` listens on 0.0.0.0 —
+    reachable by the whole LAN.
+    """
+    if sys.platform != "win32":
         return False
-    for line in proc.stdout.splitlines():
+    for line in _netstat_ano_lines():
         parts = line.split()
         if (
             len(parts) >= 4

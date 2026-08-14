@@ -45,8 +45,54 @@ def screenshot(path: str | None = None) -> bytes:
 
 def screen_info() -> dict:
     """Window size in points; tap coordinates must stay inside this."""
-    w, h = client().window_size()
+    w, h = _window_size()
     return {"width": w, "height": h, "units": "points"}
+
+
+# window_size() is a measured 201ms round trip (WDA resolves the ACTIVE
+# APPLICATION's frame to answer it), and half a dozen call sites paid it on
+# every single scroll/page/read. Memoised here, NOT inside WDAClient: about a
+# dozen tests in test_wda_client.py use window_size() as their one-request
+# session-heal probe, and caching it at the client would silence exactly the
+# round trip those tests assert on.
+#
+# The guard is session id AND orientation, and the orientation half is not
+# optional. It is NOT a screen constant: width and height swap when the device
+# rotates, and before this memo existed every call site handled that correctly
+# and for free by always asking. Session id alone cannot see a rotation, and
+# the memo lives as long as the process — which for the MCP server is the whole
+# session. A stale value here is not a slow tap, it is a tap at coordinates off
+# the side of the screen: unlock() swipes from x=w/2, so a cached landscape
+# 844x390 makes it swipe at x=422 on a 390-point-wide portrait lock screen, the
+# bottom-edge swipe never lands, the pad never appears and unlock() raises.
+# "The Unlock button did nothing" is a symptom this project has already
+# debugged three times (docs/ERRORS.md 2026-08-12, 2026-08-13 x2), and
+# find_on_home_screen's page swipe and the screen_info() MCP tool read the same
+# value. orientation() costs 7.7ms against 201ms, so the guard keeps ~193ms of
+# the saving and gives correctness back.
+_size_cache: dict = {"wh": None, "session_id": None, "orientation": None}
+
+
+def _window_size(c: WDAClient | None = None) -> tuple[float, float]:
+    c = c or client()
+    # 7.7ms to prove the phone has not rotated under a 201ms memo. Read the
+    # session id AFTER it, never before: orientation() is a session request, so
+    # it heals an evicted session, and a sid sampled first would still be the
+    # dead one — which is exactly what the stale entry is keyed on, so the
+    # guard would match itself and serve the stale size.
+    orient = c.orientation()
+    sid = getattr(c, "session_id", None)
+    if (
+        _size_cache["wh"] is not None
+        and _size_cache["session_id"] == sid
+        and _size_cache["orientation"] == orient
+    ):
+        return _size_cache["wh"]
+    wh = c.window_size()
+    _size_cache["wh"] = wh
+    _size_cache["session_id"] = sid
+    _size_cache["orientation"] = orient
+    return wh
 
 
 def collect_texts(node: dict, out: list | None = None) -> list[dict]:
@@ -175,7 +221,7 @@ def scroll(direction: str = "down", amount: float = 0.4) -> None:
 
     'down' means see content further down (content moves up).
     """
-    w, h = client().window_size()
+    w, h = _window_size()
     cx, cy = w / 2, h / 2
     dx = dy = 0.0
     if direction == "down":
@@ -260,7 +306,7 @@ def scroll_until_found(
     hiding under the nav bar does not count as found, because tapping it hits
     the bar instead of the row — that exact mis-tap is what this prevents.
     """
-    _, h = client().window_size()
+    _, h = _window_size()
     for _ in range(max_scrolls + 1):
         for el in find_text(text, exact=exact):
             if _in_reach(el, h):
@@ -281,7 +327,7 @@ def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
     first free slot, which is usually the last page, so this is the normal way
     to find one. Icons inside folders are not visible to this.
     """
-    w, h = client().window_size()
+    w, h = _window_size()
     # Start at page 1 or the scan silently begins wherever you happen to be and
     # misses everything behind you. This used to be two press_home() calls on
     # the belief that a second press pages back — it does not, /wda/homescreen
@@ -292,8 +338,12 @@ def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
         for el in find_text(text):
             if el.get("type") == "Icon":
                 return el
+        # No wait_stable() here (unlike scroll_until_found): WDA_IDLE_WAIT
+        # already absorbs the swipe settle inside the /actions call itself
+        # (same evidence that retired goto_home_page()'s old 0.55s
+        # _PAGE_SETTLE), and the next find_text() re-reads to confirm what
+        # landed. 299ms/page measured on a still screen before this removal.
         swipe(w * 0.9, h / 2, w * 0.1, h / 2, 0.3)
-        wait_stable(timeout=3)
     raise WDAError(
         f"No Home Screen icon named {text!r} in the first {max_pages} pages. "
         "It may be inside a folder, where this cannot see it."
@@ -372,16 +422,26 @@ def _field_value(eid: str | None) -> str | None:
         return None
 
 
-def _clear_field(eid: str | None) -> None:
-    """Empty the field, in order of reliability."""
-    clear = [
-        e
-        for e in ocr()
-        if e["type"] == "Button" and e["text"].strip() in ("Clear text", "Clear")
-    ]
-    if clear:  # search fields carry an explicit button
-        tap(clear[0]["x"], clear[0]["y"])
-        return
+def _clear_field(eid: str | None, field: dict | None = None) -> None:
+    """Empty the field, in order of reliability.
+
+    The explicit Clear-text button is a SearchField affordance, not a
+    TextField one (confirmed on device — the Messages compose bar never
+    grows one). set_field_text()'s only real caller, send_message(), always
+    passes a TextField, so searching for the button there was a full ocr()
+    -> ui_tree() -> /source fetch (3.5-7.4s, always cold: the tap that just
+    happened invalidated the cache) that could structurally never find
+    anything. Skip the search unless the caller is looking at a SearchField.
+    """
+    if field is None or field.get("type") == "SearchField":
+        clear = [
+            e
+            for e in ocr()
+            if e["type"] == "Button" and e["text"].strip() in ("Clear text", "Clear")
+        ]
+        if clear:  # search fields carry an explicit button
+            tap(clear[0]["x"], clear[0]["y"])
+            return
     if eid is not None:
         try:  # WebDriver's own clear: one call, any content length
             client().element_clear(eid)
@@ -414,7 +474,7 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
     tap(field["x"], field["y"])
     time.sleep(0.4)  # keyboard slide-up, or the first keys are dropped
     eid = _field_element(field)
-    _clear_field(eid)
+    _clear_field(eid, field)
     type_text(text)  # /wda/keys goes to the real first responder, which is right
     if not verify:
         return text
@@ -901,7 +961,7 @@ def read_messages(contact: str, limit: int = 20) -> list[dict]:
     """
     with trust.internal():  # navigating to the thread is bookkeeping, not content
         _open_thread(contact)
-        w, _h = client().window_size()
+        w, _h = _window_size()
         bubbles = _message_bubbles(ui_tree(), w)[-limit:]
     # Incoming messages are the most direct injection route into this agent,
     # so name this source specifically rather than leaving it as "screen".
@@ -1149,7 +1209,13 @@ def unlock(c: WDAClient | None = None) -> None:
         # 2026-08-12). A lit screen is what "in use" actually means.
         if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
             return  # frontmost app on a lit screen — touch nothing
-    w, h = c.window_size()  # before the wake, so it can't eat awake-time
+    # Deliberately NOT the _window_size() memo: unlock reads this once, and a
+    # lock almost always evicts the session, so the memo would miss anyway and
+    # the orientation guard would just add a SECOND round trip to the most
+    # timing-sensitive path here — the first gesture after a deep sleep blocked
+    # WDA 20.5s (measured), and this function already has three ERRORS.md
+    # entries. One call, before the wake, so it can't eat awake-time.
+    w, h = c.window_size()
     _invalidate_tree()  # about to change the screen, like any other action
 
     def wake_and_swipe():

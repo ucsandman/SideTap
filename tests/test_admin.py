@@ -259,3 +259,110 @@ def test_signature_check_seconds_left_is_countdown_not_expired(monkeypatch, tmp_
     ok, detail, _fix = admin._check_signature()
     assert not ok
     assert "expires in 0h" in detail
+
+
+# ---- doctor_results() must memoize its subprocess-backed checks for the
+# DURATION OF ONE PASS ONLY. `ios list` is called by both _check_device and
+# _check_wda_installed; `ios apps --list` is called inside detect_wda_bundle
+# and again directly. At the 207ms spawn floor that is real, wasted cost —
+# but a stale check is a lying check, so a second, separate doctor_results()
+# call must always re-spawn.
+
+
+class _FakeProc:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+def test_doctor_results_memoizes_ios_list_within_one_pass(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")
+    calls = {"list": 0, "apps": 0}
+
+    def fake_run(args, timeout=30.0):
+        if args[0] == "list":
+            calls["list"] += 1
+            return _FakeProc('{"deviceList":["X"]}')
+        if args[:2] == ["apps", "--list"]:
+            calls["apps"] += 1
+            return _FakeProc(
+                '{"CFBundleIdentifier":"com.x.WebDriverAgentRunner.xctrunner",'
+                '"CFBundleName":"WDA"}'
+            )
+        return _FakeProc("")
+
+    monkeypatch.setattr(admin.device, "_run", fake_run)
+    # CHECKS entries are bound to function objects at import time, so
+    # monkeypatching admin._check_x doesn't affect them — isolate the two
+    # subprocess-backed checks under test rather than faking every other
+    # check's unrelated external dependency (tunnel, DDI, screenshot, ...).
+    monkeypatch.setattr(
+        admin,
+        "CHECKS",
+        [
+            (n, fn)
+            for n, fn in admin.CHECKS
+            if fn in (admin._check_device, admin._check_wda_installed)
+        ],
+    )
+
+    results = admin.doctor_results()
+    assert all(r["ok"] for r in results)
+    # _check_device calls list_devices() once; _check_wda_installed calls it
+    # again as its own connected-phone guard — both inside ONE pass.
+    assert calls["list"] == 1
+    # detect_wda_bundle() finds WDA on the first apps call, so
+    # _check_wda_installed's own extra list_apps() call is never reached —
+    # still proves the memo: without it this would still read 1, so pin the
+    # cross-run behaviour below to actually catch a missing memo.
+    assert calls["apps"] == 1
+
+    # A SECOND, separate pass must re-spawn — never read stale results.
+    admin.doctor_results()
+    assert calls["list"] == 2
+    assert calls["apps"] == 2
+
+
+# ---- _wait_for_wda(): WDA's /status probe is 3.8ms median (measured on
+# device), so the old 2s sleep between checks wasted up to ~2s per iteration.
+# Pinned at 0.25s so a refactor can't quietly reintroduce the 2s wait.
+
+
+class _FakeClient:
+    def __init__(self, up_on_call):
+        self.up_on_call = up_on_call
+        self.calls = 0
+
+    def is_up(self):
+        self.calls += 1
+        return self.calls >= self.up_on_call
+
+
+def test_wait_for_wda_polls_at_quarter_second_interval(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(admin.time, "sleep", lambda s: sleeps.append(s))
+    clock = [0.0]
+    monkeypatch.setattr(admin.time, "time", lambda: clock[0])
+    client = _FakeClient(up_on_call=3)
+    deadline = 100.0  # far away; is_up() succeeding ends the loop first
+    assert admin._wait_for_wda(client, deadline) is True
+    assert sleeps == [0.25, 0.25]  # slept once per FAILED check, not 2s
+
+
+def test_wait_for_wda_gives_up_at_the_deadline(monkeypatch):
+    sleeps = []
+    clock = [0.0]
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(admin.time, "sleep", fake_sleep)
+    monkeypatch.setattr(admin.time, "time", lambda: clock[0])
+    client = _FakeClient(up_on_call=10_000)  # never succeeds
+    deadline = 1.0
+    assert admin._wait_for_wda(client, deadline) is False
+    assert clock[0] >= deadline
+    assert clock[0] < deadline + 0.25  # stopped promptly, not overshooting far

@@ -303,6 +303,20 @@ class WDAClient:
         value = self._session_request("GET", "/window/size")
         return float(value["width"]), float(value["height"])
 
+    def orientation(self) -> str:
+        """Screen orientation (PORTRAIT/LANDSCAPE) — the cheap guard for a
+        cached window_size().
+
+        Measured on device 2026-08-14: 7.7ms against 201ms for /window/size.
+        The gap is not session overhead — session routing is free (GET
+        /session/{id} is 4.2ms) — it is that /window/size resolves the ACTIVE
+        APPLICATION's frame and this does not. Being a _session_request is
+        load-bearing twice over: it heals an evicted session like any other
+        action, and it raises WDAError when WDA is gone, so a caller serving a
+        memo can still tell a live link from a dead one.
+        """
+        return str(self._session_request("GET", "/orientation"))
+
     def source(self) -> dict:
         """Full UI element tree as nested dicts (type, label, name, value, rect, children)."""
         return self._session_request("GET", "/source?format=json")

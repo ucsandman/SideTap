@@ -5,6 +5,102 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-14 — Seven perf wins shipped green and carried four defects, two of them CRITICAL
+
+**Symptom.** A parallel build of the top seven latency wins finished with the
+full suite green (365 passed, 16 new tests, every lane having proved its own
+tests could fail). An adversarial review pass then found four real defects.
+
+**What the green suite did not catch.**
+- `/api/status` memoised `window_size()` — which was the ONLY WDA request that
+  endpoint made. On a cache hit it made no network call at all, so it reported
+  `"input": True` over a dead link indefinitely. Deep sleep kills WDA ~15min
+  after the screen darkens, so that is the normal case, and viewer.html HIDES
+  the Restart-link and fix-input buttons while input is true. The optimisation
+  removed a round trip that was also doing a second job.
+- `device._run_cache` was a module global mutated by a save/restore
+  contextmanager in a `ThreadingHTTPServer` process. Two overlapping doctor
+  passes leave a non-None dict frozen for the life of the process.
+- The `window_size` memo had no rotation guard, so a landscape app could poison
+  `unlock()`'s swipe geometry.
+- The viewer's hidden-tab guard closed `screen.src` but left `setInterval(
+  loadStatus, 5000)` running, and `loadStatus` re-opened the stream on the next
+  tick. **The optimisation did nothing and its test passed**, because the test
+  only grepped the handler's own body — the bug lived one function away.
+
+**Root cause of the pattern.** Every one of these is a change that is correct in
+isolation and wrong in context: a removed call that had a second job, a cache
+with no invalidation for the thing that actually changes, a guard placed one
+scope away from what it guards. Unit tests written by the same reasoning that
+produced the change inherit its blind spot.
+
+**Prevention.** A green suite is evidence the code does what its author thought,
+never that the author was right. For any change that REMOVES a call, ask what
+else that call was doing. For any cache, name what invalidates it and whether a
+second thread or process can change the thing behind its back. For any guard,
+prove it is in the code path that actually does the work — and write the test
+against that path, not against the guard's own source text.
+
+---
+
+## 2026-08-14 — Every "impossibly fast" WDA reading was an error body. 11,804 bytes is the tell.
+
+**Symptom.** While benchmarking `/source`, three separate "huge win" results
+appeared and all three were false: `?format=xml` looked 400x faster than
+`?format=json`; `/session/{id}/screen` looked like a free 3.7 ms replacement for
+the 211 ms `/window/size`; and the same 655 KB tree looked like it could be
+served in 9 ms instead of 7 s.
+
+**Root cause.** All of them were error responses, timed without reading the body.
+- `?format=xml` at 8 ms / 11,804 B was `{"error": "invalid session id"}` — the
+  shared session had rotated mid-benchmark.
+- `/session/{id}/screen` at 3.7 ms was `{"error": "unknown command"}`. The
+  endpoint does not exist. The real one is `/session/{id}/wda/screen`, and it
+  costs **291-300 ms** — *more* than `/window/size`, so it cannot replace it.
+- The 9 ms `/source` runs were the same `invalid session id` error, because the
+  benchmark had captured `SID` into a shell variable before the session rotated.
+
+**The tell.** An `invalid session id` body is **11,804 bytes** and answers in
+about 9 ms. Any WDA timing near those two numbers is an error, not a win.
+
+**Prevention.** Never time a WDA endpoint without asserting on the body. Re-read
+`.state/wda_session` per request rather than caching the id in a variable across
+a long run — the session rotated four times during ~30 minutes of read-only
+probing. And when a benchmark shows a 100x+ win, treat it as a measurement bug
+until the payload is proved identical: here the honest xml-vs-json number was
+~15% and 7.2x fewer bytes, not 400x.
+
+**Also settled by the same session.** `waitForIdleTimeout` 2 vs 0 makes no
+measurable difference to `/source` (interleaved, order-alternated A/B: +3%, noise).
+An A-then-B run had suggested 0 was 2.3x *slower*; that was time drift, not the
+setting. Interleave before believing any A/B on this device.
+
+---
+
+## 2026-08-14 — A passing test suite that fails at random: the clock spelled out the passcode
+
+**Symptom.** `python -m pytest tests -q` failed on
+`test_redact_actions_hides_gesture_coordinates`. The identical command re-run
+seconds later gave 349 passed. Nothing had changed.
+
+**Root cause.** The test typed `wda.tap(123, 456)` inside `redact_actions` and
+then asserted `"123" not in text and "456" not in text` over the WHOLE activity
+log file. Each line is `{"ts": time.time(), "action": ...}` — about ten digits of
+epoch. The clock passed through 1786123456 and the substring scan matched the
+timestamp, not a leak. A time bomb: the test fails whenever the current epoch
+happens to contain the two coordinates.
+
+**Fix.** Scan every field EXCEPT `ts`
+(`tests/test_wda_client.py`). Dropping only the clock keeps a future new field
+covered, so the test still fails if redaction genuinely leaks.
+
+**Prevention.** Never substring-scan a log line that carries a timestamp for a
+short numeric literal. Assert against parsed fields. Verified both directions:
+with `redact_actions` neutered the assertion still fires, and with the clock
+pinned to 1786123456 the old form trips while the new one does not.
+
+---
+
 ## 2026-08-14 — Renewing early is IMPOSSIBLE on a free ID, and chasing it broke a working install twice
 
 **Symptom.** Following up the entry below: with everything green, we tried to

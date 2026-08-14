@@ -184,6 +184,15 @@ def _png_size(png: bytes) -> tuple[int, int]:
 # session creator applies those (wda_client._create_session, config-driven).
 _TUNED_SESSION: str | None = None
 
+# window_size() is a device constant (201ms, never changes for a given screen)
+# but its HTTP round trip also heals client.session_id on eviction, which is
+# exactly what _tune_mjpeg checks right after — so this is keyed on session id,
+# same as _TUNED_SESSION above, not cached forever. A genuine session change
+# still pays the round trip once.
+_WINDOW_SESSION: str | None = None
+_WINDOW_SIZE: tuple[float, float] | None = None
+_WINDOW_ORIENT: str | None = None
+
 
 def _tune_mjpeg(client: WDAClient) -> None:
     global _TUNED_SESSION
@@ -408,7 +417,36 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({**_LAST_STATUS, **fresh})
                     return
                 try:
-                    w, h = self.client.window_size()
+                    global _WINDOW_SESSION, _WINDOW_SIZE, _WINDOW_ORIENT
+                    # window_size() is 201ms and answers a value that only a
+                    # rotation changes, so it is memoised — but it was also the
+                    # ONLY WDA request this endpoint made, and "input": True
+                    # below is the claim that the link is alive. Serving the
+                    # memo without asking the phone anything reports a healthy
+                    # link over a dead one for as long as the outage lasts, and
+                    # deep sleep kills WDA ~15min after the screen darkens, so
+                    # that is the normal case, not an edge one. viewer.html
+                    # HIDES btn-up ("Restart link") and btn-fix while input is
+                    # true, so the lie also removes the two buttons that fix
+                    # it. orientation() keeps the endpoint honest for 7.7ms: it
+                    # raises WDAError when WDA is gone (falling through to the
+                    # go-ios pixel-size branch below), it heals an evicted
+                    # session the way the window_size() round trip used to so
+                    # _tune_mjpeg still sees the change, and it doubles as the
+                    # rotation guard the memo needs.
+                    orient = self.client.orientation()
+                    sid = self.client.session_id
+                    if (
+                        sid
+                        and sid == _WINDOW_SESSION
+                        and _WINDOW_SIZE is not None
+                        and orient == _WINDOW_ORIENT
+                    ):
+                        w, h = _WINDOW_SIZE
+                    else:
+                        w, h = self.client.window_size()
+                        _WINDOW_SESSION, _WINDOW_SIZE = sid, (w, h)
+                        _WINDOW_ORIENT = orient
                     _tune_mjpeg(self.client)
                     _LAST_STATUS = {
                         "window": {"width": w, "height": h},

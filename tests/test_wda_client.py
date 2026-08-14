@@ -355,9 +355,13 @@ def test_redact_actions_hides_gesture_coordinates(wda, tmp_path, monkeypatch):
     with wda_client.redact_actions("passcode entry"):
         wda.tap(123, 456)
     wda.tap(10, 20)
-    text = activity_file().read_text(encoding="utf-8")
-    assert "123" not in text and "456" not in text
-    actions = [r["action"] for r in _feed_lines(tmp_path)]
+    # Scan every field EXCEPT "ts": the epoch is ~10 digits of clock, and it
+    # contains "123" or "456" often enough to fail this test at random (it did,
+    # 2026-08-14). Dropping only the timestamp keeps a future new field covered.
+    records = _feed_lines(tmp_path)
+    leaked = json.dumps([{k: v for k, v in r.items() if k != "ts"} for r in records])
+    assert "123" not in leaked and "456" not in leaked
+    actions = [r["action"] for r in records]
     assert actions == ["passcode entry", "tap (10, 20)"]
 
 

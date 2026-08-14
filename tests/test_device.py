@@ -1,6 +1,8 @@
 """ios_path fallback for truncated-PATH launches (shortcut/Startup). No phone needed."""
 
+import json
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
@@ -135,6 +137,184 @@ def test_wda_bundle_no_cache_fallback_when_app_really_absent(monkeypatch, tmp_pa
         lambda: [{"bundle_id": "com.apple.mobilesafari", "name": ""}],
     )
     assert device.detect_wda_bundle() is None
+
+
+# ---- list_apps() persistent cache: same deep-sleep-empties-the-list failure
+# mode as detect_wda_bundle's own cache, but now lives INSIDE list_apps()
+# itself so every caller (helpers.open_app, admin._check_wda_installed,
+# detect_wda_bundle) benefits without touching helpers.py.
+
+
+def _ios_apps_proc(bundle_ids):
+    lines = "\n".join(
+        f'{{"CFBundleIdentifier":"{bid}","CFBundleName":"{bid}"}}' for bid in bundle_ids
+    )
+    return _Proc(lines)
+
+
+def test_list_apps_caches_nonempty_result_to_disk(monkeypatch, tmp_path):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(
+        device, "_run", lambda args, timeout=30.0: _ios_apps_proc(["com.a.App"])
+    )
+    apps = device.list_apps()
+    assert apps == [{"bundle_id": "com.a.App", "name": "com.a.App"}]
+    cached = json.loads((tmp_path / "apps_cache.json").read_text(encoding="utf-8"))
+    assert cached == apps
+
+
+def test_list_apps_falls_back_to_cache_when_live_list_empty(monkeypatch, tmp_path):
+    # Deep sleep empties `ios apps --list` while apps stay installed
+    # (docs/ERRORS.md) — an empty live result must never overwrite, or shadow,
+    # a previously cached good list.
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    (tmp_path / "apps_cache.json").write_text(
+        json.dumps([{"bundle_id": "com.a.App", "name": "com.a.App"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _ios_apps_proc([]))
+    assert device.list_apps() == [{"bundle_id": "com.a.App", "name": "com.a.App"}]
+
+
+def test_list_apps_empty_with_no_cache_returns_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _ios_apps_proc([]))
+    assert device.list_apps() == []
+
+
+def test_list_apps_fresh_nonempty_overwrites_stale_cache(monkeypatch, tmp_path):
+    # A newly installed app must still be findable — staleness must not stick.
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    (tmp_path / "apps_cache.json").write_text(
+        json.dumps([{"bundle_id": "com.old.App", "name": "com.old.App"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        device, "_run", lambda args, timeout=30.0: _ios_apps_proc(["com.new.App"])
+    )
+    assert device.list_apps() == [{"bundle_id": "com.new.App", "name": "com.new.App"}]
+    cached = json.loads((tmp_path / "apps_cache.json").read_text(encoding="utf-8"))
+    assert cached == [{"bundle_id": "com.new.App", "name": "com.new.App"}]
+
+
+# ---- memoized_run(): scopes ios/netstat subprocess results to ONE caller-
+# defined run (e.g. one doctor pass). Must never leak across two separate
+# runs — "a stale check is a lying check" (project rule).
+
+
+def test_list_devices_memoized_within_one_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    calls = []
+
+    def fake_run(args, timeout=30.0):
+        calls.append(args)
+        return _Proc('{"deviceList":["00008150-X"]}')
+
+    monkeypatch.setattr(device, "_run", fake_run)
+    with device.memoized_run():
+        assert device.list_devices() == ["00008150-X"]
+        assert device.list_devices() == ["00008150-X"]
+    assert len(calls) == 1  # spawned once, not twice, inside the block
+    device.list_devices()
+    assert len(calls) == 2  # outside the block, a fresh call always re-spawns
+
+
+def test_list_apps_memoized_within_one_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    calls = []
+
+    def fake_run(args, timeout=30.0):
+        calls.append(args)
+        return _ios_apps_proc(["com.a.App"])
+
+    monkeypatch.setattr(device, "_run", fake_run)
+    with device.memoized_run():
+        device.list_apps()
+        device.list_apps()
+    assert len(calls) == 1
+    with device.memoized_run():  # a separate, later run always re-spawns
+        device.list_apps()
+    assert len(calls) == 2
+
+
+def test_netstat_memoized_within_one_run(monkeypatch):
+    calls = []
+
+    def fake_subprocess_run(cmd, **kw):
+        calls.append(cmd)
+        return _Proc("")
+
+    monkeypatch.setattr(device.sys, "platform", "win32")
+    monkeypatch.setattr(device.subprocess, "run", fake_subprocess_run)
+    with device.memoized_run():
+        device.port_exposed_to_lan(8100)
+        device.port_exposed_to_lan(9100)  # different port, same netstat output
+    assert len(calls) == 1
+    device.port_exposed_to_lan(8100)
+    assert len(calls) == 2  # outside the block: fresh spawn again
+
+
+def test_memoized_run_thread_isolated(monkeypatch, tmp_path):
+    """A module-global cache lets two overlapping memoized_run() blocks on
+    different threads stomp each other's restore: A enters (previous=None),
+    B enters while A is still open (previous=A's dict), A exits (global=None),
+    B exits (global=A's now-orphaned, populated dict) — every block has
+    exited, but the global is a non-None dict nothing ever clears, so a later
+    call outside any block returns that frozen data instead of spawning.
+    threading.local() gives each thread an independent cache, so neither
+    thread's exit can touch the other's, and nothing survives past either
+    block. Reproduces the exact interleaving via real threads + events, not a
+    simulation, and checks purely through spawn counts (portable against the
+    pre-fix module-global implementation too)."""
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    calls = []
+    lock = threading.Lock()
+
+    def fake_run(args, timeout=30.0):
+        with lock:
+            calls.append(args)
+        return _Proc('{"deviceList":["00008150-X"]}')
+
+    monkeypatch.setattr(device, "_run", fake_run)
+
+    a_cached = threading.Event()
+    b_cached = threading.Event()
+    a_exited = threading.Event()
+    errors = []
+
+    def thread_a():
+        try:
+            with device.memoized_run():
+                device.list_devices()  # call #1, cached inside A's own block
+                a_cached.set()
+                assert b_cached.wait(timeout=5), "B never entered its block"
+        except Exception as exc:  # don't let a thread swallow its own failure
+            errors.append(exc)
+        finally:
+            a_exited.set()
+
+    def thread_b():
+        try:
+            assert a_cached.wait(timeout=5), "A never entered its block"
+            with device.memoized_run():  # nested-in-time while A is still open
+                device.list_devices()  # call #2, B's own block, not A's cache
+                b_cached.set()
+                assert a_exited.wait(timeout=5), "A never exited its block"
+        except Exception as exc:
+            errors.append(exc)
+
+    ta = threading.Thread(target=thread_a)
+    tb = threading.Thread(target=thread_b)
+    ta.start()
+    tb.start()
+    ta.join(timeout=5)
+    tb.join(timeout=5)
+
+    assert not errors
+    assert not ta.is_alive() and not tb.is_alive()
+    assert len(calls) == 2  # each thread's own block spawned once
+
+    device.list_devices()  # both blocks are closed now: must re-spawn, never
+    assert len(calls) == 3  # return whichever thread's cache leaked through
 
 
 def test_safe_kill_can_spare_the_process_tree(monkeypatch):

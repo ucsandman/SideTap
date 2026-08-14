@@ -381,14 +381,21 @@ CHECKS = [
 
 
 def doctor_results() -> list[dict]:
-    """Run all checks. Later checks still run so the user sees the full picture."""
+    """Run all checks. Later checks still run so the user sees the full picture.
+
+    `ios list`, `ios apps --list` and netstat each get asked for twice inside
+    this one pass (see _check_wda_installed, _check_ports_local); memoized_run
+    scopes device.py's subprocess cache to just this call so a later, separate
+    doctor run always re-spawns and never reports stale state.
+    """
     results = []
-    for name, fn in CHECKS:
-        try:
-            ok, detail, fix = fn()
-        except Exception as exc:  # a check must never crash the doctor
-            ok, detail, fix = False, f"check crashed: {exc}", ""
-        results.append({"name": name, "ok": ok, "detail": detail, "fix": fix})
+    with device.memoized_run():
+        for name, fn in CHECKS:
+            try:
+                ok, detail, fix = fn()
+            except Exception as exc:  # a check must never crash the doctor
+                ok, detail, fix = False, f"check crashed: {exc}", ""
+            results.append({"name": name, "ok": ok, "detail": detail, "fix": fix})
     return results
 
 
@@ -430,6 +437,25 @@ def bringing_up() -> bool:
     checks when this goes false.
     """
     return _UP_LOCK.locked()
+
+
+def _wait_for_wda(client: WDAClient, deadline: float, interval: float = 0.25) -> bool:
+    """Poll `client.is_up()` until it succeeds or `deadline` passes.
+
+    `is_up()` is a plain GET /status (3.8ms median, measured on device) — the
+    old 2s sleep between checks wasted up to ~2s of wait_seconds per iteration.
+    A progress dot still prints roughly once per ~2s of elapsed wait so a long
+    wait doesn't dump hundreds of dots at the faster interval.
+    """
+    dots_printed = 0
+    while time.time() < deadline:
+        if client.is_up():
+            return True
+        dots_printed += 1
+        if dots_printed % max(1, round(2.0 / interval)) == 0:
+            print(".", end="", flush=True)
+        time.sleep(interval)
+    return False
 
 
 def _up(wait_seconds: float) -> int:
@@ -475,16 +501,13 @@ def _up(wait_seconds: float) -> int:
     print("Waiting for WDA to answer", end="", flush=True)
     deadline = time.time() + wait_seconds
     client = WDAClient(timeout=3)
-    while time.time() < deadline:
-        if client.is_up():
-            print("\nUp. WDA answering at", config.WDA_URL)
-            try:
-                client.configure_mjpeg()
-            except Exception:
-                pass  # viewer falls back to polling screenshots
-            return 0
-        print(".", end="", flush=True)
-        time.sleep(2)
+    if _wait_for_wda(client, deadline):
+        print("\nUp. WDA answering at", config.WDA_URL)
+        try:
+            client.configure_mjpeg()
+        except Exception:
+            pass  # viewer falls back to polling screenshots
+        return 0
     print("\nFAIL: WDA never answered. runwda log tail:")
     print(device.log_tail("runwda", 10))
     print(

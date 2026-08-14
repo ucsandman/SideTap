@@ -45,10 +45,25 @@ class StubClient:
     def lock(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.calls.append("lock")
 
+    window_size_calls = 0
+
     def window_size(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.window_size_calls += 1
         if self.window is None:
             raise viewer.WDAError("no phone in tests")
         return self.window
+
+    orient = "PORTRAIT"
+    orientation_calls = 0
+
+    def orientation(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        # Raises on a dead link exactly like the real session request, which is
+        # the whole point of it: /api/status serves a memoised window size and
+        # this is the only thing left that can still notice WDA is gone.
+        self.orientation_calls += 1
+        if self.window is None:
+            raise viewer.WDAError("no phone in tests")
+        return self.orient
 
     def configure_mjpeg(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         pass
@@ -89,6 +104,16 @@ def base_url():
     original_helpers_client = helpers._client
     helpers._client = stub
     helpers._invalidate_tree()
+    # window_size() is cached per session id (T2b); every test gets a fresh
+    # StubClient whose session_id defaults to the same "stub-session" string,
+    # so a stale cache from a previous test would otherwise be served here
+    # without ever calling window_size() again.
+    viewer._WINDOW_SESSION = None
+    viewer._WINDOW_SIZE = None
+    viewer._WINDOW_ORIENT = None
+    # helpers keeps its own size memo, on the same reasoning, and /api/home
+    # reaches the phone through it.
+    helpers._size_cache.update({"wh": None, "session_id": None, "orientation": None})
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
@@ -97,6 +122,12 @@ def base_url():
         viewer.Handler.client = original
         helpers._client = original_helpers_client
         helpers._invalidate_tree()
+        viewer._WINDOW_SESSION = None
+        viewer._WINDOW_SIZE = None
+        viewer._WINDOW_ORIENT = None
+        helpers._size_cache.update(
+            {"wh": None, "session_id": None, "orientation": None}
+        )
 
 
 def test_same_origin_get_ok(base_url):
@@ -366,6 +397,75 @@ def test_tune_mjpeg_reapplies_on_new_session(monkeypatch):
     client.session_id = "s2"
     viewer._tune_mjpeg(client)
     assert client.tuned == 2  # recreated session: re-applied
+
+
+def test_window_size_is_cached_per_session(base_url, monkeypatch):
+    # window_size() is a 201ms device constant; /api/status polls every 5s and
+    # must not re-fetch it unless the session actually changed.
+    monkeypatch.setattr(viewer, "_WINDOW_SESSION", None)
+    monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
+    client = viewer.Handler.client
+    client.window = (390.0, 844.0)
+    client.session_id = "s1"
+
+    r1 = requests.get(base_url + "/api/status", timeout=5)
+    r2 = requests.get(base_url + "/api/status", timeout=5)
+    assert r1.json()["window"] == {"width": 390.0, "height": 844.0}
+    assert r2.json()["window"] == {"width": 390.0, "height": 844.0}
+    assert client.window_size_calls == 1  # second call served from cache
+
+    client.session_id = "s2"
+    requests.get(base_url + "/api/status", timeout=5)
+    assert client.window_size_calls == 2  # session change forced a refetch
+
+
+def test_status_reports_input_down_after_wda_dies_behind_the_cache(
+    base_url, monkeypatch
+):
+    # The memo removed the ONLY WDA request /api/status made, so a cache hit
+    # answered "input": True over a dead link forever. Deep sleep kills WDA
+    # ~15min after the screen darkens, and viewer.html HIDES btn-up ("Restart
+    # link") and btn-fix while input is true — so the lie also removed the two
+    # buttons that fix it. orientation() is the 7.7ms liveness probe that keeps
+    # the cached path honest.
+    monkeypatch.setattr(viewer, "_WINDOW_SESSION", None)
+    monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
+    monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
+    client = viewer.Handler.client
+    client.window = (390.0, 844.0)
+    client.session_id = "s1"
+
+    assert requests.get(base_url + "/api/status", timeout=5).json()["input"] is True
+    # Warm the memo: from here window_size() is never called again.
+    before = client.window_size_calls
+    probes = client.orientation_calls
+    assert requests.get(base_url + "/api/status", timeout=5).json()["input"] is True
+    assert client.window_size_calls == before, "precondition: serving from cache"
+    assert client.orientation_calls > probes, (
+        "the cached path must still ask the phone something, or it cannot "
+        "notice WDA has died"
+    )
+
+    client.window = None  # WDA dies; session_id keeps its stale in-memory value
+    assert requests.get(base_url + "/api/status", timeout=5).json()["input"] is False
+
+
+def test_status_refetches_the_window_after_a_rotation(base_url, monkeypatch):
+    # /window/size reports the ACTIVE APPLICATION's frame, so width and height
+    # swap on rotation and the session id cannot see it.
+    monkeypatch.setattr(viewer, "_WINDOW_SESSION", None)
+    monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
+    monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
+    client = viewer.Handler.client
+    client.window = (390.0, 844.0)
+    client.session_id = "s1"
+    client.orient = "PORTRAIT"
+    requests.get(base_url + "/api/status", timeout=5)
+
+    client.orient = "LANDSCAPE"
+    client.window = (844.0, 390.0)
+    r = requests.get(base_url + "/api/status", timeout=5)
+    assert r.json()["window"] == {"width": 844.0, "height": 390.0}
 
 
 def test_activity_endpoint_serves_feed(base_url, tmp_path, monkeypatch):
@@ -764,6 +864,95 @@ def test_no_gesture_post_nested_inside_with_busy():
             f"{start}: the phoneBusy guard will refuse withBusy's own label, "
             "so the request is never sent"
         )
+
+
+def test_visibilitychange_closes_stream_and_restores_instantly():
+    # A hidden tab must stop pulling MJPEG video (screen.src = '') but the
+    # send-approval poll (loadApproval) is a safety gate and must keep running
+    # regardless of visibility — this is structural because no jsdom/Playwright
+    # harness exists in this repo (test_viewer_html_javascript_parses only
+    # runs `node --check`).
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    match = re.search(
+        r"document\.addEventListener\('visibilitychange', \(\) => \{", html
+    )
+    assert match, "no visibilitychange handler found in viewer.html"
+    start = match.end() - 1  # index of the opening '{'
+    depth, i = 0, start
+    while i < len(html):
+        if html[i] == "{":
+            depth += 1
+        elif html[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    body = html[start:i]
+
+    assert "screen.src = ''" in body
+    assert "loadStatus()" in body
+    assert "loadPhone()" in body
+    assert re.search(r"\bpoll\(\)", body)
+    assert "loadApproval" not in body, (
+        "loadApproval must not be gated by visibility: the send-approval "
+        "gate has to stay armed while the tab is hidden"
+    )
+    # The approval poll itself must still be running, unmodified, elsewhere.
+    assert "setInterval(loadApproval, 1000)" in html
+
+
+def _js_function_body(html, signature):
+    """Brace-match a top-level function body starting at its signature text.
+
+    A source-text scan of the visibilitychange handler alone cannot prove
+    loadStatus/loadPhone stop polling while hidden: the guard has to live
+    inside those functions themselves (their own setInterval keeps firing
+    while hidden but must do nothing), not in the handler. This walks to each
+    function by name and extracts its real body, the same brace-counting the
+    handler test above already uses.
+    """
+    start = html.index(signature)
+    brace = html.index("{", start)
+    depth, i = 0, brace
+    while i < len(html):
+        if html[i] == "{":
+            depth += 1
+        elif html[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    return html[brace:i]
+
+
+def test_hidden_tab_gates_status_and_phone_polls_not_approval():
+    # Closing screen.src in the visibilitychange handler is not enough by
+    # itself: loadStatus's own `if (s.mjpeg) startStream(...)` re-opens the
+    # stream the very next time its 5s setInterval fires, because Chrome only
+    # coalesces hidden-tab timers to 1s granularity for the first 5 minutes —
+    # it does not stop them running. loadStatus and loadPhone must each
+    # refuse to run while document.hidden is true. loadApproval is the
+    # send-approval safety gate and must keep polling regardless of
+    # visibility, so it must NOT gain the same guard.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    status_body = _js_function_body(html, "async function loadStatus() {")
+    phone_body = _js_function_body(html, "async function loadPhone() {")
+    approval_body = _js_function_body(html, "async function loadApproval() {")
+
+    assert "document.hidden" in status_body, (
+        "loadStatus must refuse to run while hidden, or its own startStream() "
+        "call re-opens the MJPEG stream on the next 5s tick"
+    )
+    assert "document.hidden" in phone_body, (
+        "loadPhone must refuse to run while hidden, or it keeps driving the "
+        "phone (battery/is_locked/current_page) over the same USB link"
+    )
+    assert "document.hidden" not in approval_body, (
+        "loadApproval is the send-approval gate and must keep polling while "
+        "the tab is hidden — gating it is worse than the bandwidth it saves"
+    )
 
 
 def test_status_reports_a_bring_up_in_flight(base_url, monkeypatch):

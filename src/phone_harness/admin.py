@@ -182,12 +182,21 @@ def _check_signature():
         )
     if left < timedelta(hours=48):
         hours = int(left.total_seconds() // 3600)
+        # PASSES on purpose. Input still WORKS during the countdown, and by the
+        # note above nothing can shorten it, so failing here was a red that was
+        # neither broken nor actionable: for up to 48h it turned the header red,
+        # counted as "1 check failing", auto-opened the overlay and raised the
+        # amber banner — whose own fix line read "No click can extend it early".
+        # A check that fails while the thing works is the same lying-status bug
+        # as a green over a dead link, just pointed the other way. The countdown
+        # stays visible in the viewer's Phone pane (which renders this detail
+        # whatever ok is), `notify-expiry` still toasts under 36h, and the
+        # EXPIRED branch above still fails loudly — because that one IS actionable.
         return (
-            False,
-            f"input signature expires in {hours}h ({exp_utc:%Y-%m-%d %H:%M} UTC)",
-            "No click can extend it early — Apple pins every re-sign to the "
-            "same 7-day window. When input dies: Fix input, then Start in "
-            "Sideloadly (fresh 7 days).",
+            True,
+            f"input signature expires in {hours}h ({exp_utc:%Y-%m-%d %H:%M} UTC)"
+            " — input still works, and nothing can renew it early",
+            "",
         )
     return (
         True,

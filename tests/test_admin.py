@@ -26,18 +26,22 @@ def test_signature_check_passes_with_days_left(monkeypatch, tmp_path):
     assert "5" in detail and "day" in detail
 
 
-def test_signature_check_fails_when_expiring_soon(monkeypatch, tmp_path):
+def test_signature_check_counts_down_without_failing(monkeypatch, tmp_path):
     expires = datetime.now(timezone.utc) + timedelta(hours=12)
     _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
     ok, detail, fix = admin._check_signature()
-    assert not ok
-    assert "expires in" in detail
     # Renewing early is IMPOSSIBLE on a free ID (proven 2026-08-14: a fresh
-    # Sideloadly sign left Apple's App ID TTL at the original expiry), so a
-    # countdown must never prescribe fix-input — that chase broke a working
-    # install twice in one night. Say so, and say what works once it dies.
+    # Sideloadly sign left Apple's App ID TTL at the original expiry), and
+    # input still works the whole time. So the countdown must NOT fail: a FAIL
+    # here reddened the header, counted as a failing check, auto-opened the
+    # overlay and raised the amber banner for up to 48h over a system that was
+    # working, while its own fix line admitted no click could help.
+    assert ok, "a working signature must not report FAIL just because it is dated"
+    assert "expires in" in detail, "the countdown must stay visible"
+    # ...and it must never prescribe fix-input mid-week: that chase broke a
+    # working install twice in one night.
     assert "fix-input" not in fix
-    assert "No click can extend it early" in fix
+    assert fix == ""
 
 
 def test_signature_check_fails_when_expired(monkeypatch, tmp_path):
@@ -229,11 +233,15 @@ def test_bringing_up_tracks_an_in_flight_up(monkeypatch):
 # both sides with a 5s margin.
 
 
-def test_signature_check_warns_just_under_48h(monkeypatch, tmp_path):
+def test_signature_check_switches_to_the_countdown_just_under_48h(
+    monkeypatch, tmp_path
+):
+    # The 48h boundary still changes the WORDING (days-left -> hours-left), it
+    # just no longer changes ok. Nothing is broken on either side of it.
     expires = datetime.now(timezone.utc) + timedelta(hours=48)
     _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
     ok, detail, _fix = admin._check_signature()  # runs ms later: left < 48h
-    assert not ok
+    assert ok
     assert "expires in 47h" in detail
 
 
@@ -254,11 +262,15 @@ def test_signature_check_expired_at_exactly_now(monkeypatch, tmp_path):
 
 
 def test_signature_check_seconds_left_is_countdown_not_expired(monkeypatch, tmp_path):
+    # Five seconds left is still WORKING, so it must read as the countdown and
+    # not tip into the expired branch — which is the one that fails loudly and
+    # tells the human to re-sign.
     expires = datetime.now(timezone.utc) + timedelta(seconds=5)
     _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
     ok, detail, _fix = admin._check_signature()
-    assert not ok
+    assert ok
     assert "expires in 0h" in detail
+    assert "expired" not in detail
 
 
 # ---- doctor_results() must memoize its subprocess-backed checks for the
@@ -281,7 +293,9 @@ def test_doctor_results_memoizes_ios_list_within_one_pass(monkeypatch, tmp_path)
     monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")
     calls = {"list": 0, "apps": 0}
 
-    def fake_run(args, timeout=30.0):
+    # timeout is unused but must keep this name: device._run is called with it
+    # as a keyword, so a rename would break the stand-in.
+    def fake_run(args, timeout=30.0):  # noqa: vulture
         if args[0] == "list":
             calls["list"] += 1
             return _FakeProc('{"deviceList":["X"]}')

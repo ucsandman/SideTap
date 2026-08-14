@@ -181,7 +181,7 @@ Sideloading WebDriverAgent with a free Apple ID installs the app, but the test r
 
 No Apple servers are contacted, no Apple password is scripted, no session tokens are reused. The 7-day free-ID expiry still applies; the doctor counts it down and one command re-signs.
 
-Mid-week re-installs can skip Sideloadly entirely by reusing the captured profile: `phone-harness fix-input .state\profile.mobileprovision`. That reuses the same profile, so it repairs input but does not reset the 7-day clock — only a real Sideloadly sign mints a new week. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
+Mid-week re-installs can skip Sideloadly entirely by reusing the captured profile: `phone-harness fix-input .state\profile.mobileprovision`. That reuses the same profile, so it repairs input without touching the clock. Nothing moves the clock mid-week: Apple pins every re-sign — Sideloadly included — to the App ID's original 7-day window, so the countdown resets only with the first sign after it expires. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
 
 ## Architecture
 

@@ -32,7 +32,12 @@ def test_signature_check_fails_when_expiring_soon(monkeypatch, tmp_path):
     ok, detail, fix = admin._check_signature()
     assert not ok
     assert "expires in" in detail
-    assert "fix-input" in fix
+    # Renewing early is IMPOSSIBLE on a free ID (proven 2026-08-14: a fresh
+    # Sideloadly sign left Apple's App ID TTL at the original expiry), so a
+    # countdown must never prescribe fix-input — that chase broke a working
+    # install twice in one night. Say so, and say what works once it dies.
+    assert "fix-input" not in fix
+    assert "No click can extend it early" in fix
 
 
 def test_signature_check_fails_when_expired(monkeypatch, tmp_path):
@@ -71,7 +76,18 @@ def test_notify_expiry_toasts_when_expiring(monkeypatch, tmp_path):
     monkeypatch.setattr(admin, "_toast", lambda t, b: toasts.append((t, b)) or True)
     assert admin.notify_expiry() == 0
     assert len(toasts) == 1
-    assert "fix-input" in toasts[0][1]  # the toast tells you what to run
+    assert "cannot be renewed early" in toasts[0][1]  # heads-up, not a chase
+
+
+def test_notify_expiry_toast_prescribes_fix_only_after_expiry(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc) - timedelta(hours=2)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    toasts = []
+    monkeypatch.setattr(admin, "_toast", lambda t, b: toasts.append((t, b)) or True)
+    assert admin.notify_expiry() == 0
+    assert len(toasts) == 1
+    assert "EXPIRED" in toasts[0][0]
+    assert "fix-input" in toasts[0][1]  # now the action is real: fresh 7 days
 
 
 def test_notify_expiry_quiet_without_profile(monkeypatch, tmp_path):

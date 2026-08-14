@@ -249,7 +249,7 @@ WATCHER_PS = config.REPO_ROOT / "scripts" / "watch_profile.ps1"
 
 def capture_profile(
     udid: str | None,
-    timeout: float = 180.0,
+    timeout: float = 600.0,
     dest: Path = PROFILE_PATH,
     progress: Progress = _noop,
     temp_roots: list[Path] | None = None,
@@ -364,9 +364,9 @@ def _capture_via_poll(
 # ---- orchestration ---------------------------------------------------------
 
 
-def fix_input(
+def fix_input(  # noqa: vulture  (viewer worker + dispatched by name from run.py)
     profile: Path | None = None,
-    timeout: float = 180.0,
+    timeout: float = 600.0,
     progress: Progress = _noop,
 ) -> dict:
     """End to end: build p12, capture (or accept) the profile, re-sign, bring up.

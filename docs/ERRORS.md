@@ -5,6 +5,39 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-14 — Renewing early is IMPOSSIBLE on a free ID, and chasing it broke a working install twice
+
+**Symptom.** Following up the entry below: with everything green, we tried to
+clear the 46h countdown "properly" (Fix input armed, then Sideloadly Start).
+Sideloadly finished ("Done.") — and WDA died with error 103, twice, and the
+countdown never moved.
+
+**Root cause, two layers.** (1) Every Sideloadly Start does a bare install
+(nested .xctest unsigned), so mid-flow it REPLACES the working WDA and kills
+input until a local `fix-input .state/profile.mobileprovision` re-sign — the
+already-documented 103. The wizard is built to recover by capturing the fresh
+profile and re-signing, but the capture missed (180s window vs the multi-minute
+human+Sideloadly loop; widened to 600s). (2) The prize was fake anyway:
+`%LOCALAPPDATA%\Sideloadly\account-appids.json` showed `NearestTtl:
+2026-08-16T04:05:51Z` AFTER tonight's fresh sign — Apple pins every re-sign to
+the App ID's original 7-day window. The countdown mathematically cannot be
+cleared before it expires; only the first sign AFTER expiry starts a new week.
+
+**Fix.** Input repaired both times with the local re-sign (needs the phone
+unlocked). The countdown check and the <36h toast no longer prescribe
+fix-input while counting down — they say no click can extend it early and
+what to do once it dies; the expired branch keeps the real instructions.
+Tests pin both messages.
+
+**Lesson.** When a repeated "fix" keeps not fixing, check whether the goal is
+reachable at all before improving the aim. Apple's own TTL record
+(`account-appids.json`) was the ground truth all along, one file away from
+the profile everyone was staring at. And a doctor `fix:` line is an
+instruction someone WILL follow at midnight — a prescribed action that cannot
+work is a bug in the doctor, not in the person following it.
+
+---
+
 ## 2026-08-13 — "Fix input isn't working": the 46h countdown was TRUE, and renewal never renewed
 
 **Symptom.** Viewer showed FAIL "input signature expires in 46h" after two

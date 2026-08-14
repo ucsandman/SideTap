@@ -167,15 +167,27 @@ def _check_signature():
         return True, "profile has no expiry date", ""
     exp_utc = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
     left = exp_utc - datetime.now(timezone.utc)
-    fix = "Run phone-harness fix-input (free-ID signatures last 7 days)."
+    # Two different truths, two different fixes. EXPIRED is actionable: the
+    # first sign after expiry registers a fresh 7-day App ID. A COUNTDOWN is
+    # not: Apple pins every mid-week re-sign to the same window (proven
+    # 2026-08-14 — a fresh Sideloadly sign left account-appids.json's
+    # NearestTtl at the original expiry), so telling the human to renew early
+    # sends them to fight a deadline no click can move.
     if left.total_seconds() <= 0:
-        return False, f"input signature expired {exp_utc:%Y-%m-%d %H:%M} UTC", fix
+        return (
+            False,
+            f"input signature expired {exp_utc:%Y-%m-%d %H:%M} UTC",
+            "Run phone-harness fix-input, then click Start in Sideloadly when "
+            "it says armed — the first sign after expiry starts a fresh 7 days.",
+        )
     if left < timedelta(hours=48):
         hours = int(left.total_seconds() // 3600)
         return (
             False,
             f"input signature expires in {hours}h ({exp_utc:%Y-%m-%d %H:%M} UTC)",
-            fix,
+            "No click can extend it early — Apple pins every re-sign to the "
+            "same 7-day window. When input dies: Fix input, then Start in "
+            "Sideloadly (fresh 7 days).",
         )
     return (
         True,
@@ -280,10 +292,15 @@ def notify_expiry() -> int:  # noqa: vulture  (dispatched by name from run.py)
         print(f"signature good for {hours / 24:.1f} more days; no reminder needed")
         return 0
     when = "has EXPIRED" if hours <= 0 else f"expires in {hours:.0f}h"
-    shown = _toast(
-        f"SideTap: WDA signature {when}",
-        "Run `phone-harness fix-input` and click Start in Sideloadly.",
+    body = (
+        "Run `phone-harness fix-input` and click Start in Sideloadly."
+        if hours <= 0
+        # Renewing early is impossible on a free ID — don't send the human to
+        # fight a deadline no click can move; just say when to come back.
+        else "It cannot be renewed early. When input dies, Fix input + "
+        "Sideloadly Start begins a fresh 7 days."
     )
+    shown = _toast(f"SideTap: WDA signature {when}", body)
     print(f"signature {when} — toast {'shown' if shown else 'FAILED to show'}")
     return 0 if shown else 1
 

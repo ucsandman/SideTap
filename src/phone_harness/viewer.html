@@ -1712,10 +1712,30 @@ function renderThread() {
   }
 }
 document.getElementById('text-to').addEventListener('input', syncReadLabel);
+// Feedback for this button goes UNDER this button. showHint() renders in
+// #click-hint at the bottom of the phone pane — two columns away — and a
+// "Type a contact first." over there read as the button doing nothing
+// (reported 2026-08-14). The default note comes back after the hold.
+const THREAD_NOTE_DEFAULT = document.getElementById('thread-note').textContent;
+let threadNoteTimer = null;
+function threadNote(msg) {
+  const n = document.getElementById('thread-note');
+  n.textContent = msg;
+  n.style.color = 'var(--warn)';
+  clearTimeout(threadNoteTimer);
+  threadNoteTimer = setTimeout(() => {
+    n.textContent = THREAD_NOTE_DEFAULT;
+    n.style.color = '';
+  }, 6000);
+}
 document.getElementById('btn-read-thread').onclick = async () => {
   const to = document.getElementById('text-to').value.trim();
-  if (!to) { showHint('Type a contact first.'); return; }
-  if (phoneBusy()) return;
+  if (!to) {
+    threadNote('Type a contact above first (a chip fills it in).');
+    document.getElementById('text-to').focus();
+    return;
+  }
+  if (phoneBusy()) { threadNote('Phone is busy — try again in a moment.'); return; }
   const btn = document.getElementById('btn-read-thread');
   btn.disabled = true; btn.dataset.busy = '1'; btn.textContent = 'Reading…';
   try {
@@ -1726,7 +1746,7 @@ document.getElementById('btn-read-thread').onclick = async () => {
                                                  body: JSON.stringify({contact:to, limit:30})});
       const j = await r.json().catch(() => ({}));
       if (!j.ok) {
-        showHint(j.error || (r.status === 409
+        threadNote(j.error || (r.status === 409
           ? 'Phone is busy — the read was dropped.'
           : 'Could not read that thread.'));
         return;
@@ -1734,7 +1754,7 @@ document.getElementById('btn-read-thread').onclick = async () => {
       threadMsgs = j.messages || [];
       renderThread();
     });
-  } catch (e) { showHint('Could not read that thread.'); }
+  } catch (e) { threadNote('Could not read that thread.'); }
   finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; syncReadLabel(); }
 };
 renderThread();

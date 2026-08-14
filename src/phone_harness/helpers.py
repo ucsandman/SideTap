@@ -1209,6 +1209,19 @@ def unlock(c: WDAClient | None = None) -> None:
         # 2026-08-12). A lit screen is what "in use" actually means.
         if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
             return  # frontmost app on a lit screen — touch nothing
+    # A session that crossed a screen lock is POISONED: it keeps answering
+    # GETs but its first /actions hangs ~16s inside XCTest's snapshot timeout
+    # before failing "point.x != INFINITY" (16.23s measured on device
+    # 2026-08-14 — long enough for the woken lock screen to re-sleep, so the
+    # wake swipe burned on a dark screen and unlock ran 30-50s; a priority
+    # notification makes this the RELIABLE case by keeping the poisoned
+    # session alive). A fresh session is 0.02s (same run), is born after the
+    # lock, and cannot be poisoned — mint one instead of discovering the
+    # poison mid-wake. Past the in-use return above, so a phone someone is
+    # using never gets its session churned; a merely-asleep phone loses a
+    # healthy session, which is fine: the new id lands in .state/wda_session,
+    # every client adopts it, and the viewer retunes its stream on change.
+    c.fresh_session()
     # Deliberately NOT the _window_size() memo: unlock reads this once, and a
     # lock almost always evicts the session, so the memo would miss anyway and
     # the orientation guard would just add a SECOND round trip to the most
@@ -1235,12 +1248,20 @@ def unlock(c: WDAClient | None = None) -> None:
         # so tests with a no-op sleep stay instant. Keeps the tree that showed
         # the pad: _enter_passcode aims its digit taps with it.
         nonlocal pad_tree
+        start = time.monotonic()
         attempts = max(1, int(seconds / 0.4))
         for i in range(attempts):
             pad_tree = c.source()
             if _passcode_pad_visible(pad_tree):
                 return True
             if i < attempts - 1:
+                # The attempt count assumes a 0.4s /source, but a lock-screen
+                # /source can run ~3s, and 7 polls of a screen a burned swipe
+                # never changed cost 21s (live 2026-08-14). Wall clock caps
+                # the spend; two reads minimum so a pad that animates in
+                # after a slow first read is still caught.
+                if i >= 1 and time.monotonic() - start > seconds:
+                    return False
                 time.sleep(0.4)
         return False
 

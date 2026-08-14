@@ -5,6 +5,37 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-14 — Unlock took 30-50s "because of priority notifications": the real 16s was a lock-poisoned session, and the notification only made it reliable
+
+**Symptom.** The viewer's Unlock button took ~30s whenever a priority
+notification sat on the lock screen; without one it felt fast.
+
+**Where the time actually went** (activity-log trace of the live incident):
+the first wake swipe blocked 17.5s, then 7 pad polls at ~3s/`/source` burned
+21s on a screen the swipe never changed, then a second wake+swipe attempt
+succeeded in ~9s.
+
+**Root cause** (split on device, no notification involved): a session that
+crosses a screen lock keeps answering GETs but its first `/actions` HANGS
+16.23s inside XCTest's ~15s snapshot timeout before failing
+`point.x != INFINITY` — measured raw, next to a 0.02s fresh `POST /session`
+on the same lit lock screen and a 0.95s swipe on that fresh session. During
+the hang the woken lock screen re-slept, so the swipe burned dark, and the
+attempt-counted pad poll (assumes 0.4s/`/source`, lock screen runs ~3s)
+multiplied a 3s budget into 21s. The priority notification never caused the
+hang; it correlates because it keeps the poisoned session alive-and-lit, so
+the slow path fires every time.
+
+**Fix.** `unlock()` now mints a fresh session (`WDAClient.fresh_session()`)
+after its in-use early return and before any gesture — the fresh id is born
+after the lock and cannot be poisoned — and `pad_appears` is wall-clock
+capped (min two reads). Measured after: 15.7s end-to-end from a locked dark
+phone, no hang, first swipe lands. Lesson: when a symptom pattern-matches to
+a visible trigger (the notification), split the timeline with raw timed
+calls before believing the trigger is the cause.
+
+---
+
 ## 2026-08-14 — Seven perf wins shipped green and carried four defects, two of them CRITICAL
 
 **Symptom.** A parallel build of the top seven latency wins finished with the

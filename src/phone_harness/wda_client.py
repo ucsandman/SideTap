@@ -269,6 +269,18 @@ class WDAClient:
             return shared
         return self._create_session()
 
+    def fresh_session(self) -> str:
+        """Drop the adopted session and mint a new one (published in
+        .state/wda_session, so every client adopts it). The cure for a
+        session that crossed a screen lock: it keeps answering GETs but its
+        first /actions HANGS ~16s inside XCTest's snapshot timeout before
+        failing "point.x != INFINITY" (16.23s measured on device
+        2026-08-14; a fresh create in the same run was 0.02s). Callers that
+        know they are past a lock (unlock()) mint up front instead of
+        paying that hang to find out."""
+        self.session_id = None
+        return self._create_session()
+
     def _create_session(self) -> str:
         value = self._request("POST", "/session", {"capabilities": {"alwaysMatch": {}}})
         sid = value.get("sessionId") if isinstance(value, dict) else None

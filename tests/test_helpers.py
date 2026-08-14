@@ -208,6 +208,7 @@ class StubPhone:
         self.typed = []
         self.tapped = []  # pad-digit labels resolved from tap coordinates
         self.pressed = []
+        self.ops = []  # gesture/session events in order, for ordering tests
         self.swipes = 0
         self.source_calls = 0
         self.type_error = type_error
@@ -229,6 +230,10 @@ class StubPhone:
 
     def press_button(self, name):
         self.pressed.append(name)
+        self.ops.append("press")
+
+    def fresh_session(self):
+        self.ops.append("mint")
 
     def window_size(self):
         return (390.0, 844.0)
@@ -238,6 +243,7 @@ class StubPhone:
 
     def swipe(self, *_args):
         self.swipes += 1
+        self.ops.append("swipe")
 
     def source(self):
         self.source_calls += 1
@@ -453,6 +459,28 @@ def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
     helpers.unlock()
     assert stub.swipes == 2
     assert stub.tapped == list("246810")
+
+
+def test_unlock_mints_a_fresh_session_before_the_first_gesture(fast):
+    """A session that crossed a screen lock keeps answering GETs but its
+    first /actions hangs ~16s inside XCTest's snapshot timeout before
+    failing point.x != INFINITY (16.23s measured on device 2026-08-14) —
+    long enough for the woken lock screen to re-sleep, so the wake swipe
+    burned and unlock ran 30-50s. A fresh session is 0.02s and cannot be
+    poisoned: unlock() must mint one BEFORE any gesture rides the old id."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.ops and stub.ops[0] == "mint"
+    assert stub.tapped == list("246810")
+
+
+def test_unlock_never_mints_when_phone_is_in_use(fast):
+    """The mint evicts whatever session the viewer and the agent are riding.
+    On the in-use early return (lit screen, real frontmost app) unlock()
+    touches nothing — including the session."""
+    stub = fast(StubPhone(SAMPLE_TREE, app="com.apple.calculator"))
+    helpers.unlock()
+    assert stub.ops == []
 
 
 def test_unlock_gives_up_after_two_dark_swipes(fast):

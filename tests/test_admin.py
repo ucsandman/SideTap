@@ -197,8 +197,49 @@ def test_bringing_up_tracks_an_in_flight_up(monkeypatch):
     seen = []
     assert admin.bringing_up() is False
     monkeypatch.setattr(
-        admin, "_up", lambda wait_seconds: seen.append(admin.bringing_up()) or 0
+        admin,
+        "_up",
+        lambda wait_seconds: seen.append(admin.bringing_up()) or 0,  # noqa: vulture
     )
     assert admin.up(wait_seconds=0) == 0
     assert seen == [True]  # true for the whole run...
     assert admin.bringing_up() is False  # ...and false again after it
+
+
+# ---- boundary pins (adversarial review 2026-08-13): the 48h warn threshold
+# and the expired/not-expired line had no tests anywhere near them, so a
+# flipped comparison or a mistyped constant would have shipped silently. A
+# real clock cannot hit an instant exactly, so each boundary is pinned from
+# both sides with a 5s margin.
+
+
+def test_signature_check_warns_just_under_48h(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc) + timedelta(hours=48)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    ok, detail, _fix = admin._check_signature()  # runs ms later: left < 48h
+    assert not ok
+    assert "expires in 47h" in detail
+
+
+def test_signature_check_passes_just_over_48h(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc) + timedelta(hours=48, seconds=5)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    ok, detail, _fix = admin._check_signature()
+    assert ok
+    assert "good for" in detail
+
+
+def test_signature_check_expired_at_exactly_now(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    ok, detail, _fix = admin._check_signature()  # runs ms later: left <= 0
+    assert not ok
+    assert "expired" in detail
+
+
+def test_signature_check_seconds_left_is_countdown_not_expired(monkeypatch, tmp_path):
+    expires = datetime.now(timezone.utc) + timedelta(seconds=5)
+    _use_profile(monkeypatch, tmp_path, make_profile(expires=expires))
+    ok, detail, _fix = admin._check_signature()
+    assert not ok
+    assert "expires in 0h" in detail

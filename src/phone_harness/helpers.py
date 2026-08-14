@@ -1124,7 +1124,23 @@ def unlock(c: WDAClient | None = None) -> None:
         patient = WDAClient(base_url=c.base_url, timeout=_UNLOCK_TIMEOUT)
         patient.session_id = c.session_id
         c = patient
-    if c.active_app().get("bundleId") != "com.apple.springboard":
+    try:
+        frontmost = c.active_app().get("bundleId")
+    except WDAError as exc:
+        # /wda/activeAppInfo CRASHES while the lock screen is LIT — "attempt
+        # to insert nil object from objects[2]" (live 2026-08-13, reproduced:
+        # lit lock screen -> crash, dark -> answers springboard). A priority
+        # notification keeps the lock screen lit for as long as it shows, so
+        # every unlock during one died right here, before the first gesture.
+        # The crash only happens on the lock screen — a real frontmost app
+        # answers fine — so it cannot mean "in use": carry on with the wake.
+        # ONLY that crash, though: any other WDAError (timeout, dead session)
+        # leaves the phone's state unknown, and carrying on would Home-press
+        # and edge-swipe a phone that may be unlocked with an app open.
+        if "insert nil object" not in str(exc):
+            raise
+        frontmost = None
+    if frontmost is not None and frontmost != "com.apple.springboard":
         # ...but only when the phone is genuinely in use. active_app() goes
         # STALE behind a lock: a phone that locked with an app frontmost keeps
         # naming that app until the display wakes, so this return used to
@@ -1167,11 +1183,19 @@ def unlock(c: WDAClient | None = None) -> None:
         if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
             return  # lit and no pad: was just asleep, now awake+usable
         # Dark again: a slow swipe landed after the lock screen re-slept and
-        # burned on a black screen. One more charge, then give up — endless
-        # gesturing at an already-unlocked phone helps nobody.
+        # burned on a black screen. One more charge, then stop — endless
+        # gesturing at a phone that will not show a pad helps nobody. But
+        # stopping is not success: a silent return here made the viewer answer
+        # {"ok": true} and the MCP tool say "unlocked" over a still-dark phone.
         wake_and_swipe()
         if not pad_appears(3.0):
-            return
+            if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
+                return  # lit without a pad: awake and usable after all
+            raise WDAError(
+                "Woke the phone twice but the screen stayed dark and no "
+                "passcode pad appeared. Wake it by hand (side button), then "
+                "try again."
+            )
     if not config.PHONE_PASSCODE:
         raise WDAError(
             "Phone is locked. Set PHONE_PASSCODE in .env or unlock it by hand."

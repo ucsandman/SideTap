@@ -5,6 +5,76 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-13 — "Fix input isn't working": the 46h countdown was TRUE, and renewal never renewed
+
+**Symptom.** Viewer showed FAIL "input signature expires in 46h" after two
+fix-input runs the same day. Read as a broken check; the check was right.
+
+**Root cause.** Two renewals that renew nothing: (1) the mid-week
+`fix-input .state/profile.mobileprovision` re-signs with the SAME captured
+profile, so the expiry mathematically cannot move — it is a repair tool
+(nested-.xctest signing), not a renewal; (2) the full run built the p12, then
+timed out waiting for Sideloadly, which never signed (its daemon log was
+untouched all day — Fix input's watcher arms, but only a human's Start click
+in Sideloadly makes Apple mint a profile). Only that click buys a new week.
+
+**Fix.** None needed in the check. An adversarial review of the pipeline it
+guards found and fixed 6 real defects the same night (see the entry's commit):
+profile committed to `.state` BEFORE `ios sign app` succeeded (failed re-sign
+⇒ false 7-day PASS); `subprocess.TimeoutExpired` uncaught through
+`fix_input` + a worker thread with no try/except (wizard stuck at "running"
+forever); `unlock()` swallowing EVERY `WDAError` from `active_app()` instead
+of just the lit-lock-screen crash; `unlock()`'s give-up returning silently
+(viewer said ok:true over a dark phone); the watcher capture path accepting a
+stale `captured.mobileprovision` the PS script failed to delete; zero tests on
+the watcher branch and on the 48h/0h check boundaries. All six now pinned by
+tests.
+
+**Lesson.** "The check is red" has two readings — broken check or true bad
+news — and the countdown check was the messenger. Also: a first diagnosis of
+"everything works" (the black viewer pane WAS just a sleeping display) can be
+right about the symptom in front of you and still miss the bugs behind the
+next one; the review the user insisted on paid for itself.
+
+---
+
+- **2026-08-13** — WDA runner died around a viewer restart (`Start-Process python launch.py` at 23:01) and would not come back: every `up()` after it failed in `testmanagerd` dtx timeouts ("cannot initiate a IDE session" / "Timed out while enabling automation mode") with tunnel, DDI, lockdown, and signature all green, phone locked the whole time. Root cause of the death not pinned (runwda.log is rewritten per start, so the original crash evidence is gone); the wedge needed a hand unlock of the phone before WDA would start again. Prevention: treat "dtx timeouts with everything green + phone locked" as "unlock the phone by hand", not as a broken tunnel — and don't chase it with more restarts.
+
+---
+
+## 2026-08-13 — Unlock still died with a priority notification up: /wda/activeAppInfo crashes while the lock screen is lit
+
+**Symptom.** Same report as the entry below, hours after that fix shipped: the
+Unlock button "did nothing" with a priority notification on the lock screen.
+This time the activity log shows the difference — ZERO gestures. No wake, no
+swipe, no passcode entry. The button worked fine when the screen was dark.
+
+**Root cause.** `unlock()`'s first phone call is `active_app()` (the "is the
+phone genuinely in use" guard). WDA's `GET /wda/activeAppInfo` CRASHES while
+the lock screen is LIT — `unknown error: attempt to insert nil object from
+objects[2]` — and answers normally the moment the screen goes dark (reproduced
+on device: lit frame 2.06 MB → crash, dark frame 50 KB → springboard). A
+priority notification keeps the lock screen lit for as long as it shows, so
+every press of Unlock during one raised out of `unlock()` before a single
+gesture reached the phone. Without a notification the screen is dark at press
+time, the call succeeds, and unlock works — which is why the earlier fix
+looked complete.
+
+**Fix.** `unlock()` catches `WDAError` from that one call and treats it as
+"nothing frontmost": the crash only happens on the lock screen (a real
+frontmost app answers fine), so it can never mean "in use". Verified live by
+waking the display, polling `active_app()` until it entered the crash state,
+then running `unlock()` inside it — the phone unlocked.
+`test_unlock_survives_active_app_crash_on_lit_lock_screen` pins it.
+
+**Lesson.** The guard that protects a feature can be the thing that kills it:
+the failure was in the pre-flight check, not the unlock path anyone was
+staring at. When a fix ships and the same symptom returns, diff the EVIDENCE,
+not the theory — "typed digits went nowhere" and "zero gestures logged" are
+different bugs wearing the same report.
+
+---
+
 ## 2026-08-13 — Unlock typed all six digits and the phone stayed locked: a priority notification held keyboard focus
 
 **Symptom.** The viewer's Unlock button "did nothing" while an Apple priority

@@ -167,7 +167,7 @@ This tool is for **your own phone, under your supervision**. The guardrails are 
 - **Tune the gate, or turn it off.** The viewer's **Approve sends** control has three settings, and the choice is yours to make: **Always** (the default: every send after a read waits for a click), **Flagged** (only asks when the scanner found something, which is quieter but lets a payload written to dodge the checks through, because it promotes the flags from a hint to a verdict), and **Off** (never asks; STOP and the activity feed are all that is left). It shows amber whenever you are not on Always. `SEND_APPROVAL` in `.env` sets the startup default, and anything unrecognized falls back to Always, because a setting that cannot be read must never be the one that disables the gate. The setting is reachable from the viewer and `.env` only, never from a tool call, since a gate an injected instruction can switch off is not a gate.
 - **What the gate does not cover.** It bounds what an injected instruction can send, not what it can do on the phone. An injection that makes the agent tap through Settings never triggers the gate, and **STOP** plus the activity feed are your cover there. Text painted into an image is read by a vision model and cannot be scanned. And nothing stops the agent being told a lie and repeating it back to you. No text filter detects prompt injection reliably, so the flags on the card are a signal for you, never a verdict.
 - **Origin guard.** The viewer API rejects cross-origin and DNS-rebinding requests, so a random web page in another tab cannot drive your phone.
-- **Passcode safety.** `unlock()` decides from what is actually on screen (never the driver's lock flag, which can lie), types your passcode only when the passcode pad is visible, makes exactly one attempt per call (repeated wrong passcodes lock an iPhone out), and scrubs it from error messages. The passcode itself is opt-in via `.env` and never committed.
+- **Passcode safety.** `unlock()` decides from what is actually on screen (never the driver's lock flag, which can lie), enters your passcode only when the passcode pad is visible (digit pads are tapped, not typed, so a notification holding keyboard focus cannot eat it), makes exactly one attempt per call (repeated wrong passcodes lock an iPhone out), and scrubs it from error messages. The passcode itself is opt-in via `.env` and never committed.
 
 Do not point this at a phone you do not own. Do not use it to send unsolicited messages. Automated bulk messaging will get your Apple ID or number flagged, and it makes you a bad person besides.
 
@@ -181,7 +181,7 @@ Sideloading WebDriverAgent with a free Apple ID installs the app, but the test r
 
 No Apple servers are contacted, no Apple password is scripted, no session tokens are reused. The 7-day free-ID expiry still applies; the doctor counts it down and one command re-signs.
 
-Mid-week re-installs can skip Sideloadly entirely by reusing the captured profile: `phone-harness fix-input .state\profile.mobileprovision`. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
+Mid-week re-installs can skip Sideloadly entirely by reusing the captured profile: `phone-harness fix-input .state\profile.mobileprovision`. That reuses the same profile, so it repairs input but does not reset the 7-day clock — only a real Sideloadly sign mints a new week. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
 
 ## Architecture
 

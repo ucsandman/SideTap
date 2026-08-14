@@ -145,7 +145,13 @@ def _fix_input_worker():
             _FIX_JOB["step"] = step
             _FIX_JOB["message"] = message
 
-    result = signing.fix_input(progress=progress)
+    try:
+        result = signing.fix_input(progress=progress)
+    except Exception as exc:
+        # fix_input reports its own known failures as ok:False results. If
+        # anything else escapes, this thread must still flip running=False —
+        # dying here left the wizard reading "running" forever, with no error.
+        result = {"ok": False, "step": "error", "message": str(exc)}
     with _FIX_LOCK:
         _FIX_JOB.update(
             running=False,

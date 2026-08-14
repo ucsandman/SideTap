@@ -386,6 +386,34 @@ def test_unlock_wakes_a_phone_that_locked_with_an_app_open(fast):
     assert stub.tapped == list("246810")
 
 
+def test_unlock_survives_active_app_crash_on_lit_lock_screen(fast):
+    """/wda/activeAppInfo CRASHES while the lock screen is LIT — WDA answers
+    "attempt to insert nil object from objects[2]" (live 2026-08-13, reproduced
+    on device: lit frame -> crash, dark frame -> springboard). A priority
+    notification keeps the lock screen lit for as long as it shows, so every
+    Unlock press during one died on unlock()'s FIRST call, before a single
+    gesture reached the phone. The crash only happens on the lock screen — a
+    real frontmost app answers fine — so it can never mean "in use": unlock()
+    must treat it as nothing-frontmost and carry on with the wake."""
+
+    class CrashingActiveApp(StubPhone):
+        def active_app(self):
+            raise WDAError(
+                "GET /wda/activeAppInfo: unknown error: *** "
+                "-[__NSPlaceholderDictionary initWithObjects:forKeys:count:]: "
+                "attempt to insert nil object from objects[2]"
+            )
+
+    # frame is LIT: that is what the notification does, and what made the old
+    # code reach active_app() in a state where it blows up.
+    stub = fast(
+        CrashingActiveApp(_buttons_tree(list("1234567890")), frame=b"\0" * 200_000)
+    )
+    helpers.unlock()
+    assert stub.pressed == ["home"]
+    assert stub.tapped == list("246810")
+
+
 def test_unlock_wrong_pin_raises_and_never_retries(fast):
     """Pad still up after entering the code = wrong PIN (or a lost gesture).
     One attempt only — iOS lockout escalates on repeated wrong passcodes."""
@@ -425,11 +453,33 @@ def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
 
 
 def test_unlock_gives_up_after_two_dark_swipes(fast):
-    """Never loop gestures forever at a phone that will not show a pad."""
+    """Never loop gestures forever at a phone that will not show a pad — but
+    say so OUT LOUD. The old silent return made the viewer answer {"ok": true}
+    and the MCP tool say "unlocked" over a phone that was still dark: success
+    reported, state unknown (adversarial review 2026-08-13)."""
     stub = fast(StubPhone(SAMPLE_TREE, frame=b"tiny"))
-    helpers.unlock()
-    assert stub.swipes == 2
+    with pytest.raises(WDAError, match="stayed dark"):
+        helpers.unlock()
+    assert stub.swipes == 2  # still bounded: two attempts, never a loop
     assert stub.typed == []
+
+
+def test_unlock_reraises_unrelated_active_app_errors(fast):
+    """Only the lit-lock-screen "insert nil object" crash means carry-on. Any
+    OTHER WDAError from active_app() (timeout, dead session) leaves the
+    phone's state unknown — swallowing it would Home-press and edge-swipe a
+    phone that may be unlocked with an app open (adversarial review
+    2026-08-13). It must propagate, and no gesture may fire."""
+
+    class FlakyActiveApp(StubPhone):
+        def active_app(self):
+            raise WDAError("Cannot reach WebDriverAgent: connection timed out")
+
+    stub = fast(FlakyActiveApp(SAMPLE_TREE, frame=b"\0" * 200_000))
+    with pytest.raises(WDAError, match="timed out"):
+        helpers.unlock()
+    assert stub.pressed == []
+    assert stub.swipes == 0
 
 
 def test_unlock_uses_the_client_it_is_given(fast):
@@ -1409,7 +1459,7 @@ class PageClient:
         self.chains.append(class_chain)
         return "42" if self.present else None
 
-    def element_value(self, element_id):
+    def element_value(self, element_id):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         return "" if self.value is None else self.value
 
 
@@ -1479,7 +1529,7 @@ class PagingClient:
     def find_first(self, class_chain):
         return "42"
 
-    def element_value(self, element_id):
+    def element_value(self, element_id):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         return f"Page {self.index} of {self.total}"
 
     def swipe(self, x1, y1, x2, y2, seconds=0.3):

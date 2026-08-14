@@ -271,6 +271,14 @@ def _capture_via_watcher(
 ) -> dict:
     out = config.STATE_DIR / "captured.mobileprovision"
     config.STATE_DIR.mkdir(exist_ok=True)
+    # The watcher script treats "out exists" as "captured", so a stale file
+    # from an earlier run would be accepted as this run's mint. The script
+    # deletes it too, but under SilentlyContinue — a locked file slips
+    # through there. Clear it HERE, loudly, before the watcher arms.
+    try:
+        out.unlink(missing_ok=True)
+    except OSError as exc:
+        raise SigningError(f"cannot clear stale capture {out.name}: {exc}") from exc
     proc = subprocess.Popen(
         [
             "powershell",
@@ -378,20 +386,28 @@ def fix_input(
         build_p12()
 
         udid = device.current_udid()
+        # The new profile goes to a staging path first. PROFILE_PATH is what
+        # the doctor's countdown reads, so it must describe what is ON THE
+        # PHONE: committing before `ios sign app` succeeds turned a failed
+        # re-sign into a fresh 7-day PASS over the old, dying signature.
+        pending = PROFILE_PATH.with_name(PROFILE_PATH.name + ".pending")
         if profile is not None:
             data = profile.read_bytes()
             info = parse_profile(data)
             ok, why = profile_is_valid(info, udid)
             if not ok:
                 return {"ok": False, "step": "error", "message": f"bad profile: {why}"}
-            PROFILE_PATH.write_bytes(data)
+            pending.parent.mkdir(exist_ok=True)
+            pending.write_bytes(data)
             progress("captured", f"using profile '{info['name']}'")
         else:
             progress(
                 "waiting",
                 "Open Sideloadly, load wda/WebDriverAgent.ipa, click Start now.",
             )
-            info = capture_profile(udid, timeout=timeout, progress=progress)
+            info = capture_profile(
+                udid, timeout=timeout, dest=pending, progress=progress
+            )
 
         bundleid = info.get("bundle_id")
         if bundleid == "*":  # wildcard profile: keep the app's own id
@@ -401,8 +417,9 @@ def fix_input(
             f"re-signing WDA as {bundleid or 'its own id'} (nested .xctest incl.)",
         )
         device.sign_app(
-            WDA_IPA, P12_PATH, PROFILE_PATH, p12password=P12_PASSWORD, bundleid=bundleid
+            WDA_IPA, P12_PATH, pending, p12password=P12_PASSWORD, bundleid=bundleid
         )
+        os.replace(pending, PROFILE_PATH)  # signed and installed: commit
 
         progress("up", "starting tunnel + WDA")
         from . import admin
@@ -423,4 +440,9 @@ def fix_input(
             "message": f"Input is live{when}. Taps work now.",
         }
     except (SigningError, device.DeviceError) as exc:
+        return {"ok": False, "step": "error", "message": str(exc)}
+    except subprocess.TimeoutExpired as exc:
+        # openssl (30s) and `ios sign app` (300s) both run under a subprocess
+        # timeout. Letting TimeoutExpired escape killed the viewer's fix-input
+        # worker thread, which froze the wizard at "running" forever.
         return {"ok": False, "step": "error", "message": str(exc)}

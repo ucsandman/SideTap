@@ -1022,3 +1022,25 @@ def test_status_answers_without_phone_or_screenshot(base_url, monkeypatch):
     assert j["window"] is None
     assert j["input"] is False
     assert j["setup_done"] in (True, False)
+
+
+def test_fix_input_worker_never_stays_running_on_a_crash(monkeypatch):
+    """_FIX_JOB["running"] is the wizard's only liveness signal. An exception
+    fix_input does not catch used to kill the worker thread before the final
+    update, so every later click just read the stuck 'running' state and the
+    wizard hung forever with no error (adversarial review 2026-08-13)."""
+    from phone_harness import signing
+
+    def explode(progress):
+        progress("signing", "about to blow up")
+        raise RuntimeError("uncaught surprise from deep in the stack")
+
+    monkeypatch.setattr(signing, "fix_input", explode)
+    with viewer._FIX_LOCK:
+        viewer._FIX_JOB.update(running=True, step="p12", message="starting…", ok=None)
+    viewer._fix_input_worker()
+    with viewer._FIX_LOCK:
+        job = dict(viewer._FIX_JOB)
+    assert job["running"] is False
+    assert job["ok"] is False
+    assert "uncaught surprise" in job["message"]

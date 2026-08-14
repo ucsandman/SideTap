@@ -148,13 +148,13 @@ def test_title_matches_rejects_group_title_for_single_contact():
     assert helpers._title_matches("Mom & Elissa", "Mom & Elissa")
 
 
-def _buttons_tree(labels):
+def _buttons_tree(labels, kind="Button"):
     return {
         "type": "Application",
         "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
         "children": [
             {
-                "type": "Button",
+                "type": kind,
                 "label": label,
                 "isVisible": "1",
                 "rect": {"x": 10, "y": 100 + i * 90, "width": 100, "height": 80},
@@ -166,6 +166,13 @@ def _buttons_tree(labels):
 
 def test_passcode_pad_visible_with_digit_buttons():
     assert _passcode_pad_visible(_buttons_tree(list("1234567890")))
+
+
+def test_passcode_pad_visible_with_key_digits():
+    """The real pad's digits are Key elements, not Buttons (device dump
+    2026-08-13). Detection must count them: on a localized pad there is no
+    'passcode' text to fall back on, so the digit count is the only signal."""
+    assert _passcode_pad_visible(_buttons_tree(list("1234567890"), kind="Key"))
 
 
 def test_passcode_pad_visible_with_passcode_text():
@@ -199,6 +206,7 @@ class StubPhone:
     ):
         self.tree = tree
         self.typed = []
+        self.tapped = []  # pad-digit labels resolved from tap coordinates
         self.pressed = []
         self.swipes = 0
         self.source_calls = 0
@@ -239,6 +247,21 @@ class StubPhone:
         if not self.wrong_pin:
             self.tree = SAMPLE_TREE  # accepted: pad dismissed, home screen
 
+    def tap(self, x, y):
+        # Resolve the tap back to whichever button's rect holds the point,
+        # like the real pad would.
+        for e in helpers.collect_texts(self.tree):
+            r = e["rect"]
+            if (
+                r["x"] <= x <= r["x"] + r["width"]
+                and r["y"] <= y <= r["y"] + r["height"]
+            ):
+                self.tapped.append(e["text"])
+                break
+        want = config.PHONE_PASSCODE or ""
+        if not self.wrong_pin and "".join(self.tapped) == want:
+            self.tree = SAMPLE_TREE  # accepted: pad dismissed, home screen
+
 
 @pytest.fixture()
 def fast(monkeypatch):
@@ -261,10 +284,56 @@ def test_unlock_types_nothing_when_no_pad_appears(fast):
     assert stub.typed == []
 
 
-def test_unlock_types_when_pad_is_visible(fast):
+def test_unlock_taps_the_pad_instead_of_typing(fast):
+    """/wda/keys sends keystrokes to the FOCUSED element, and the pad being on
+    screen does not mean the pad holds focus: a lock-screen priority
+    notification kept focus while the pad sat behind it, all six typed digits
+    went into the void, and the phone stayed locked (live 2026-08-13). A tap
+    on a digit button needs no focus, so a digit passcode goes in by taps."""
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
-    assert stub.typed == ["246810"]
+    assert stub.tapped == list("246810")
+    assert stub.typed == []
+
+
+def test_unlock_taps_key_digits_like_the_real_pad(fast):
+    """Pin the device's actual tree shape: the pad digits are Key '1'..'0'
+    (dump 2026-08-13). The first live run of the tap path silently fell back
+    to typing because only Button was accepted."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"), kind="Key")))
+    helpers.unlock()
+    assert stub.tapped == list("246810")
+    assert stub.typed == []
+
+
+def test_unlock_falls_back_to_typing_for_alphanumeric_passcode(fast, monkeypatch):
+    """An alphanumeric passcode gets a full keyboard, not a pad — there are no
+    digit buttons to tap for its letters, so the typing path stays."""
+    monkeypatch.setattr(config, "PHONE_PASSCODE", "az2468")
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.typed == ["az2468"]
+    assert stub.tapped == []
+
+
+def test_unlock_digit_taps_are_redacted_in_the_activity_log(fast):
+    """A pad tap's coordinates ARE the digit — logged raw they would spell out
+    the passcode. Every digit tap must run inside wda_client.redact_actions."""
+    from phone_harness import wda_client
+
+    class SpyPhone(StubPhone):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.redactions = []
+
+        def tap(self, x, y):
+            self.redactions.append(getattr(wda_client._REDACT, "label", None))
+            super().tap(x, y)
+
+    stub = fast(SpyPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert len(stub.redactions) == 6
+    assert all(stub.redactions)
 
 
 def test_unlock_never_consults_wda_locked(fast):
@@ -273,7 +342,7 @@ def test_unlock_never_consults_wda_locked(fast):
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     stub.is_locked = None  # noqa: vulture  (poison: any call raises TypeError)
     helpers.unlock()
-    assert stub.typed == ["246810"]
+    assert stub.tapped == list("246810")
 
 
 def test_unlock_locked_without_passcode_raises(fast, monkeypatch):
@@ -314,25 +383,26 @@ def test_unlock_wakes_a_phone_that_locked_with_an_app_open(fast):
     stub = fast(LockedBehindApp(SAMPLE_TREE, frame=b"tiny", app="com.apple.calculator"))
     helpers.unlock()
     assert stub.pressed == ["home"]  # it woke the phone instead of giving up
-    assert stub.typed == ["246810"]
+    assert stub.tapped == list("246810")
 
 
 def test_unlock_wrong_pin_raises_and_never_retries(fast):
-    """Pad still up after typing = wrong PIN (or lost keys). One attempt only —
-    iOS lockout escalates on repeated wrong passcodes."""
+    """Pad still up after entering the code = wrong PIN (or a lost gesture).
+    One attempt only — iOS lockout escalates on repeated wrong passcodes."""
     stub = fast(StubPhone(_buttons_tree(list("1234567890")), wrong_pin=True))
     with pytest.raises(WDAError, match="still on screen"):
         helpers.unlock()
-    assert stub.typed == ["246810"]  # exactly one attempt
+    assert stub.tapped == list("246810")  # exactly one attempt
 
 
 def test_unlock_resummons_pad_when_screen_slept(fast):
     """If the screen went dark during the (slow) pad check, unlock() must wake
-    and swipe again before typing — keys on a dark screen go nowhere."""
+    and swipe again before entering the code — taps on a dark screen go
+    nowhere."""
     stub = fast(StubPhone(_buttons_tree(list("1234567890")), frame=b"tiny"))
     helpers.unlock()
     assert stub.pressed == ["home", "home"]  # woke twice
-    assert stub.typed == ["246810"]
+    assert stub.tapped == list("246810")
 
 
 def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
@@ -351,7 +421,7 @@ def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
     stub = fast(SleepyPhone(SAMPLE_TREE, frame=b"tiny"))
     helpers.unlock()
     assert stub.swipes == 2
-    assert stub.typed == ["246810"]
+    assert stub.tapped == list("246810")
 
 
 def test_unlock_gives_up_after_two_dark_swipes(fast):
@@ -368,16 +438,19 @@ def test_unlock_uses_the_client_it_is_given(fast):
     singleton = fast(StubPhone(_buttons_tree(list("1234567890"))))
     mine = StubPhone(_buttons_tree(list("1234567890")))
     helpers.unlock(mine)
-    assert mine.typed == ["246810"]
-    assert singleton.typed == []
+    assert mine.tapped == list("246810")
+    assert singleton.tapped == []
 
 
-def test_unlock_scrubs_passcode_from_errors(fast):
-    err = WDAError("POST /wda/keys: could not type '246810'")
+def test_unlock_scrubs_passcode_from_errors(fast, monkeypatch):
+    # Alphanumeric passcode: the typing fallback is the path that can echo
+    # the secret back inside a WDA error message.
+    monkeypatch.setattr(config, "PHONE_PASSCODE", "az2468")
+    err = WDAError("POST /wda/keys: could not type 'az2468'")
     fast(StubPhone(_buttons_tree(list("1234567890")), type_error=err))
     with pytest.raises(WDAError) as exc_info:
         helpers.unlock()
-    assert "246810" not in str(exc_info.value)
+    assert "az2468" not in str(exc_info.value)
 
 
 class CountingClient:
@@ -901,12 +974,17 @@ def test_type_text_allows_ordinary_text(fast):
     assert stub.typed == ["on my way"]
 
 
-def test_unlock_still_types_the_passcode(fast):
+def test_unlock_still_enters_the_passcode(fast, monkeypatch):
     """The guard is on the public helper; unlock() drives the client directly.
-    Same tree as test_unlock_types_when_pad_is_visible, which must keep passing."""
+    Digit passcodes go in by pad taps; an alphanumeric one exercises the
+    typing fallback, which must bypass the guard too."""
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
-    assert stub.typed == ["246810"]
+    assert stub.tapped == list("246810")
+    monkeypatch.setattr(config, "PHONE_PASSCODE", "az2468")
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.typed == ["az2468"]
 
 
 # ---- the gate setting: always | flagged | off -------------------------------

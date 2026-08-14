@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import approval, capture, config, device, trust
-from .wda_client import WDAClient, WDAError, activity_file
+from .wda_client import WDAClient, WDAError, activity_file, redact_actions
 
 _client: WDAClient | None = None
 
@@ -1042,7 +1042,14 @@ def _passcode_pad_visible(tree: dict) -> bool:
     happens to be focused (a search box, a message...).
     """
     texts = collect_texts(tree)
-    digits = {e["text"] for e in texts if e["type"] == "Button" and e["text"].isdigit()}
+    # The real pad's digits are Key elements (device dump 2026-08-13); Button
+    # stays accepted for older tree shapes. Counting digits matters beyond
+    # belt-and-braces: a localized pad has no "passcode" text to match.
+    digits = {
+        e["text"]
+        for e in texts
+        if e["type"] in ("Button", "Key") and e["text"].isdigit()
+    }
     if len(digits) >= 9:
         return True
     return any("passcode" in e["text"].lower() for e in texts)
@@ -1066,8 +1073,41 @@ _UNLOCK_TIMEOUT = 45.0  # first gesture after a deep sleep: 20.5s measured live
 _LIT_SCREEN_BYTES = 120_000
 
 
+def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:
+    """Put the passcode into the pad by TAPPING its digit buttons.
+
+    /wda/keys sends keystrokes to the FOCUSED element, and the pad being on
+    screen does not mean the pad holds focus: a lock-screen priority
+    notification kept focus while the pad sat behind it, so all six typed
+    digits went into the void and the phone stayed locked (live 2026-08-13).
+    A tap on a button needs no focus. Alphanumeric passcodes get a full
+    keyboard instead of the pad, so any character without a digit button
+    falls back to the typing path — there is nothing to tap for it.
+    """
+    centers = {}
+    for e in collect_texts(pad_tree):
+        if (
+            e["type"] in ("Button", "Key")
+            and len(e["text"]) == 1
+            and e["text"].isdigit()
+        ):
+            centers.setdefault(e["text"], (e["x"], e["y"]))
+    if passcode and all(ch in centers for ch in passcode):
+        # The tap coordinates ARE the digits — keep them out of the live feed.
+        with redact_actions("passcode entry"):
+            for ch in passcode:
+                x, y = centers[ch]
+                c.tap(x, y)
+                time.sleep(0.15)
+        return
+    try:
+        c.type_text(passcode)
+    except WDAError as exc:
+        raise WDAError(_scrub_secret(str(exc), passcode)) from None
+
+
 def unlock(c: WDAClient | None = None) -> None:
-    """Make the phone usable: wake it and, if the passcode pad comes up, type
+    """Make the phone usable: wake it and, if the passcode pad comes up, enter
     PHONE_PASSCODE from .env (opt-in). Scrubs the passcode from any error.
 
     Decides from what is actually on screen — NEVER from /wda/locked, which
@@ -1105,13 +1145,18 @@ def unlock(c: WDAClient | None = None) -> None:
         c.swipe(w / 2, h * 0.98, w / 2, h * 0.30, 0.25)
         time.sleep(1.0)
 
+    pad_tree: dict = {}
+
     def pad_appears(seconds: float) -> bool:
         # Poll, don't peek once: the pad animates in, and a slow swipe can
         # land well after the call returns. Attempt-counted (not wall-clock)
-        # so tests with a no-op sleep stay instant.
+        # so tests with a no-op sleep stay instant. Keeps the tree that showed
+        # the pad: _enter_passcode aims its digit taps with it.
+        nonlocal pad_tree
         attempts = max(1, int(seconds / 0.4))
         for i in range(attempts):
-            if _passcode_pad_visible(c.source()):
+            pad_tree = c.source()
+            if _passcode_pad_visible(pad_tree):
                 return True
             if i < attempts - 1:
                 time.sleep(0.4)
@@ -1132,14 +1177,12 @@ def unlock(c: WDAClient | None = None) -> None:
             "Phone is locked. Set PHONE_PASSCODE in .env or unlock it by hand."
         )
     # The tree fetch above can take seconds when the viewer is streaming, and
-    # the lock screen re-sleeps fast — typed keys on a dark screen go nowhere,
-    # so re-probe and wake again if it slept.
+    # the lock screen re-sleeps fast — taps on a dark screen go nowhere, so
+    # re-probe and wake again if it slept.
     if len(c.screenshot()) < _LIT_SCREEN_BYTES:
         wake_and_swipe()
-    try:
-        c.type_text(config.PHONE_PASSCODE)
-    except WDAError as exc:
-        raise WDAError(_scrub_secret(str(exc), config.PHONE_PASSCODE)) from None
+        pad_tree = c.source()  # the screen was redrawn: re-aim the digit taps
+    _enter_passcode(c, config.PHONE_PASSCODE, pad_tree)
     time.sleep(0.7)
     if _passcode_pad_visible(c.source()):
         raise WDAError(

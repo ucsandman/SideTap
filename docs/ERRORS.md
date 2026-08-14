@@ -5,6 +5,36 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-13 — Unlock typed all six digits and the phone stayed locked: a priority notification held keyboard focus
+
+**Symptom.** The viewer's Unlock button "did nothing" while an Apple priority
+notification sat on the lock screen. The activity log shows a complete run:
+wake, swipe, second wake+swipe, pad detected, `type (6 chars)` — then the
+pad-still-visible check raised. The same button unlocked in 4-6s as soon as
+the notification was gone.
+
+**Root cause.** `unlock()` entered the passcode with `/wda/keys`, which sends
+keystrokes to whatever element holds FOCUS. Pad visible ≠ pad focused: the
+notification overlay kept focus while the pad sat behind it, so all six typed
+digits went into the void.
+
+**Fix.** `helpers._enter_passcode` now TAPS the pad's digits at their tree
+coordinates — a tap needs no focus. `/wda/keys` survives only as the
+alphanumeric-passcode fallback (full keyboard, no digit buttons). The digit
+taps run inside `wda_client.redact_actions("passcode entry")`: a pad tap's
+coordinates spell out the passcode digit by digit, and the activity feed
+never records typed text, so it must not record these taps either.
+
+**Second finding, same day.** The first live run of the tap path silently
+fell back to typing: the real pad's digits are `Key` elements, not `Button`s
+(`Key '1'`..`Key '0'`, device dump in the entry's session). That also means
+`_passcode_pad_visible`'s digit-count branch had NEVER matched on device —
+detection was riding entirely on the English "Enter Passcode" text. Both now
+accept `Key`. Lessons: `/wda/keys` entry silently depends on focus — when a
+stateless gesture can do the job, prefer the gesture; and a fallback that
+engages silently looks exactly like the fix working (L1: watch the new path
+actually fire — the redacted log lines are the tell).
+
 ## 2026-08-13 — Error 103 while the signature check was green: a bare Sideloadly install replaced the fixed one
 
 **Symptom.** WDA died mid-week with `Failed to load the test bundle (Error

@@ -347,6 +347,20 @@ def test_blocked_actions_stay_out_of_the_feed(wda, tmp_path, monkeypatch):
     assert not activity_file().exists()
 
 
+def test_redact_actions_hides_gesture_coordinates(wda, tmp_path, monkeypatch):
+    """Pad-tap coordinates spell out the passcode digit by digit — inside
+    redact_actions the feed shows the label, never the tap itself. Redaction
+    must also END with the block: a leaked flag would blind the whole feed."""
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    with wda_client.redact_actions("passcode entry"):
+        wda.tap(123, 456)
+    wda.tap(10, 20)
+    text = activity_file().read_text(encoding="utf-8")
+    assert "123" not in text and "456" not in text
+    actions = [r["action"] for r in _feed_lines(tmp_path)]
+    assert actions == ["passcode entry", "tap (10, 20)"]
+
+
 def test_activity_summary_swipe_and_long_press():
     def gesture(steps):
         return {

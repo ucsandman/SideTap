@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 
 import requests
@@ -113,6 +115,25 @@ def _activity_summary(path: str, payload: dict | None) -> str | None:
     return path.rsplit("/", 1)[-1]  # unknown action: still visible in the feed
 
 
+_REDACT = threading.local()
+
+
+@contextmanager
+def redact_actions(label: str):
+    """Log every action on this thread as `label` while the block is active.
+
+    For gestures whose summary would itself reveal a secret: the unlock pad
+    taps' coordinates spell out the passcode digit by digit — the same class
+    of leak the typed-text rule in _activity_summary already prevents. One
+    line still lands per action, so the feed keeps its count."""
+    prev = getattr(_REDACT, "label", None)
+    _REDACT.label = label
+    try:
+        yield
+    finally:
+        _REDACT.label = prev
+
+
 def _log_activity(path: str, payload: dict | None) -> None:
     """Append one line to .state/agent_activity.log. Never raises.
 
@@ -125,6 +146,8 @@ def _log_activity(path: str, payload: dict | None) -> None:
         summary = _activity_summary(path, payload)
         if not summary:
             return
+        if getattr(_REDACT, "label", None):
+            summary = _REDACT.label
         feed = activity_file()
         config.STATE_DIR.mkdir(exist_ok=True)
         with open(feed, "a", encoding="utf-8") as fh:

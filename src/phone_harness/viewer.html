@@ -1353,8 +1353,12 @@ document.getElementById('btn-paste-send').onclick = async () => {
 let fixRunning = false;
 const FIX_STEPS = [
   ['p12', 'Build signing identity'],
-  ['waiting', 'Waiting for Sideloadly to sign'],
-  ['captured', 'Captured provisioning profile'],
+  // "if needed" is load-bearing: the capture reads the phone before it ever
+  // prompts, so a still-valid profile skips this step and the wizard ticks it
+  // off without the human touching Sideloadly. A bare "Waiting for Sideloadly
+  // to sign" would then show ✓ over something that never happened.
+  ['waiting', 'Fresh signature from Sideloadly (if needed)'],
+  ['captured', 'Read provisioning profile off the phone'],
   ['signing', 'Re-signing WDA (nested .xctest)'],
   ['up', 'Starting tunnel + WDA'],
   ['done', 'Input live'],

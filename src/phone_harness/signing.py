@@ -9,18 +9,33 @@ Library Validation rejects it. The fix is:
   1. Build a .p12 from Sideloadly's own developer cert/key (same Team ID it uses
      to mint the profile) with openssl.
   2. Let the human run Sideloadly once (a real Apple login - we never script
-     Apple auth or reuse session tokens). While it signs, it writes the freshly
-     minted `embedded.mobileprovision` into a temp folder; we watch for it and
-     copy it out.
-  3. Re-sign the whole IPA with `ios sign app` - this signs the nested .xctest
+     Apple auth or reuse session tokens) so Apple mints a fresh 7-day profile.
+  3. Read that profile back off the PHONE, not off this PC (see below).
+  4. Re-sign the whole IPA with `ios sign app` - this signs the nested .xctest
      with the Team ID, which is what was missing.
 
-Everything here is local: openssl on the user's own key, a filesystem watch, and
-go-ios signing. No network calls, no Apple authentication.
+Step 3 used to watch %TEMP% for the `embedded.mobileprovision` Sideloadly was
+believed to stage there. It does not: an mtime scan of every temp root across a
+sign that SUCCEEDED found Sideloadly 0.60 wrote exactly three files
+(account-appids.json, sessions.json, installations.db) and no profile anywhere -
+it signs in memory and streams the IPA to the device (docs/ERRORS.md,
+2026-08-16). No watcher can catch a file that is never written. iOS, though,
+keeps every installed profile at /var/MobileDevice/ProvisioningProfiles/, and
+misagent still hands them over on iOS 26.6, so that is where we read it from.
+go-ios cannot do this (no misagent: `ios profile list` is MCInstall, AFC returns
+error 8, and both `sign app` and `ui install` make --profile mandatory), which
+is why pymobiledevice3 is a dependency.
+
+Reading from the phone also means a profile that is still valid needs no
+Sideloadly click at all - mid-week re-signs just work.
+
+Everything here is local: openssl on the user's own key, a USB read from the
+phone, and go-ios signing. No network calls, no Apple authentication.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import plistlib
 import shutil
@@ -244,7 +259,39 @@ def _iter_profile_bytes(root: Path, newer_than: float):
         yield from _profiles_in(sub, newer_than)
 
 
-WATCHER_PS = config.REPO_ROOT / "scripts" / "watch_profile.ps1"
+def _expires_at(info: dict) -> datetime:
+    """Profile expiry as an aware datetime; missing/odd values sort oldest."""
+    exp = info.get("expires")
+    if not isinstance(exp, datetime):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+
+
+def _device_profiles(udid: str | None) -> list[bytes]:
+    """Every provisioning profile iOS is holding, as raw .mobileprovision bytes.
+
+    This is the only copy that exists after a Sideloadly sign (module docstring),
+    so it is the whole capture path - not a fallback.
+    """
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+        from pymobiledevice3.services.misagent import MisagentService
+    except ImportError as exc:
+        raise SigningError(
+            "pymobiledevice3 is required to read the profile off the phone. "
+            "Install it with: pip install -r requirements.txt"
+        ) from exc
+
+    async def pull():
+        lockdown = await create_using_usbmux(serial=udid)
+        return await MisagentService(lockdown=lockdown).copy_all()
+
+    try:
+        return [bytes(p.buf) for p in asyncio.run(pull())]
+    except Exception as exc:  # any transport/pairing failure, named not swallowed
+        raise SigningError(
+            f"could not read provisioning profiles from the phone: {exc}"
+        ) from exc
 
 
 def capture_profile(
@@ -254,94 +301,61 @@ def capture_profile(
     progress: Progress = _noop,
     temp_roots: list[Path] | None = None,
 ) -> dict:
-    """Capture the profile Sideloadly writes while it signs WDA.
+    """Get the WDA profile Apple minted, reading it back off the phone.
 
-    On Windows this uses an event-driven FileSystemWatcher (scripts/
-    watch_profile.ps1) - the profile exists for only a few hundred ms, so a
-    polling scan loses the race. `temp_roots` forces the polling path (used by
-    tests). Returns the parsed, validated profile info and copies bytes to dest.
+    Polls the device rather than this PC, because Sideloadly never writes the
+    profile to disk (module docstring). The first read happens immediately, so
+    a still-valid profile returns without the human touching Sideloadly at all.
+    `temp_roots` forces the legacy filesystem scan (used by tests). Returns the
+    parsed, validated profile info and copies bytes to dest.
     """
-    if temp_roots is None and sys.platform == "win32" and WATCHER_PS.exists():
-        return _capture_via_watcher(udid, timeout, dest, progress)
-    return _capture_via_poll(udid, timeout, dest, progress, temp_roots)
+    if temp_roots is not None:
+        return _capture_via_poll(udid, timeout, dest, progress, temp_roots)
+    return _capture_from_device(udid, timeout, dest, progress)
 
 
-def _capture_via_watcher(
+def _capture_from_device(
     udid: str | None, timeout: float, dest: Path, progress: Progress
 ) -> dict:
-    out = config.STATE_DIR / "captured.mobileprovision"
-    config.STATE_DIR.mkdir(exist_ok=True)
-    # The watcher script treats "out exists" as "captured", so a stale file
-    # from an earlier run would be accepted as this run's mint. The script
-    # deletes it too, but under SilentlyContinue — a locked file slips
-    # through there. Clear it HERE, loudly, before the watcher arms.
-    try:
-        out.unlink(missing_ok=True)
-    except OSError as exc:
-        raise SigningError(f"cannot clear stale capture {out.name}: {exc}") from exc
-    proc = subprocess.Popen(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(WATCHER_PS),
-            "-OutFile",
-            str(out),
-            "-TimeoutSec",
-            str(int(timeout)),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+    """Poll /var/MobileDevice/ProvisioningProfiles until a usable one shows up."""
+    deadline = time.time() + timeout
+    prompted = False
+    while True:
+        best: tuple[dict, bytes] | None = None
+        for data in _device_profiles(udid):
+            try:
+                info = parse_profile(data)
+            except SigningError:
+                continue  # some other app's profile, or one we can't read
+            if not profile_is_valid(info, udid)[0]:
+                continue
+            # Several WDA profiles can coexist; the newest expiry is this mint.
+            if best is None or _expires_at(info) > _expires_at(best[0]):
+                best = (info, data)
+        if best is not None:
+            info, data = best
+            dest.parent.mkdir(exist_ok=True)
+            dest.write_bytes(data)
+            info["source"] = "phone: /var/MobileDevice/ProvisioningProfiles"
+            progress("captured", f"read profile '{info['name']}' off the phone")
+            return info
+        left = int(deadline - time.time())
+        if left <= 0:
+            break
+        if prompted:
+            progress(
+                "waiting",
+                f"click Start in Sideloadly - {left // 60}m {left % 60:02d}s left",
+            )
+        else:
+            progress("waiting", "armed - click Start in Sideloadly now")
+            prompted = True
+        time.sleep(3)
+    raise SigningError(
+        "no usable WebDriverAgent profile on the phone. Click Start in Sideloadly "
+        "during the wait so Apple mints one, or pass a profile directly: "
+        "phone-harness fix-input <path-to.mobileprovision>"
     )
-    # Everything the watcher says goes to a log AND to the caller's progress:
-    # a capture that fails silently for ten minutes is the whole complaint.
-    log = config.STATE_DIR / "fix_input.log"
-    ran = False
-    with log.open("w", encoding="utf-8", errors="replace") as fh:
-        for line in proc.stdout or []:
-            line = line.strip()
-            fh.write(line + "\n")
-            fh.flush()
-            if line == "READY":
-                progress("waiting", "armed - click Start in Sideloadly now")
-            elif line.startswith("WAITING "):
-                left = int(line.split()[1])
-                progress(
-                    "waiting",
-                    f"click Start in Sideloadly - {left // 60}m {left % 60:02d}s left",
-                )
-            elif line == "SIDELOADLY_RAN":
-                ran = True
-                progress("waiting", "Sideloadly finished - grabbing the profile")
-            elif line.startswith("SAW "):
-                progress("waiting", "found a profile, reading it")
-            elif line.startswith("CAPTURED_FROM"):
-                progress("captured", "profile written by Sideloadly")
-    proc.wait()
-    if proc.returncode == 2 or (ran and not out.exists()):
-        raise SigningError(
-            "Sideloadly signed (its install log moved) but wrote no provisioning "
-            f"profile we could find - see {log}. Pass one directly instead: "
-            "phone-harness fix-input <path-to.mobileprovision>"
-        )
-    if proc.returncode != 0 or not out.exists():
-        raise SigningError(
-            "timed out waiting for the profile. Click Start in Sideloadly during "
-            "the watch, or pass the profile directly: "
-            "phone-harness fix-input <path-to.mobileprovision>"
-        )
-    data = out.read_bytes()
-    info = parse_profile(data)
-    ok, why = profile_is_valid(info, udid)
-    if not ok:
-        raise SigningError(f"captured a profile but it is unusable: {why}")
-    dest.write_bytes(data)
-    info["source"] = str(out)
-    return info
 
 
 def _capture_via_poll(
@@ -425,10 +439,9 @@ def fix_input(  # noqa: vulture  (viewer worker + dispatched by name from run.py
             pending.write_bytes(data)
             progress("captured", f"using profile '{info['name']}'")
         else:
-            progress(
-                "waiting",
-                "Open Sideloadly, load wda/WebDriverAgent.ipa, click Start now.",
-            )
+            # No "click Start in Sideloadly" prompt here: the capture reads the
+            # phone first, and a still-valid profile means the human is never
+            # needed. capture_profile raises that prompt itself, when it is true.
             info = capture_profile(
                 udid, timeout=timeout, dest=pending, progress=progress
             )

@@ -211,95 +211,76 @@ def test_capture_profile_ignores_wrong_profile(tmp_path):
         )
 
 
-def _fake_watcher(monkeypatch, out_path, write_bytes=None, rc=0, lines=None):
-    """Stand in for the watch_profile.ps1 subprocess (the real Windows path,
-    previously untested). Optionally 'captures' write_bytes into out_path."""
-
-    class FakeProc:
-        def __init__(self, *_a, **_k):
-            if write_bytes is not None:
-                out_path.write_bytes(write_bytes)
-            self.stdout = iter(lines or ["READY\n"])
-            self.returncode = rc
-
-        def wait(self):
-            return self.returncode
-
-    monkeypatch.setattr(signing.subprocess, "Popen", FakeProc)
+def _no_sleep(_seconds):
+    """Keep the poll loop's real 3s pacing out of the test suite."""
 
 
-def test_watcher_capture_accepts_a_fresh_profile(monkeypatch, tmp_path):
-    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
-    out = tmp_path / "captured.mobileprovision"
-    fresh = make_profile()
-    _fake_watcher(monkeypatch, out, write_bytes=fresh)
+def _fake_device(monkeypatch, *reads):
+    """Stand in for the phone: each call to _device_profiles returns one read."""
+    calls = iter(reads)
+    monkeypatch.setattr(signing, "_device_profiles", lambda _udid: next(calls, []))
+
+
+def test_device_capture_picks_the_freshest_wda_profile(monkeypatch, tmp_path):
+    """The phone holds every profile it was ever given - 13 of them on the real
+    device, six of them valid WDA ones with different expiries. Expired and
+    other apps' must be filtered out, and among the survivors the newest expiry
+    has to win: signing with an older-but-still-valid mint would hand back input
+    that dies days early.
+    """
+    expired = make_profile(
+        expires=datetime.now(timezone.utc) - timedelta(days=1), name="last week"
+    )
+    other = make_profile(app_id="ABCDE12345.com.other.app", name="not WDA")
+    stale = make_profile(  # valid, so only the expiry comparison rejects it
+        expires=datetime.now(timezone.utc) + timedelta(days=2), name="older mint"
+    )
+    fresh = make_profile(
+        expires=datetime.now(timezone.utc) + timedelta(days=7), name="this week"
+    )
+    _fake_device(monkeypatch, [expired, other, stale, fresh])
+    monkeypatch.setattr(signing.time, "sleep", _no_sleep)  # must not wait at all
     dest = tmp_path / "dest.mobileprovision"
-    info = signing._capture_via_watcher(UDID, 5, dest, lambda *_a: None)
-    assert info["team_id"] == "ABCDE12345"
+    info = signing.capture_profile(UDID, timeout=5, dest=dest)
+    assert info["name"] == "this week"
     assert dest.read_bytes() == fresh
 
 
-def test_watcher_capture_never_accepts_a_stale_file(monkeypatch, tmp_path):
-    """A leftover captured.mobileprovision from an earlier run must not be
-    accepted as this run's mint. The PS script's own delete runs under
-    SilentlyContinue, so Python clears the file itself before arming
-    (adversarial review 2026-08-13)."""
-    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
-    out = tmp_path / "captured.mobileprovision"
-    out.write_bytes(make_profile(name="stale, from last week"))
-    _fake_watcher(monkeypatch, out, write_bytes=None, rc=0)  # captures nothing
-    with pytest.raises(signing.SigningError, match="timed out"):
-        signing._capture_via_watcher(UDID, 5, tmp_path / "dest", lambda *_a: None)
-    assert not out.exists()  # Python deleted it; the PS net was not needed
-
-
-def test_watcher_says_sideloadly_signed_when_no_profile_lands(monkeypatch, tmp_path):
-    """The 2026-08-16 failure: Sideloadly signed and installed fine, wrote no
-    .mobileprovision anywhere, and the wizard sat on 'waiting' for the whole
-    600s window. That case must be NAMED, not reported as a generic timeout."""
-    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
-    _fake_watcher(
-        monkeypatch,
-        tmp_path / "captured.mobileprovision",
-        rc=2,
-        lines=["READY\n", "SIDELOADLY_RAN\n", "NO_PROFILE_AFTER_SIDELOADLY\n"],
-    )
-    with pytest.raises(signing.SigningError, match="wrote no provisioning profile"):
-        signing._capture_via_watcher(UDID, 5, tmp_path / "dest", lambda *_a: None)
-    assert "SIDELOADLY_RAN" in (tmp_path / "fix_input.log").read_text()
-
-
-def test_watcher_relays_a_live_countdown(monkeypatch, tmp_path):
-    """'It never updated' was half the complaint: the watcher's heartbeat has
-    to reach the wizard, not just the log."""
-    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
-    out = tmp_path / "captured.mobileprovision"
-    _fake_watcher(
-        monkeypatch,
-        out,
-        write_bytes=make_profile(),
-        lines=[
-            "READY\n",
-            "WAITING 545\n",
-            "SAW C:\\t\\a.mobileprovision\n",
-            "CAPTURED_FROM C:\\t\\a.mobileprovision\n",
-        ],
-    )
+def test_device_capture_waits_for_sideloadly_then_reads(monkeypatch, tmp_path):
+    """Nothing usable yet means Apple has not minted one, so the human is told
+    to click Start - and the next read has to be picked up."""
+    fresh = make_profile()
+    _fake_device(monkeypatch, [], [fresh])
+    monkeypatch.setattr(signing.time, "sleep", _no_sleep)
     seen = []
-    signing._capture_via_watcher(
-        UDID, 5, tmp_path / "dest", lambda s, m: seen.append((s, m))
+    info = signing.capture_profile(
+        UDID,
+        timeout=30,
+        dest=tmp_path / "dest.mobileprovision",
+        progress=lambda s, m: seen.append((s, m)),
     )
-    assert ("waiting", "click Start in Sideloadly - 9m 05s left") in seen
-    assert ("captured", "profile written by Sideloadly") in seen
+    assert info["team_id"] == "ABCDE12345"
+    assert ("waiting", "armed - click Start in Sideloadly now") in seen
+    assert seen[-1][0] == "captured"
 
 
-def test_watcher_capture_fails_loud_when_stale_file_is_stuck(monkeypatch, tmp_path):
-    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
-    (tmp_path / "captured.mobileprovision").write_bytes(b"stuck")
+def test_device_capture_times_out_naming_the_next_move(monkeypatch, tmp_path):
+    """The 2026-08-16 failure: no profile ever arrives. That must name what to
+    do, not sit silent - and the old watcher wording is gone with the watcher."""
+    _fake_device(monkeypatch)  # every read comes back empty
+    monkeypatch.setattr(signing.time, "sleep", _no_sleep)
+    with pytest.raises(signing.SigningError, match="Click Start in Sideloadly"):
+        signing.capture_profile(
+            UDID, timeout=0.01, dest=tmp_path / "dest.mobileprovision"
+        )
 
-    def refuse(self, missing_ok=False):  # noqa: vulture  (must match Path.unlink's signature)
-        raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "unlink", refuse)
-    with pytest.raises(signing.SigningError, match="cannot clear stale capture"):
-        signing._capture_via_watcher(UDID, 5, tmp_path / "dest", lambda *_a: None)
+def test_device_capture_refuses_another_devices_profile(monkeypatch, tmp_path):
+    """A profile for someone else's phone parses fine and would sign fine - and
+    then iOS refuses to launch it. It must never be picked."""
+    _fake_device(monkeypatch, [make_profile(devices=("00008120-OTHERDEVICE",))])
+    monkeypatch.setattr(signing.time, "sleep", _no_sleep)
+    with pytest.raises(signing.SigningError):
+        signing.capture_profile(
+            UDID, timeout=0.01, dest=tmp_path / "dest.mobileprovision"
+        )

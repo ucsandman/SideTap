@@ -67,16 +67,17 @@ Sideloadly mints, re-signs WDA locally, installs it, and brings the driver up.
 The viewer has the same thing as a **Fix input** button. Keep the phone
 **unlocked** during the install step — iOS refuses installs on a locked phone.
 
-Already have a `.mobileprovision` on disk? Skip the watch and pass it:
+Already have a `.mobileprovision` on disk? Pass it directly and skip the wait:
 `phone-harness fix-input path\to\profile.mobileprovision`.
 
-**Known limit — Sideloadly 0.60.** That version signs entirely in memory: it
-writes no profile to disk, so there is nothing for the watch to capture.
-Measured 2026-08-16 with a watcher over the whole user profile, `ProgramData`
-and `Windows\Temp` during a sign that succeeded — zero writes. `fix-input` now
-detects this (it watches Sideloadly's own install DB) and stops about a minute
-after Sideloadly finishes, instead of waiting out the window. Until it has a
-profile file to work from, pass one with the argument form above.
+**Why it reads the phone, not your PC.** Sideloadly 0.60 signs entirely in
+memory and streams the app to the device: it writes no profile to disk at all.
+Measured 2026-08-16 across a sign that succeeded, over the whole user profile,
+`ProgramData` and `Windows\Temp` — Sideloadly wrote three files, none of them a
+profile. So `fix-input` reads the profile from the phone instead, where iOS
+keeps every installed one. Two consequences: nothing to race, and a profile
+that has not expired yet is found straight away, so mid-week repairs never need
+Sideloadly at all.
 
 **Every 7 days** the free profile expires. Fix = run `phone-harness fix-input`
 again (click Start in Sideloadly once when it asks). `phone-harness doctor`

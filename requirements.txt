@@ -3,4 +3,10 @@ requests>=2.31
 # The one dependency beyond requests — standard, narrow-purpose, no framework.
 # <2: mcp 2.0 dropped mcp.server.fastmcp (the server API this repo uses).
 mcp>=1.9,<2
+# Reads the provisioning profile back off the phone for `fix-input`. Sideloadly
+# 0.60 signs in memory and writes no profile to disk, and go-ios has no misagent
+# service, so this is the only way to get the bytes `ios sign app --profile`
+# demands (docs/ERRORS.md, 2026-08-16). Imported lazily inside signing.py, so
+# driving the phone never loads it.
+pymobiledevice3>=10.8
 

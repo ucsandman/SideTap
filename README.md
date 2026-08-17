@@ -176,12 +176,12 @@ Do not point this at a phone you do not own. Do not use it to send unsolicited m
 Sideloading WebDriverAgent with a free Apple ID installs the app, but the test runner never starts: Sideloadly signs the host app and leaves `PlugIns/WebDriverAgentRunner.xctest` unsigned, so iOS Library Validation rejects it. `phone-harness fix-input` repairs this entirely on your machine:
 
 1. Builds a `.p12` from Sideloadly's own cert and key (openssl, local files).
-2. While Sideloadly signs, it briefly writes the freshly minted provisioning profile to `%TEMP%`. A FileSystemWatcher captures it in the few hundred milliseconds it exists.
+2. Reads the freshly minted provisioning profile back off the **phone**. Sideloadly signs in memory and never writes the profile to disk, but iOS keeps every installed profile at `/var/MobileDevice/ProvisioningProfiles/`, so the profile is pulled over USB (pymobiledevice3) instead of watched for on your PC.
 3. Re-signs the whole IPA with go-ios `ios sign app`, which signs the nested `.xctest` with the same Team ID, then installs.
 
 No Apple servers are contacted, no Apple password is scripted, no session tokens are reused. The 7-day free-ID expiry still applies; the doctor counts it down and one command re-signs.
 
-Mid-week re-installs can skip Sideloadly entirely by reusing the captured profile: `phone-harness fix-input .state\profile.mobileprovision`. That reuses the same profile, so it repairs input without touching the clock. Nothing moves the clock mid-week: Apple pins every re-sign — Sideloadly included — to the App ID's original 7-day window, so the countdown resets only with the first sign after it expires. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
+Because step 2 reads the phone, a profile that has not expired yet is found immediately and Sideloadly is not needed at all — mid-week repairs just run. You can also pass one explicitly: `phone-harness fix-input .state\profile.mobileprovision`. Nothing moves the clock mid-week: Apple pins every re-sign — Sideloadly included — to the App ID's original 7-day window, so the countdown resets only with the first sign after it expires. The phone must be unlocked during any install — iOS refuses installs on a locked phone.
 
 ## Architecture
 

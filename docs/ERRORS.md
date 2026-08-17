@@ -5,6 +5,54 @@ entries only. Newest first.
 
 ---
 
+**2026-08-16 — one-liner.** `pip install -r requirements.txt` for the new
+pymobiledevice3 dep pulled `typer` to 0.27.1 and `rich` to 15.0.0 in Wes's
+global Python, breaking the pins `repowise` (rich<14) and `huggingface-hub`
+(typer<0.26) declare. Root cause: installing into a shared kitchen-sink
+interpreter with no constraint on the transitive upgrade. Fixed by pinning back
+to `typer 0.25.1` + `rich 13.9.4`, which satisfies pymobiledevice3 (typer>=0.25,
+no rich constraint) and both neighbours; textual's `rich>=14.2` pin is violated
+on paper but it imports and runs fine. Prevention: check what a new dep drags
+along before installing into the global interpreter.
+
+---
+
+## 2026-08-16 (later) — Sideloadly 0.60 writes NO profile to disk, ever: the watcher premise is dead
+
+**Symptom.** Same night, second run. Both watcher nets armed, Sideloadly signed
+and installed cleanly, and the wizard failed with "Sideloadly signed but wrote
+no provisioning profile we could find".
+
+**Root cause.** Not a dropped event, not a missed directory, not a race. A full
+mtime scan of every temp root (`%TEMP%`, `C:\Windows\Temp`, all three Sideloadly
+dirs) across the whole 23:05-23:20 sign window found Sideloadly wrote **exactly
+three files**: `account-appids.json`, `sessions.json`, `installations.db`. No
+staging dir, no `.mobileprovision`, nothing. **Sideloadly 0.60 signs in memory
+and streams the IPA straight to the device.** No watcher can ever catch a file
+that is never written. Ruled out on the way: both Sideloadly processes run as
+Wes (no service, so no SYSTEM-temp theory); the cached IPA is the Aug-8 *input*,
+not the signed output; the only GUID `.tmp` files in the window were a browser
+PNG and JPEG.
+
+**Also disproved:** "a post-expiry bare install might be enough". It is not —
+`up()` after tonight's fresh sign still died on `Failed to load the test bundle
+(Error code: 103)`. The local re-sign is mandatory, so the profile is mandatory.
+
+**Fix.** Stop watching the PC. Read the profile off the **phone**, where iOS
+keeps it at `/var/MobileDevice/ProvisioningProfiles/` after installd runs.
+go-ios cannot: it has no misagent (`ios profile list` is MCInstall and returned
+`[]`, `fsync`/AFC returned error 8, and `sign app`/`ui install` both make
+`--profile` mandatory). `pymobiledevice3 provision dump <dir>` can, and **still
+works on iOS 26.6** — it pulled the profile Sideloadly had minted minutes
+earlier, expiry a full 7 days out. Feeding that to
+`phone-harness fix-input <path>` took all 11 checks green.
+
+**Lesson.** Two fixes in one night both patched the watcher; the third question
+should have been "does the file exist at all". When a capture keeps missing,
+prove the artifact is written before improving how you listen for it.
+
+---
+
 ## 2026-08-16 — Fix input sat on "Waiting for Sideloadly" after Sideloadly said Done, for ten silent minutes
 
 **Symptom.** Wes clicked Start in Sideloadly with the wizard armed. Sideloadly

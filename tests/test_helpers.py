@@ -1625,6 +1625,34 @@ def test_open_app_error_names_near_miss_app_names(monkeypatch):
     assert "Messages" in msg, f"error did not suggest the near match: {msg}"
 
 
+def test_open_app_launches_an_installed_name_that_carries_a_version(monkeypatch):
+    # `ios apps --list` reports "YouTube 21.32.4", and the old dot test called
+    # that a bundle id and handed it to iOS verbatim ("Application info provider
+    # returned nil"). It is the very string open_app's own "Did you mean" hint
+    # suggests, so the suggested fix could not work. Bundle ids still pass through.
+    monkeypatch.setattr(
+        helpers.device,
+        "list_apps",
+        lambda: [{"name": "YouTube 21.32.4", "bundle_id": "com.google.ios.youtube"}],
+    )
+    launched = []
+    monkeypatch.setattr(helpers, "client", lambda: _LaunchSpy(launched))
+
+    helpers.open_app("YouTube 21.32.4")
+    assert launched == ["com.google.ios.youtube"]
+
+    helpers.open_app("com.burbn.instagram")  # a real bundle id still goes direct
+    assert launched[-1] == "com.burbn.instagram"
+
+
+class _LaunchSpy:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def app_launch(self, bundle_id):
+        self.sink.append(bundle_id)
+
+
 def test_open_app_suggests_system_apps_that_ios_apps_list_omits(monkeypatch):
     # `ios apps --list` returns user apps only, so on a real device the pool was
     # empty for a Messages/Settings typo and the agent got no suggestion.

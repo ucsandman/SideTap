@@ -653,7 +653,14 @@ def wait_for_app(bundle_id: str, timeout: float = 10.0, interval: float = 0.5) -
 def open_app(name: str) -> None:
     """Open an app by friendly name ('Settings'), bundle id, or installed-app name."""
     key = name.lower().strip()
-    bundle = BUNDLE_IDS.get(key) or (name if "." in name else None)
+    # A dot alone does NOT make it a bundle id: `ios apps --list` reports names
+    # with the version attached ("YouTube 21.32.4", "TikTok 46.4.0"), so a bare
+    # dot test shipped every one of those straight to app_launch as a bundle id
+    # and iOS answered "Application info provider returned nil" — including for
+    # the exact name this function's own "Did you mean" hint suggests. Bundle
+    # ids are reverse-DNS and never contain spaces; installed names here do.
+    looks_like_bundle = "." in name and " " not in name.strip()
+    bundle = BUNDLE_IDS.get(key) or (name if looks_like_bundle else None)
     installed: list[str] = []
     if not bundle:
         for app in device.list_apps():

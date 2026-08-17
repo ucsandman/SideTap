@@ -15,23 +15,53 @@ Sideloadly. They re-signed for nothing, on a signature with 6 days left.
 
 **Root cause (measured on device 2026-08-17, real TikTok 46.4.0, iOS 26.6).** Not
 the gesture, and not the idle wait. Any WDA call that RESOLVES THE ACTIVE
-APPLICATION blocks forever while TikTok's feed is in front, because that app
-never answers iOS accessibility requests. A plain read proves it with no gesture
-involved: `GET /wda/activeAppInfo` hung 20s+ and took WDA with it, while the
-calls that touch no app stayed instant on the same screen — `/status` 0.004s,
-`/screenshot` 0.22s, `/orientation` 0.01s. `/actions` resolves the active app, so
-every gesture inherits it. WDA serves requests ONE AT A TIME, so the whole agent
-stops behind the stuck call: `/status` timed out for 321s straight while polling.
-Killing TikTok released WDA in ~5s, which is what proves the block is a
-synchronous wait on that app's accessibility server.
+APPLICATION can block with no upper bound while TikTok's feed is in front. A
+plain read proves it with no gesture involved: `GET /wda/activeAppInfo` hung and
+took WDA with it, while the calls that touch no app stayed instant on the same
+screen — `/status` 0.004s, `/screenshot` 0.22s, `/orientation` 0.01s. `/actions`
+resolves the active app, so every gesture inherits it. WDA serves requests ONE AT
+A TIME, so the whole agent stops behind the stuck call: `/status` timed out for
+321s straight while polling, and `:9100` refused connections too, so the viewer
+goes dark, not merely slow. Killing TikTok released WDA in ~5s and backgrounding
+it in ~20s, which is what proves the block is a synchronous wait on that app's
+accessibility server.
 
-**Two hypotheses killed by measurement, do not retry them.** (1) Quiescence:
+**It is a HEAVY TAIL, not a hard block, and the first version of this entry got
+that wrong.** The same screen answers in 0.08s or never, depending on what the
+app is doing. Measured the same night: TikTok WARM (already resident) 0.08-1.1s
+per call, 0/3 trials wedged; COLD (killed and relaunched) 2.9-5.5s, 1/3 wedged.
+The rate collapses over time — it fired within a call or two, repeatedly, for
+~20 minutes after the app was first installed, and hours later 28 swipes across
+7 cold starts produced none. So this cannot be reproduced on demand, and any
+experiment against it MUST re-run its control (see the retraction below).
+
+**Three hypotheses killed by measurement, do not retry them.** (1) Quiescence:
 `waitForIdleTimeout=0` (the standard Appium answer for video apps, and the exact
-trick `_enter_passcode` uses) changed nothing — same wedge, and WDA's own source
-shows the setting only bounds `_XCTSetApplicationStateTimeout`, a different wait.
+trick `_enter_passcode` uses) changed nothing — WDA's own source shows the
+setting only bounds `_XCTSetApplicationStateTimeout`, a different wait.
 (2) `defaultActiveApplication` pinned to TikTok's bundle, to skip active-app
 detection: swipe 1 returned in 24.4s and looked like a fix, swipe 2 wedged it
-permanently. Both were run before any code changed.
+permanently. (3) `enforceCustomSnapshots: true` made it strictly worse — wedged
+on the first read.
+
+**RETRACTED: the `snapshotMaxDepth` "fix".** Depth 1 answered `activeAppInfo` in
+0.06s and landed a swipe in 0.89s where the default had just wedged, and a sweep
+of 24/16/12/8/4/2 was clean at every step. It was a false positive: re-running
+the CONTROL at the default depth 50 then survived 8 swipes too, so the sweep had
+measured a quiet phone, not a working setting. Lower depth does cut latency and
+variance (≤8: 0.90-0.95s; 50: 0.94-6.94s) but nothing shows it prevents the tail,
+and depth 16 already truncates Settings' tree (55 nodes → 31). Not shipped. The
+lesson is L1, exactly: a check whose control never fails has been run, not
+verified.
+
+**Nothing in WDA can bound it, and that is a regression upstream.** No gesture
+route avoids resolving the active application (read from `FBElementCommands.m`,
+every one of them), and no snapshot timeout setting exists any more:
+`snapshotTimeout` and `customSnapshotTimeout` were removed in
+appium/WebDriverAgent#970 (merged 2025-01-16) as a documented breaking change,
+and they existed for exactly this class of problem (#89, #181). Filed as
+appium/WebDriverAgent#1210. Pinning an older WDA to get the setting back is dead:
+every iOS 26 fix landed after #970.
 
 **Fix.** SideTap cannot drive that screen and does not pretend to. What it can do
 is stop lying about the state and recover without a restart. `WDAClient.link_state()`
@@ -42,12 +72,23 @@ the accessibility wait over USB with no WDA involvement; `up()` tries that FIRST
 when the link is wedged and never restarts (measured end to end: wedge, then
 `up` recovered in 38.9s, next gesture 1.04s). The doctor reports "WDA is wedged
 by the app in front, not down" with that repair, and the failure tail refuses to
-name Sideloadly when the profile on disk is still valid.
+name Sideloadly when the profile on disk is still valid. `a3ba172` then made the
+recovery automatic — the viewer's existing heal loop covers a wedge, gated on 45s
+of CONTINUOUS silence so it cannot press Home during a legitimately slow call
+(8.3s swipe, 20.5s first gesture after deep sleep, unlock's own 45s client), and
+it logs "recovered a wedged link (pressed Home)" to the activity feed so a phone
+that moves on its own says why. STILL UNVERIFIED against a natural wedge: by then
+the repro was gone, so it is proven only against a socket that accepts and never
+answers, which is the one thing the watchdog can actually see.
 
 **Prevention.** Error 103 right after a hang is the stuck runner, not the
 signature — a restart cannot land while the old runner is still on the phone.
 Before blaming a signature, check whether the socket ACCEPTS: connect-refused is
-a dead link, accept-then-silence is an app holding WDA hostage.
+a dead link, accept-then-silence is an app holding WDA hostage. And note what the
+viewer itself does: `/api/phone` reads `active_app()` every 10s, so sitting in an
+app like this with the viewer open can trigger the wedge with no agent involved.
+There is no cheap guard, because knowing which app is in front requires the call
+that hangs.
 
 ---
 

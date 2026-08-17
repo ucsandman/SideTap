@@ -23,7 +23,7 @@ class DeviceError(RuntimeError):
     pass
 
 
-PROCS = ("tunnel", "runwda", "forward8100", "forward9100")
+PROCS = ("tunnel", "runwda", "forward8100", "forward9100", "syslog")
 
 
 # ---- per-run subprocess memoization -----------------------------------------
@@ -380,12 +380,16 @@ def log_tail(name: str, lines: int = 5) -> str:
     )
 
 
-def stop_all() -> list[str]:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
-    """Kill every process we started. Returns names of processes stopped."""
+def stop_all(names: tuple[str, ...] = PROCS) -> list[str]:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
+    """Kill every process we started. Returns names of processes stopped.
+
+    `names` narrows it to a subset — syslog.start() uses that to clear one
+    orphaned capture without taking the phone link down with it.
+    """
     exe = ios_path()
     expected = Path(exe).name.lower() if exe else "ios"
     stopped = []
-    for name in PROCS:
+    for name in names:
         pf = _pid_file(name)
         if not pf.exists():
             continue

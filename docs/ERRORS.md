@@ -81,6 +81,17 @@ that moves on its own says why. STILL UNVERIFIED against a natural wedge: by the
 the repro was gone, so it is proven only against a socket that accepts and never
 answers, which is the one thing the watchdog can actually see.
 
+**Evidence for upstream.** #1210's maintainer asked for one thing: device syslog
+captured ACROSS an occurrence. `syslog.py` does that. It cannot be armed on
+demand, because the wedge cannot be scheduled and `ios syslog` costs ~100 MB/hour
+on disk (27 KB/s measured), so the stream runs the whole session as a ~2-minute
+in-memory ring and only reaches disk when `admin._unwedge` marks it. The mark
+happens BEFORE the Home press, because the repair ends the occurrence, and the
+ring has to outlast the 45s DETECTION delay, not just the event — the log worth
+reading is from when the app stopped answering, already 45s+ old by the time the
+watchdog calls it a wedge. Verified live end to end (901 lines in 10s, a 175 KB
+dump with 120 lines recorded after the mark), still not against a natural wedge.
+
 **Prevention.** Error 103 right after a hang is the stuck runner, not the
 signature — a restart cannot land while the old runner is still on the phone.
 Before blaming a signature, check whether the socket ACCEPTS: connect-refused is

@@ -20,7 +20,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import admin, approval, capture, config, device, trust
+from . import admin, approval, capture, config, device, syslog, trust
 from .wda_client import WDAClient, WDAError, stop_engaged, stop_file
 
 _HTML = Path(__file__).with_name("viewer.html")
@@ -115,6 +115,13 @@ def _heal_loop() -> None:
     probe = WDAClient(timeout=3)
     while True:
         time.sleep(_HEAL_POLL)
+        try:
+            # Idempotent and backoff-guarded, so this doubles as the restart
+            # for a capture that died with the tunnel (deep sleep kills it).
+            # Its own try: a syslog failure must never cost a heal cooldown.
+            syslog.start()
+        except Exception:
+            pass
         try:
             now = time.monotonic()
             up = probe.is_up()

@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
 
-from . import capture, config, device, wda_client
+from . import capture, config, device, syslog, wda_client
 from .wda_client import WDAClient, stop_file
 
 
@@ -492,6 +492,11 @@ def _unwedge(client: WDAClient, wait_seconds: float = 45.0) -> bool:
     TikTok's For You feed, WDA answered ~20s later with no restart at all.
     """
     print("WDA is wedged by the app in front (not down) — pressing Home", flush=True)
+    # Save the phone's log BEFORE the repair: appium/WebDriverAgent#1210 asked
+    # for syslog across an occurrence, and pressing Home ends the occurrence.
+    # The ring already holds the window before anyone noticed; the tail catches
+    # the recovery. No-op unless the viewer is running the capture.
+    dump = syslog.mark("wedge")
     if not device.foreground_springboard():
         return False
     if not _wait_for_wda(client, time.time() + wait_seconds):
@@ -499,7 +504,8 @@ def _unwedge(client: WDAClient, wait_seconds: float = 45.0) -> bool:
     # The phone just left the app on its own. Say so where the human already
     # watches for what touched their phone, or the jump to the Home Screen is
     # the harness acting behind their back.
-    wda_client.log_event("recovered a wedged link (pressed Home)")
+    note = f"; log saved to {dump.name}" if dump else ""
+    wda_client.log_event(f"recovered a wedged link (pressed Home){note}")
     return True
 
 

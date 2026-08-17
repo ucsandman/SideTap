@@ -16,7 +16,7 @@ from phone_harness import syslog  # noqa: E402
 class _FakeProc:
     """A live `ios syslog` as far as mark() is concerned."""
 
-    def poll(self):
+    def poll(self):  # noqa: vulture  (syslog.start/mark call it)
         return None
 
 
@@ -90,7 +90,7 @@ def test_unwedge_marks_before_it_presses_home(monkeypatch, tmp_path):
     from phone_harness import admin
 
     order = []
-    monkeypatch.setattr(syslog, "mark", lambda label: order.append("mark") or None)
+    monkeypatch.setattr(syslog, "mark", lambda *a, **k: order.append("mark") or None)
     monkeypatch.setattr(
         admin.device, "foreground_springboard", lambda: order.append("home") or True
     )
@@ -105,7 +105,7 @@ def test_recovery_line_names_the_dump(monkeypatch, tmp_path):
     from phone_harness import admin
 
     logged = []
-    monkeypatch.setattr(syslog, "mark", lambda label: tmp_path / "syslog-wedge-x.log")
+    monkeypatch.setattr(syslog, "mark", lambda *a, **k: tmp_path / "syslog-wedge-x.log")
     monkeypatch.setattr(admin.device, "foreground_springboard", lambda: True)
     monkeypatch.setattr(admin, "_wait_for_wda", lambda *a, **k: True)
     monkeypatch.setattr(admin.wda_client, "log_event", logged.append)
@@ -114,6 +114,24 @@ def test_recovery_line_names_the_dump(monkeypatch, tmp_path):
     assert logged == [
         "recovered a wedged link (pressed Home); log saved to syslog-wedge-x.log"
     ]
+
+
+def test_the_capture_gets_its_own_loop_not_the_heal_loop():
+    """start() reads the clock and can spawn a process, and _heal_loop is
+    driven in tests by a scripted monotonic() over the real time module, so a
+    call inside it ate one scripted tick per pass. That was invisible on a
+    machine that HAS go-ios (the first call spawned a capture, so every later
+    one early-returned) and turned CI red where it does not exist. It also made
+    a plain unit-test run spawn `ios syslog` against the phone. This scans the
+    source because the symptom only showed up in the OTHER module's tests.
+    """
+    import inspect
+
+    from phone_harness import viewer
+
+    assert "syslog" not in inspect.getsource(viewer._heal_loop)
+    assert "syslog.start()" in inspect.getsource(viewer._syslog_loop)
+    assert "_syslog_loop" in inspect.getsource(viewer.serve)
 
 
 def test_tail_closes_itself(monkeypatch):

@@ -111,17 +111,35 @@ def _should_heal(
     return now >= _HEAL["cooldown_until"]
 
 
+_SYSLOG_POLL = 60.0
+
+
+def _syslog_loop() -> None:
+    """Keep the wedge syslog capture running (see syslog.py).
+
+    Its OWN loop, deliberately not a line inside _heal_loop. start() reads the
+    clock and can spawn a subprocess, and _heal_loop is driven in tests by a
+    scripted monotonic() over the real time module — sharing the loop ate one
+    tick per pass, which went unnoticed here (go-ios present, so the first call
+    spawned a capture and every later one early-returned) and turned CI red
+    where go-ios does not exist. It also meant a plain unit-test run spawned
+    `ios syslog` against the phone.
+
+    start() is idempotent, so this doubles as the restart for a capture that
+    died with the tunnel, which deep sleep does routinely.
+    """
+    while True:
+        try:
+            syslog.start()
+        except Exception:
+            pass  # a debugging aid must never take the viewer down
+        time.sleep(_SYSLOG_POLL)
+
+
 def _heal_loop() -> None:
     probe = WDAClient(timeout=3)
     while True:
         time.sleep(_HEAL_POLL)
-        try:
-            # Idempotent and backoff-guarded, so this doubles as the restart
-            # for a capture that died with the tunnel (deep sleep kills it).
-            # Its own try: a syslog failure must never cost a heal cooldown.
-            syslog.start()
-        except Exception:
-            pass
         try:
             now = time.monotonic()
             up = probe.is_up()
@@ -856,6 +874,7 @@ def serve(open_browser: bool = True) -> int:  # noqa: vulture
     _kill_stale_viewer()
     _refresh_lan_state()
     threading.Thread(target=_heal_loop, daemon=True).start()
+    threading.Thread(target=_syslog_loop, daemon=True).start()
     server = _Server(("127.0.0.1", config.VIEWER_PORT), Handler)
     url = f"http://127.0.0.1:{config.VIEWER_PORT}"
     print(f"Viewer: {url}  (Ctrl+C to stop)")

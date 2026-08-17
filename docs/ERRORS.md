@@ -81,6 +81,24 @@ that moves on its own says why. STILL UNVERIFIED against a natural wedge: by the
 the repro was gone, so it is proven only against a socket that accepts and never
 answers, which is the one thing the watchdog can actually see.
 
+**What does NOT reproduce it (measured 2026-08-17, 68 trials, zero wedges).**
+"TikTok wedges and YouTube Shorts does not" is not a property of the apps. Paired
+against YouTube on the identical routes, warm TikTok was the same speed
+(`activeAppInfo` median 76ms vs 72ms, swipe 853ms vs 827ms, 0/32 wedged), and
+`ios kill` + relaunch did not bring the failure back either (0/36 wedged) — cold
+TikTok was actually FASTER than cold YouTube on the first call after launch
+(0.06s against a consistent 0.37-0.40s, 3/3 cycles). The AX-free control
+(`/status`) sat at 2-6ms throughout, so the link was never the variable. So
+killing and relaunching is NOT the cold state that mattered: the original
+occurrence was ~20 minutes after TikTok was INSTALLED, and a kill leaves every
+cache, login and downloaded feed in place. Reproducing it plausibly needs a
+FRESH INSTALL, not a fresh process, which costs a real login. Do not spend
+another night on kill/relaunch. The one reproducible effect found: the first
+`activeAppInfo` after a cold launch pays the app's startup work (YouTube 0.37s
+against its own 0.07s steady state), which is the same phenomenon bounded — it
+supports the maintainer's own suggestion that a trivial app blocking its main
+thread is a better repro than any real app.
+
 **Evidence for upstream.** #1210's maintainer asked for one thing: device syslog
 captured ACROSS an occurrence. `syslog.py` does that. It cannot be armed on
 demand, because the wedge cannot be scheduled and `ios syslog` costs ~100 MB/hour

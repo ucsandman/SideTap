@@ -247,7 +247,6 @@
 
   /* ---- fix-input panel ----------------------------------------------- */
   #fix-panel { margin-top:0; padding:0; border:0; background:none; }   /* look lives in #ov-panel now */
-  #fix-title { font-weight:600; margin-bottom:var(--s1); }
   #fix-body { margin-top:var(--s1); line-height:1.6; }
   #fix-steps { margin-top:var(--s2); display:flex; flex-direction:column; gap:2px; }
   .fstep { display:flex; gap:var(--s2); align-items:baseline; padding:3px 0; color:var(--dim); font-size:13px; }
@@ -525,7 +524,6 @@
       <div id="ov-body">
         <div id="doctor" hidden><div class="dim">Running checks…</div></div>
         <div id="fix-panel" hidden>
-          <div id="fix-title">🔧 Enable touch input</div>
           <div class="dim" id="fix-body">
             Touch input needs WebDriverAgent re-signed. Click <b>Fix input</b>, then in
             Sideloadly load <code>wda/WebDriverAgent.ipa</code> and press Start. It signs
@@ -1268,6 +1266,7 @@ async function loadDoctor() {
     if (sigBad) document.getElementById('sig-banner-text').textContent = '⏳ ' + sig.detail;
     lastDoctor = results;
     if (ovOpen === 'setup') renderSetup();   // live: steps go green as checks pass
+    if (ovOpen === 'fix-panel' && lastFixJob) renderFix(lastFixJob);  // same, for the sign wizard
     const fails = failing.length;
     document.getElementById('checks-dots').innerHTML = results.map(r =>
       '<span class="dot' + (r.ok ? '' : (linkStarting ? ' wait' : ' bad')) + '"></span>').join('');
@@ -1360,7 +1359,22 @@ const FIX_STEPS = [
   ['up', 'Starting tunnel + WDA'],
   ['done', 'Input live'],
 ];
+// The wizard's last line is the one the human actually asked for: after
+// Sideloadly, does the phone work? It is client-side because the checks live in
+// /api/doctor, not in the sign job, and it re-renders from loadDoctor so the
+// list finishes itself while they watch instead of stopping at "Input live".
+let fixOk = false;
+let lastFixJob = null;
+function fixChecksLine(job) {
+  if (job.step === 'error') return '';
+  if (!fixOk) return '<div class="fstep"><span class="m">·</span><span>Checks all green</span></div>';
+  if (!lastDoctor.length) return '<div class="fstep on"><span class="m">▶</span><span>Running checks…</span></div>';
+  const bad = lastDoctor.filter(r => !r.ok);
+  if (!bad.length) return `<div class="fstep done"><span class="m">✓</span><span>All ${lastDoctor.length} checks pass — you're good to go</span></div>`;
+  return `<div class="fstep on"><span class="m">▶</span><span>${bad.length} check${bad.length > 1 ? 's' : ''} still failing · ${bad[0].name}</span></div>`;
+}
 function renderFix(job) {
+  lastFixJob = job;
   const order = FIX_STEPS.map(s => s[0]);
   const cur = order.indexOf(job.step);
   const html = FIX_STEPS.map(([key, label], i) => {
@@ -1371,19 +1385,22 @@ function renderFix(job) {
     return `<div class="${cls}"><span class="m">${mark}</span><span>${label}${i === cur && job.message ? ' · ' + job.message : ''}</span></div>`;
   }).join('');
   const err = job.step === 'error' ? `<div class="fstep err"><span class="m">✗</span><span>${job.message}</span></div>` : '';
-  document.getElementById('fix-steps').innerHTML = html + err;
+  document.getElementById('fix-steps').innerHTML = html + err + fixChecksLine(job);
 }
 async function pollFix() {
   const job = await getJSON('/api/fix-input');
   renderFix(job);
   if (job.running) { setTimeout(pollFix, 1000); return; }
   fixRunning = false;
+  fixOk = job.ok === true;
+  renderFix(job);            // repaint the checks line now that it is live
   document.getElementById('btn-fix').disabled = false;
   document.getElementById('btn-sig-fix').disabled = false;
   loadDoctor(); loadStatus();
 }
 async function startFixInput() {
   fixRunning = true;
+  fixOk = false;
   document.getElementById('btn-fix').disabled = true;
   document.getElementById('btn-sig-fix').disabled = true;
   openOverlay('fix-panel', '🔧 Enable touch input');

@@ -70,6 +70,14 @@ The viewer has the same thing as a **Fix input** button. Keep the phone
 Already have a `.mobileprovision` on disk? Skip the watch and pass it:
 `phone-harness fix-input path\to\profile.mobileprovision`.
 
+**Known limit — Sideloadly 0.60.** That version signs entirely in memory: it
+writes no profile to disk, so there is nothing for the watch to capture.
+Measured 2026-08-16 with a watcher over the whole user profile, `ProgramData`
+and `Windows\Temp` during a sign that succeeded — zero writes. `fix-input` now
+detects this (it watches Sideloadly's own install DB) and stops about a minute
+after Sideloadly finishes, instead of waiting out the window. Until it has a
+profile file to work from, pass one with the argument form above.
+
 **Every 7 days** the free profile expires. Fix = run `phone-harness fix-input`
 again (click Start in Sideloadly once when it asks). `phone-harness doctor`
 detects the expiry and reminds you.

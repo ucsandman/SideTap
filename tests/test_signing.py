@@ -124,7 +124,7 @@ def _wire_fix_input(monkeypatch, tmp_path, sign=None, up=lambda: 0):
     ipa.write_bytes(b"ipa")
     monkeypatch.setattr(signing, "WDA_IPA", ipa)
     monkeypatch.setattr(signing, "PROFILE_PATH", tmp_path / "profile.mobileprovision")
-    monkeypatch.setattr(signing, "build_p12", lambda *a, **k: None)
+    monkeypatch.setattr(signing, "build_p12", lambda *_a, **_k: None)
     monkeypatch.setattr(device, "current_udid", lambda: UDID)
     signed = []
 
@@ -211,7 +211,7 @@ def test_capture_profile_ignores_wrong_profile(tmp_path):
         )
 
 
-def _fake_watcher(monkeypatch, out_path, write_bytes=None, rc=0):
+def _fake_watcher(monkeypatch, out_path, write_bytes=None, rc=0, lines=None):
     """Stand in for the watch_profile.ps1 subprocess (the real Windows path,
     previously untested). Optionally 'captures' write_bytes into out_path."""
 
@@ -219,7 +219,7 @@ def _fake_watcher(monkeypatch, out_path, write_bytes=None, rc=0):
         def __init__(self, *_a, **_k):
             if write_bytes is not None:
                 out_path.write_bytes(write_bytes)
-            self.stdout = iter(["READY\n"])
+            self.stdout = iter(lines or ["READY\n"])
             self.returncode = rc
 
         def wait(self):
@@ -251,6 +251,46 @@ def test_watcher_capture_never_accepts_a_stale_file(monkeypatch, tmp_path):
     with pytest.raises(signing.SigningError, match="timed out"):
         signing._capture_via_watcher(UDID, 5, tmp_path / "dest", lambda *_a: None)
     assert not out.exists()  # Python deleted it; the PS net was not needed
+
+
+def test_watcher_says_sideloadly_signed_when_no_profile_lands(monkeypatch, tmp_path):
+    """The 2026-08-16 failure: Sideloadly signed and installed fine, wrote no
+    .mobileprovision anywhere, and the wizard sat on 'waiting' for the whole
+    600s window. That case must be NAMED, not reported as a generic timeout."""
+    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
+    _fake_watcher(
+        monkeypatch,
+        tmp_path / "captured.mobileprovision",
+        rc=2,
+        lines=["READY\n", "SIDELOADLY_RAN\n", "NO_PROFILE_AFTER_SIDELOADLY\n"],
+    )
+    with pytest.raises(signing.SigningError, match="wrote no provisioning profile"):
+        signing._capture_via_watcher(UDID, 5, tmp_path / "dest", lambda *_a: None)
+    assert "SIDELOADLY_RAN" in (tmp_path / "fix_input.log").read_text()
+
+
+def test_watcher_relays_a_live_countdown(monkeypatch, tmp_path):
+    """'It never updated' was half the complaint: the watcher's heartbeat has
+    to reach the wizard, not just the log."""
+    monkeypatch.setattr(signing.config, "STATE_DIR", tmp_path)
+    out = tmp_path / "captured.mobileprovision"
+    _fake_watcher(
+        monkeypatch,
+        out,
+        write_bytes=make_profile(),
+        lines=[
+            "READY\n",
+            "WAITING 545\n",
+            "SAW C:\\t\\a.mobileprovision\n",
+            "CAPTURED_FROM C:\\t\\a.mobileprovision\n",
+        ],
+    )
+    seen = []
+    signing._capture_via_watcher(
+        UDID, 5, tmp_path / "dest", lambda s, m: seen.append((s, m))
+    )
+    assert ("waiting", "click Start in Sideloadly - 9m 05s left") in seen
+    assert ("captured", "profile written by Sideloadly") in seen
 
 
 def test_watcher_capture_fails_loud_when_stale_file_is_stuck(monkeypatch, tmp_path):

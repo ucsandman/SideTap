@@ -297,13 +297,37 @@ def _capture_via_watcher(
         text=True,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
-    for line in proc.stdout or []:
-        line = line.strip()
-        if line == "READY":
-            progress("waiting", "armed - click Start in Sideloadly now")
-        elif line.startswith("CAPTURED_FROM"):
-            progress("captured", "profile written by Sideloadly")
+    # Everything the watcher says goes to a log AND to the caller's progress:
+    # a capture that fails silently for ten minutes is the whole complaint.
+    log = config.STATE_DIR / "fix_input.log"
+    ran = False
+    with log.open("w", encoding="utf-8", errors="replace") as fh:
+        for line in proc.stdout or []:
+            line = line.strip()
+            fh.write(line + "\n")
+            fh.flush()
+            if line == "READY":
+                progress("waiting", "armed - click Start in Sideloadly now")
+            elif line.startswith("WAITING "):
+                left = int(line.split()[1])
+                progress(
+                    "waiting",
+                    f"click Start in Sideloadly - {left // 60}m {left % 60:02d}s left",
+                )
+            elif line == "SIDELOADLY_RAN":
+                ran = True
+                progress("waiting", "Sideloadly finished - grabbing the profile")
+            elif line.startswith("SAW "):
+                progress("waiting", "found a profile, reading it")
+            elif line.startswith("CAPTURED_FROM"):
+                progress("captured", "profile written by Sideloadly")
     proc.wait()
+    if proc.returncode == 2 or (ran and not out.exists()):
+        raise SigningError(
+            "Sideloadly signed (its install log moved) but wrote no provisioning "
+            f"profile we could find - see {log}. Pass one directly instead: "
+            "phone-harness fix-input <path-to.mobileprovision>"
+        )
     if proc.returncode != 0 or not out.exists():
         raise SigningError(
             "timed out waiting for the profile. Click Start in Sideloadly during "

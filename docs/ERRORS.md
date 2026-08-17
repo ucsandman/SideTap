@@ -5,6 +5,45 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-16 — Fix input sat on "Waiting for Sideloadly" after Sideloadly said Done, for ten silent minutes
+
+**Symptom.** Wes clicked Start in Sideloadly with the wizard armed. Sideloadly
+reached "Done. 100%". The wizard never left step 2 and never ran the rest of
+the list.
+
+**Root cause.** `capture_profile` never saw a profile, and had no way to say
+so. Three separate things:
+
+1. **The watcher's premise was never verified.** The script's own comment says
+   Sideloadly writes `embedded.mobileprovision` into a `%TEMP%\tmpXXXX\...app`
+   folder — but of the writes in the 21:40:45-21:41:15 window around a sign
+   that *succeeded* (`installations.db` row updated, `last_error` empty), **no
+   temp staging directory was created at all**. The watcher itself was fine: a
+   decoy profile dropped into `%TEMP%` was captured in 3s. Every documented run
+   of this path since 2026-08-13 either "missed the capture" or timed out — it
+   has never been observed succeeding.
+2. **One net, no fallback.** A `FileSystemWatcher`'s kernel buffer is 64KB and
+   drops events silently on a busy tree. Nothing polled, and the `Error` event
+   was not even registered, so a drop was indistinguishable from no write.
+3. **Silence for the full window.** The only progress line was "armed - click
+   Start now", printed once. 600s of nothing looks identical to a hang.
+
+**Fix.** The watcher now runs two nets (events + a 250ms scan of anything born
+since it armed, plus Sideloadly's own folders as roots), prints every sighting,
+every buffer overflow and a 5s countdown, and watches
+`%LOCALAPPDATA%\Sideloadly\installations.db` — when that moves without a
+profile appearing, it stops 60s later and says "Sideloadly signed but wrote no
+profile" instead of timing out generically. Everything it prints goes to
+`.state/fix_input.log` and to the wizard live. The wizard's last line is now
+the doctor checks, re-rendered until green.
+
+**Lesson.** A capture that can only report "timed out" teaches nobody
+anything — the log of what it *looked at* is the whole diagnosis. And the
+comment describing a mechanism is not evidence the mechanism happens: this one
+described a temp folder that does not exist.
+
+---
+
 ## 2026-08-14 — The 17s first-gesture-after-sleep block: a recovery path that could only fire on an error it never received
 
 **Symptom.** Wes: the 17s block a previous session saw during live verification

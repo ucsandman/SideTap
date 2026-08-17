@@ -17,8 +17,11 @@ Sideloadly. They re-signed for nothing, on a signature with 6 days left.
 the gesture, and not the idle wait. Any WDA call that RESOLVES THE ACTIVE
 APPLICATION can block with no upper bound while TikTok's feed is in front. A
 plain read proves it with no gesture involved: `GET /wda/activeAppInfo` hung and
-took WDA with it, while the calls that touch no app stayed instant on the same
-screen — `/status` 0.004s, `/screenshot` 0.22s, `/orientation` 0.01s. `/actions`
+took WDA with it, while the calls that touch no app answered instantly BETWEEN
+hangs on the same screen — `/status` 0.004s, `/screenshot` 0.22s, `/orientation`
+0.01s. That is a gap between occurrences, NOT a probe that survives one: while a
+call is stuck, the AX-free calls queue behind it and time out too (tqninh, 4/4,
+below). Silence is the only symptom there is. `/actions`
 resolves the active app, so every gesture inherits it. WDA serves requests ONE AT
 A TIME, so the whole agent stops behind the stuck call: `/status` timed out for
 321s straight while polling, and `:9100` refused connections too, so the viewer
@@ -32,8 +35,20 @@ app is doing. Measured the same night: TikTok WARM (already resident) 0.08-1.1s
 per call, 0/3 trials wedged; COLD (killed and relaunched) 2.9-5.5s, 1/3 wedged.
 The rate collapses over time — it fired within a call or two, repeatedly, for
 ~20 minutes after the app was first installed, and hours later 28 swipes across
-7 cold starts produced none. So this cannot be reproduced on demand, and any
-experiment against it MUST re-run its control (see the retraction below).
+7 cold starts produced none. So it cannot be reproduced on demand ON THIS PHONE,
+and any experiment against it MUST re-run its control (see the retraction below).
+
+**It IS reproducible on demand on another device (tqninh, 2026-08-17, issue #2,
+4 runs).** No gesture, no SideTap, no Python: `ios launch com.ss.iphone.ugc.Ame`,
+sleep 3s, then poll `GET /wda/activeAppInfo` over curl with a 10s timeout. Wedged
+on round 1 three times and round 2 once, 4/4, over 16 minutes — one run was
+already wedged at baseline. So the rate is a property of the DEVICE and the app's
+state, not of the harness, and their phone is the one to run any future
+experiment on. Their post-wedge probes are what corrects the paragraph above:
+`/status` and `/screenshot` timed out at 10s in every run. `ios launch
+com.apple.springboard` recovered all four (14.35s once, then back on the first
+2s poll each time), which is the first confirmation of `_unwedge` by someone
+other than us, on hardware other than ours.
 
 **Three hypotheses killed by measurement, do not retry them.** (1) Quiescence:
 `waitForIdleTimeout=0` (the standard Appium answer for video apps, and the exact
@@ -77,9 +92,9 @@ recovery automatic — the viewer's existing heal loop covers a wedge, gated on 
 of CONTINUOUS silence so it cannot press Home during a legitimately slow call
 (8.3s swipe, 20.5s first gesture after deep sleep, unlock's own 45s client), and
 it logs "recovered a wedged link (pressed Home)" to the activity feed so a phone
-that moves on its own says why. STILL UNVERIFIED against a natural wedge: by then
-the repro was gone, so it is proven only against a socket that accepts and never
-answers, which is the one thing the watchdog can actually see.
+that moves on its own says why. The REPAIR is now verified against four natural
+wedges on tqninh's device (springboard launch, recovered 4/4); the 45s WATCHDOG
+gate is still unverified there, because their script presses the repair by hand.
 
 **What does NOT reproduce it (measured 2026-08-17, 68 trials, zero wedges).**
 "TikTok wedges and YouTube Shorts does not" is not a property of the apps. Paired

@@ -265,9 +265,14 @@ What that means in practice:
 - **Wrap reads *and* gestures in `retry()`** (above). Do not reach for
   `phone-harness up` on the first failure; `doctor` reported WDA FAIL and `up`
   answered `Already up: WDA is answering` moments later. It heals itself.
-- **`/source` can wedge while `/screenshot` still works** — screenshots go
-  through a separate sessionless client. If `ocr()` times out repeatedly but you
-  need to know where the phone is, screenshot it.
+- **`/source` can fail while `/screenshot` still works** — screenshots go
+  through a separate sessionless client, so they survive a dead SESSION. If
+  `ocr()` times out repeatedly but you need to know where the phone is,
+  screenshot it. This does NOT hold for a wedged WDA: WDA serves one request at
+  a time, so while a call is genuinely stuck everything queues behind it and
+  `/screenshot` and `/status` time out too (reproduced 4/4 on a second device,
+  issue #2). Silence from everything means wedged, and the only exit is
+  `ios launch com.apple.springboard`.
 - **Raise the Bash timeout for phone scripts.** The client's own 30s source
   timeout times a few retries blows straight through the default 2 minutes and
   you lose the run's output. Budget 300000.

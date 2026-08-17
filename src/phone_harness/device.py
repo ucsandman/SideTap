@@ -427,6 +427,27 @@ def start_wda(bundle_id: str) -> None:  # noqa: vulture  (called from admin.py/v
     )
 
 
+def foreground_springboard() -> bool:  # noqa: vulture  (called from admin.py)
+    """Put the Home Screen in front over USB, with no WDA involvement.
+
+    The only escape from a WEDGED WebDriverAgent. An app whose accessibility
+    server never answers blocks every WDA call that resolves the active
+    application - gestures included - and WDA serves requests one at a time, so
+    the whole agent stops: /status, /screenshot and the viewer all queue behind
+    the blocked call. WDA's own /wda/homescreen queues there too, and restarting
+    the runner on top of the stuck one fails with XCTest error 103.
+    Foregrounding another app releases the AX wait: measured 2026-08-17 against
+    TikTok's For You feed, WDA answered again ~20s later, no restart needed.
+    """
+    ios = ios_path()
+    if not ios:
+        return False
+    try:
+        return _run(["launch", "com.apple.springboard"], timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError, DeviceError):
+        return False
+
+
 def _free_port(port: int) -> None:
     """Kill our own leftover `ios forward` bound to `port`.
 

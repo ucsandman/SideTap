@@ -354,6 +354,78 @@ class _FakeClient:
         return self.calls >= self.up_on_call
 
 
+# ---- a WEDGED link is repaired by pressing Home, never by a restart. The
+# stuck runner is still on the phone, so a restart dies with XCTest error 103
+# and the old tail blamed the signature - one reporter re-signed for nothing
+# (issue #2, 2026-08-17).
+
+
+class _StateClient:
+    """WDAClient stand-in: wedged until the Home Screen comes to the front."""
+
+    def __init__(self, state, recovers=True):
+        self.state = state
+        self.recovers = recovers
+
+    def link_state(self):
+        return self.state
+
+    def is_up(self):
+        return self.state == "up"
+
+
+def test_up_unwedges_by_pressing_home_and_never_restarts(monkeypatch, capsys):
+    client = _StateClient("wedged")
+    monkeypatch.setattr(admin, "WDAClient", lambda *a, **k: client)
+    pressed = []
+
+    def press_home():
+        pressed.append(True)
+        client.state = "up"  # what the device does ~20s later, measured
+        return True
+
+    monkeypatch.setattr(admin.device, "foreground_springboard", press_home)
+    started = []
+    monkeypatch.setattr(admin.device, "start_wda", lambda b: started.append(b))
+
+    assert admin._up(wait_seconds=5) == 0
+    assert pressed == [True]
+    assert started == []  # the restart is the WRONG repair here
+    out = capsys.readouterr().out
+    assert "wedged" in out.lower()
+
+
+def test_up_on_a_wedge_blames_the_runner_not_the_signature(monkeypatch, capsys):
+    # foreground_springboard fails, so we fall through to a restart that fails
+    # too. The tail must NOT send the human to Sideloadly.
+    client = _StateClient("wedged")
+    monkeypatch.setattr(admin, "WDAClient", lambda *a, **k: client)
+    monkeypatch.setattr(admin.device, "foreground_springboard", lambda: False)
+    monkeypatch.setattr(admin, "_check_go_ios", lambda: (True, "go-ios", ""))
+    monkeypatch.setattr(admin, "_check_device", lambda: (True, "iPhone", ""))
+    monkeypatch.setattr(admin.device, "tunnel_running", lambda: True)
+    monkeypatch.setattr(admin.device, "ddi_mounted", lambda: True)
+    monkeypatch.setattr(admin.device, "detect_wda_bundle", lambda: "com.x.wda")
+    monkeypatch.setattr(admin.device, "start_wda", lambda b: None)
+    monkeypatch.setattr(admin.device, "start_forwards", lambda: None)
+    monkeypatch.setattr(admin.device, "log_tail", lambda *a, **k: "Error code: 103")
+    monkeypatch.setattr(admin, "_wait_for_wda", lambda *a, **k: False)
+
+    assert admin._up(wait_seconds=1) == 1
+    out = capsys.readouterr().out
+    assert "stuck runner" in out
+    assert "Sideloadly" not in out
+
+
+def test_doctor_reports_a_wedge_as_its_own_state(monkeypatch):
+    monkeypatch.setattr(admin, "WDAClient", lambda *a, **k: _StateClient("wedged"))
+    ok, detail, fix = admin._check_wda_responding()
+    assert ok is False
+    assert "wedged" in detail
+    assert "Home Screen" in fix  # the repair, not "replug / re-sign"
+    assert "Sideloadly" not in fix
+
+
 def test_wait_for_wda_polls_at_quarter_second_interval(monkeypatch):
     sleeps = []
     monkeypatch.setattr(admin.time, "sleep", lambda s: sleeps.append(s))

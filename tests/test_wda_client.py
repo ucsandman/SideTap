@@ -378,6 +378,52 @@ def test_slow_server_raises_wda_error_not_timeout(monkeypatch):
     assert client.is_up() is False
 
 
+def test_link_state_tells_wedged_from_down(monkeypatch, wda):
+    # Three states, three repairs. A WEDGED WDA accepts the socket and never
+    # answers (the app in front is not answering accessibility requests) and is
+    # cleared by putting the Home Screen back in front; a DOWN one refuses the
+    # connection and needs a restart. Restarting a wedged one fails with XCTest
+    # error 103, which reads as an expired signature (issue #2).
+    import requests
+
+    assert wda.link_state() == "up"
+
+    monkeypatch.setattr(
+        requests.Session,
+        "request",
+        lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("hang")),
+    )
+    assert wda.link_state() == "wedged"
+    assert wda.is_up() is False
+
+    monkeypatch.setattr(
+        requests.Session,
+        "request",
+        lambda *a, **k: (_ for _ in ()).throw(
+            requests.exceptions.ConnectionError("no")
+        ),
+    )
+    assert wda.link_state() == "down"
+    assert wda.is_up() is False
+
+
+def test_timeout_message_names_the_foreground_app(monkeypatch):
+    # The old text ("busy or wedged; try again") sent a reporter into a full
+    # Sideloadly re-sign. Name the cause and the repair that actually works.
+    import requests
+
+    monkeypatch.setattr(
+        requests.Session,
+        "request",
+        lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("hang")),
+    )
+    client = WDAClient(base_url="http://127.0.0.1:1", timeout=1)
+    with pytest.raises(WDAError) as exc:
+        client.status()
+    assert "accessibility" in str(exc.value)
+    assert "phone-harness up" in str(exc.value)
+
+
 def test_lock_posts_wda_lock(wda):
     wda.lock()
     assert ("POST", "/wda/lock") in FakeWDA.requests_seen

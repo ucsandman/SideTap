@@ -222,8 +222,12 @@ class WDAClient:
         except requests.Timeout as exc:
             raise WDATimeout(
                 f"{method} {path}: WebDriverAgent did not answer within "
-                f"{self.timeout:g}s. It may be busy or wedged; try again or "
-                "run `phone-harness up`."
+                f"{self.timeout:g}s. The usual cause is the app in front not "
+                "answering iOS accessibility requests, which blocks WDA for "
+                "everything, not just this call — TikTok's video feed does it "
+                "every time and cannot be driven at all. Recover with "
+                "`phone-harness up` (or the viewer's Restart link): it puts the "
+                "Home Screen back in front, which releases WDA."
             ) from exc
         except requests.RequestException as exc:
             raise WDAError(
@@ -313,12 +317,28 @@ class WDAClient:
     def status(self) -> dict:
         return self._request("GET", "/status")
 
-    def is_up(self) -> bool:  # noqa: vulture  (called by admin.py)
+    def link_state(self) -> str:  # noqa: vulture  (called by admin.py)
+        """'up', 'wedged' or 'down' — three states with three different repairs.
+
+        WEDGED is the one that looks like a dead link and is not: the socket
+        accepts and nothing ever answers, because the foreground app is not
+        answering iOS accessibility requests and WDA serves requests ONE AT A
+        TIME, so every later call queues behind the stuck one. Restarting the
+        runner on top of that fails with XCTest error 103, which reads like an
+        expired signature and is not (2026-08-17, docs/ERRORS.md) —
+        device.foreground_springboard() is what clears it. DOWN refuses the
+        connection outright and does need the restart.
+        """
         try:
             self.status()
-            return True
+            return "up"
+        except WDATimeout:
+            return "wedged"
         except WDAError:
-            return False
+            return "down"
+
+    def is_up(self) -> bool:  # noqa: vulture  (called by admin.py)
+        return self.link_state() == "up"
 
     def ensure_session(self) -> str:
         if self.session_id:

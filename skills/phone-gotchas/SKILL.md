@@ -219,6 +219,12 @@ Verified against `src/phone_harness/` — not guesses:
 - **No biometrics.** Face ID and Touch ID prompts are a dead end.
 - **No real dictation.** You can tap the mic. Nobody speaks.
 - **`ui_tree()` is harness-only.** Not an MCP tool. Over MCP you get flat `ocr()`.
+- **Cannot drive a video feed that ignores accessibility.** TikTok's For You feed
+  is the proven case (measured 2026-08-17). Every WDA call that resolves the
+  frontmost app — every gesture, `ocr()`, `current_app()` — blocks forever there,
+  and WDA answers one request at a time, so ONE swipe stops the whole harness for
+  everyone. Do not retry it, and do not go looking for a faster gesture: the app
+  is not answering iOS, so there is nothing to tune. Say so and stay out.
 
 Missing capability? Check `helpers.py` and `mcp_server.py` `_TOOLS` before
 concluding it is impossible, and before building a workaround.
@@ -240,6 +246,13 @@ Run `./phone-harness.cmd doctor` from the repo root. Never guess.
 Its output is ordered by dependency, so **fix the first FAIL and ignore the
 rest** — they are downstream. "No iPhone found over USB" means the cable, and
 every check below it fails until the cable is back.
+
+**A 30s timeout is a different failure from a dropped link.** It usually means
+the app in front is holding WDA: the socket still accepts and nothing ever
+answers, so every later call queues behind it. The repair is not a restart —
+`./phone-harness.cmd up` detects that state and puts the Home Screen back in
+front, which releases WDA (~20s). Restarting instead fails with XCTest error
+103, which reads like an expired signature and is not one.
 
 WDA also drops transiently for a few seconds and recovers on its own. `act()`
 stops at the first failure and returns entries only for the steps it attempted,

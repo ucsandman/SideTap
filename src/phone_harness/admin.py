@@ -133,8 +133,23 @@ def _check_perception():
 
 def _check_wda_responding():
     client = WDAClient(timeout=5)
-    if client.is_up():
+    state = client.link_state()
+    if state == "up":
         return True, f"WDA answering at {config.WDA_URL}", ""
+    if state == "wedged":
+        # Accepts the connection, never answers: the app in front is not
+        # answering iOS accessibility requests. A restart is the wrong repair
+        # AND it fails (XCTest error 103) while the stuck runner is up.
+        return (
+            False,
+            "WDA is wedged by the app in front, not down",
+            (
+                "Put the phone on the Home Screen (click 'Restart link', or run: "
+                "phone-harness up) - that releases it, no restart needed. Video "
+                "feeds do this: TikTok's For You feed never answers iOS "
+                "accessibility requests, so SideTap cannot drive that screen."
+            ),
+        )
     return (
         False,
         f"WDA not answering at {config.WDA_URL}",
@@ -467,10 +482,29 @@ def _wait_for_wda(client: WDAClient, deadline: float, interval: float = 0.25) ->
     return False
 
 
+def _unwedge(client: WDAClient, wait_seconds: float = 45.0) -> bool:
+    """Free a WDA stuck on an app that never answers accessibility requests.
+
+    Restarting is the WRONG repair here and it does not even work: the stuck
+    runner is still on the phone, so the new one dies with XCTest error 103,
+    which the tail then blames on the signature. Putting the Home Screen in
+    front releases the accessibility wait instead — measured 2026-08-17 against
+    TikTok's For You feed, WDA answered ~20s later with no restart at all.
+    """
+    print("WDA is wedged by the app in front (not down) — pressing Home", flush=True)
+    if not device.foreground_springboard():
+        return False
+    return _wait_for_wda(client, time.time() + wait_seconds)
+
+
 def _up(wait_seconds: float) -> int:
     client = WDAClient(timeout=3)
-    if client.is_up():
+    state = client.link_state()
+    if state == "up":
         print("Already up: WDA is answering.")
+        return 0
+    if state == "wedged" and _unwedge(client):
+        print("\nUp. WDA answering at", config.WDA_URL)
         return 0
 
     ok, detail, fix = _check_go_ios()
@@ -519,6 +553,22 @@ def _up(wait_seconds: float) -> int:
         return 0
     print("\nFAIL: WDA never answered. runwda log tail:")
     print(device.log_tail("runwda", 10))
+    if state == "wedged":
+        # The runner that was stuck is still on the phone, so the new one dies
+        # on load. Sending that to Sideloadly cost a reporter a whole re-sign
+        # over a signature that was fine (issue #2, docs/ERRORS.md).
+        print(
+            "The link was WEDGED before this restart, so error 103 here is the "
+            "stuck runner, not the signature. Put the phone on the Home Screen "
+            "by hand, then run `phone-harness up` again."
+        )
+        return 1
+    from . import signing
+
+    sig_ok, sig_detail, _ = _check_signature()
+    if signing.PROFILE_PATH.exists() and sig_ok:
+        print(f"Not a signing job: {sig_detail}. Replug the phone and retry.")
+        return 1
     print(
         "Common cause on a free Apple ID: the 7-day signature expired — re-sign in Sideloadly."
     )

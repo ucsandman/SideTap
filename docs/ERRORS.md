@@ -5,6 +5,52 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-17 — TikTok's feed wedges WDA outright, and every diagnostic blamed the signature (issue #2)
+
+**Symptom.** Reported by tqninh: `swipe(200, 700, 200, 250, 0.5)` works in Photos,
+the Home Screen and Facebook reels, and in TikTok's For You feed it raises
+`WDATimeout` after 30s. Everything after that is dead: `up()` fails with XCTest
+error 103, the doctor says "WDA not answering", and the tail sends the human to
+Sideloadly. They re-signed for nothing, on a signature with 6 days left.
+
+**Root cause (measured on device 2026-08-17, real TikTok 46.4.0, iOS 26.6).** Not
+the gesture, and not the idle wait. Any WDA call that RESOLVES THE ACTIVE
+APPLICATION blocks forever while TikTok's feed is in front, because that app
+never answers iOS accessibility requests. A plain read proves it with no gesture
+involved: `GET /wda/activeAppInfo` hung 20s+ and took WDA with it, while the
+calls that touch no app stayed instant on the same screen — `/status` 0.004s,
+`/screenshot` 0.22s, `/orientation` 0.01s. `/actions` resolves the active app, so
+every gesture inherits it. WDA serves requests ONE AT A TIME, so the whole agent
+stops behind the stuck call: `/status` timed out for 321s straight while polling.
+Killing TikTok released WDA in ~5s, which is what proves the block is a
+synchronous wait on that app's accessibility server.
+
+**Two hypotheses killed by measurement, do not retry them.** (1) Quiescence:
+`waitForIdleTimeout=0` (the standard Appium answer for video apps, and the exact
+trick `_enter_passcode` uses) changed nothing — same wedge, and WDA's own source
+shows the setting only bounds `_XCTSetApplicationStateTimeout`, a different wait.
+(2) `defaultActiveApplication` pinned to TikTok's bundle, to skip active-app
+detection: swipe 1 returned in 24.4s and looked like a fix, swipe 2 wedged it
+permanently. Both were run before any code changed.
+
+**Fix.** SideTap cannot drive that screen and does not pretend to. What it can do
+is stop lying about the state and recover without a restart. `WDAClient.link_state()`
+returns up / wedged / down — a wedged WDA accepts the socket and never answers, a
+down one refuses the connection, and the two need opposite repairs.
+`device.foreground_springboard()` (`ios launch com.apple.springboard`) releases
+the accessibility wait over USB with no WDA involvement; `up()` tries that FIRST
+when the link is wedged and never restarts (measured end to end: wedge, then
+`up` recovered in 38.9s, next gesture 1.04s). The doctor reports "WDA is wedged
+by the app in front, not down" with that repair, and the failure tail refuses to
+name Sideloadly when the profile on disk is still valid.
+
+**Prevention.** Error 103 right after a hang is the stuck runner, not the
+signature — a restart cannot land while the old runner is still on the phone.
+Before blaming a signature, check whether the socket ACCEPTS: connect-refused is
+a dead link, accept-then-silence is an app holding WDA hostage.
+
+---
+
 **2026-08-16 — one-liner.** `pip install -r requirements.txt` for the new
 pymobiledevice3 dep pulled `typer` to 0.27.1 and `rich` to 15.0.0 in Wes's
 global Python, breaking the pins `repowise` (rich<14) and `huggingface-hub`

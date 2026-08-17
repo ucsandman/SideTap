@@ -613,18 +613,140 @@ def test_console_endpoint_surfaces_helper_error(base_url, monkeypatch):
 def test_should_heal_only_when_woken_and_down(monkeypatch):
     monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
     heal = viewer._should_heal
-    assert heal(100.0, wda_up=False, lockdown_ok=True, stopped=False)
-    assert not heal(100.0, wda_up=True, lockdown_ok=True, stopped=False)
+    down = 999.0  # silent long enough that the wedge gate is not what is tested
+    assert heal(100.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=down)
+    assert not heal(100.0, wda_up=True, lockdown_ok=True, stopped=False, down_for=down)
     assert not heal(
-        100.0, wda_up=False, lockdown_ok=False, stopped=False
+        100.0, wda_up=False, lockdown_ok=False, stopped=False, down_for=down
     )  # still asleep
-    assert not heal(100.0, wda_up=False, lockdown_ok=True, stopped=True)  # kill switch
+    assert not heal(
+        100.0, wda_up=False, lockdown_ok=True, stopped=True, down_for=down
+    )  # kill switch
 
 
 def test_should_heal_honors_cooldown(monkeypatch):
     monkeypatch.setitem(viewer._HEAL, "cooldown_until", 500.0)
-    assert not viewer._should_heal(499.0, wda_up=False, lockdown_ok=True, stopped=False)
-    assert viewer._should_heal(500.0, wda_up=False, lockdown_ok=True, stopped=False)
+    heal = viewer._should_heal
+    assert not heal(499.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=999)
+    assert heal(500.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=999)
+
+
+def test_should_heal_waits_for_sustained_silence(monkeypatch):
+    # The recovery presses Home on the real phone. A single silent poll is not
+    # proof of a wedge: unlock() drives a 45s client on purpose and the first
+    # gesture after a deep sleep measured 20.5s, and WDA answers nothing while
+    # it works. Healing then would yank the phone Home mid-unlock.
+    monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
+    heal = viewer._should_heal
+    assert not heal(100.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=21.0)
+    assert not heal(100.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=44.9)
+    assert heal(100.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=45.0)
+
+
+def _run_heal_loop(monkeypatch, *, answers, clock):
+    """Drive _heal_loop over scripted (is_up, monotonic) values. Returns the
+    number of admin.up() calls; the loop ends when the fakes run out."""
+    monkeypatch.setitem(viewer._HEAL, "down_since", 0.0)
+    monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
+    monkeypatch.setattr(viewer.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(viewer.device, "lockdown_ready", lambda: True)
+    monkeypatch.setattr(viewer, "stop_engaged", lambda: False)
+    healed = []
+    monkeypatch.setattr(viewer.admin, "up", lambda: (healed.append(True), 0)[1])
+    ups, ticks = iter(answers), iter(clock)
+
+    class _Probe:
+        def is_up(self):
+            return next(ups)
+
+    monkeypatch.setattr(viewer, "WDAClient", lambda **k: _Probe())
+    monkeypatch.setattr(viewer.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(StopIteration):
+        viewer._heal_loop()
+    return len(healed)
+
+
+def test_heal_loop_heals_a_socket_that_accepts_and_never_answers(monkeypatch):
+    """Integration, through the real client and a real socket.
+
+    That signature - connection accepted, no reply, ever - is what a wedged WDA
+    looks like from here, and it is the ONLY thing the watchdog can see. The
+    natural trigger (an app whose accessibility server stops answering) is not
+    reproducible on demand, so the condition is reproduced directly instead.
+    """
+    from http.server import BaseHTTPRequestHandler
+
+    class Hang(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: vulture  (http.server dispatches by name)
+            time.sleep(30)  # far past the probe's timeout
+
+        def log_message(self, *args):  # noqa: vulture
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Hang)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_port
+
+    monkeypatch.setitem(viewer._HEAL, "down_since", 0.0)
+    monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
+    monkeypatch.setattr(viewer, "_HEAL_POLL", 0.05)
+    monkeypatch.setattr(viewer, "_HEAL_MIN_SILENCE", 1.0)
+    # Bounded through the once-per-poll call, so a watchdog that never fires
+    # FAILS here instead of hanging the suite (it hung for 240s when the gate
+    # was broken on purpose to check that this test can fail at all). Counting
+    # via time.sleep would also silence the hanging server below.
+    polls = []
+
+    def one_poll():
+        polls.append(1)
+        if len(polls) > 20:
+            raise SystemExit("watchdog never healed")
+        return True
+
+    monkeypatch.setattr(viewer.device, "lockdown_ready", one_poll)
+    monkeypatch.setattr(viewer, "stop_engaged", lambda: False)
+    real_client = viewer.WDAClient  # capture before patching, or the lambda recurses
+    monkeypatch.setattr(
+        viewer,
+        "WDAClient",
+        lambda **_kw: real_client(base_url=f"http://127.0.0.1:{port}", timeout=0.5),
+    )
+    healed = []
+
+    def fake_up():
+        healed.append(True)
+        raise SystemExit  # BaseException: escapes the loop's except Exception
+
+    monkeypatch.setattr(viewer.admin, "up", fake_up)
+    try:
+        with pytest.raises(SystemExit):
+            viewer._heal_loop()
+    finally:
+        server.shutdown()
+    assert healed == [True]
+
+
+def test_heal_loop_heals_after_sustained_silence(monkeypatch):
+    # Silent at t=100 and still silent at t=200: 100s > the 45s floor.
+    assert (
+        _run_heal_loop(monkeypatch, answers=[False, False], clock=[100.0, 200.0, 201.0])
+        == 1
+    )
+
+
+def test_heal_loop_clears_the_silence_clock_when_wda_answers(monkeypatch):
+    # A blip must not accumulate toward the 45s. Silent at 100, ANSWERING at
+    # 120, silent again at 160 and 170. From the last silence that is 10s, so
+    # nothing fires; without the reset it would measure 70s from t=100 and
+    # press Home on a link that was up 50 seconds ago.
+    assert (
+        _run_heal_loop(
+            monkeypatch,
+            answers=[False, True, False, False],
+            clock=[100.0, 120.0, 160.0, 170.0],
+        )
+        == 0
+    )
 
 
 def test_unlock_endpoint_names_the_fix_when_link_down(base_url, monkeypatch):

@@ -161,13 +161,23 @@ def redact_actions(label: str):
         _REDACT.label = prev
 
 
+def log_event(summary: str) -> None:  # noqa: vulture  (called by admin.py)
+    """Record a phone event that was not a WDA request.
+
+    The wedge recovery presses Home over USB, so it never passes through
+    _request — and a phone that jumps to the Home Screen on its own, with
+    nothing in the feed saying why, is the harness acting behind the human's
+    back. One line here and it shows up in the viewer's Activity panel like
+    every other action.
+    """
+    _append_activity(summary)
+
+
 def _log_activity(path: str, payload: dict | None) -> None:
     """Append one line to .state/agent_activity.log. Never raises.
 
     Every process driving the phone (agent scripts, the viewer) funnels through
-    _request, so this one append gives the human a complete live feed. The
-    trim keeps the file bounded; losing lines to a rare concurrent trim is
-    acceptable, breaking a phone action is not.
+    _request, so this one append gives the human a complete live feed.
     """
     try:
         summary = _activity_summary(path, payload)
@@ -175,6 +185,15 @@ def _log_activity(path: str, payload: dict | None) -> None:
             return
         if getattr(_REDACT, "label", None):
             summary = _REDACT.label
+    except Exception:
+        return  # the feed must never break a phone action
+    _append_activity(summary)
+
+
+def _append_activity(summary: str) -> None:
+    """The bounded write itself. Never raises: losing a line to a rare
+    concurrent trim is acceptable, breaking a phone action is not."""
+    try:
         feed = activity_file()
         config.STATE_DIR.mkdir(exist_ok=True)
         with open(feed, "a", encoding="utf-8") as fh:

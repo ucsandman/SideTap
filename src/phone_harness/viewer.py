@@ -88,13 +88,25 @@ _LAST_DOCTOR: list | None = None
 # the human to wake the phone (lockdown answers again) and then reruns up()
 # with zero clicks. The cool-down keeps a genuinely broken link (e.g. expired
 # signature) from being up()'ed in a loop.
-_HEAL = {"cooldown_until": 0.0}
+_HEAL = {"cooldown_until": 0.0, "down_since": 0.0}
 _HEAL_POLL = 20.0  # seconds between watchdog looks
 _HEAL_COOLDOWN = 300.0  # after a failed up(): don't thrash a broken link
+# One silent poll proves nothing. WDA answers nothing while it works, and
+# legitimate waits get long: 8.3s for a swipe in a heavy app, 20.5s for the
+# first gesture after a deep sleep, and unlock() drives a 45s client ON PURPOSE.
+# Healing on a single miss would press Home in the middle of those. A wedge, by
+# contrast, never ends on its own (321s measured 2026-08-17, and only
+# backgrounding the app cleared it), so waiting for sustained silence costs the
+# case this exists for nothing and protects every slow-but-live call.
+_HEAL_MIN_SILENCE = 45.0
 
 
-def _should_heal(now: float, *, wda_up: bool, lockdown_ok: bool, stopped: bool) -> bool:
+def _should_heal(
+    now: float, *, wda_up: bool, lockdown_ok: bool, stopped: bool, down_for: float
+) -> bool:
     if stopped or wda_up or not lockdown_ok:
+        return False
+    if down_for < _HEAL_MIN_SILENCE:
         return False
     return now >= _HEAL["cooldown_until"]
 
@@ -104,13 +116,22 @@ def _heal_loop() -> None:
     while True:
         time.sleep(_HEAL_POLL)
         try:
+            now = time.monotonic()
+            up = probe.is_up()
+            if up:
+                _HEAL["down_since"] = 0.0
+            elif not _HEAL["down_since"]:
+                _HEAL["down_since"] = now
+            down_for = 0.0 if up else now - _HEAL["down_since"]
             if _should_heal(
-                time.monotonic(),
-                wda_up=probe.is_up(),
+                now,
+                wda_up=up,
                 lockdown_ok=device.lockdown_ready(),
                 stopped=stop_engaged(),
+                down_for=down_for,
             ):
                 ok = admin.up() == 0
+                _HEAL["down_since"] = 0.0
                 _HEAL["cooldown_until"] = time.monotonic() + (
                     60.0 if ok else _HEAL_COOLDOWN
                 )

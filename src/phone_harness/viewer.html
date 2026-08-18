@@ -283,6 +283,25 @@
   .act-row, .sent-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }  /* constant row height */
   .sent-row { overflow-wrap:normal; }                                                    /* overrides base rule above */
   #full-sends .sent-row { white-space:normal; overflow-wrap:anywhere; }  /* overlay: full message text readable */
+  
+  /* ---- screen text picker overlay -------------------------------------- */
+  #screen-text-top { display:flex; gap:var(--s1); align-items:center; margin-bottom:var(--s2); }
+  #screen-text-filter {
+    flex:1; background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px;
+  }
+  #screen-text-filter:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  #screen-text-list { display:flex; flex-direction:column; gap:var(--s1); max-height:55vh; overflow-y:auto; }
+  .stext-row {
+    display:flex; align-items:center; justify-content:space-between; gap:var(--s2);
+    padding:8px 12px; border-radius:var(--r2); background:var(--panel);
+    border:1px solid var(--line); cursor:pointer; font-size:13px; transition:border-color .15s, background .15s;
+  }
+  .stext-row:hover { border-color:var(--accent); background:#1e293b; }
+  .stext-row .stext-content { flex:1; overflow-wrap:anywhere; user-select:all; }
+  .stext-row .stext-meta { display:flex; align-items:center; gap:var(--s1); flex-shrink:0; }
+  .stext-row .stext-type { font-size:11px; color:var(--dim); font-family:var(--mono); }
+  .stext-row .stext-copy { padding:3px 8px; font-size:11px; }
   .more-btn { flex:0 0 auto; align-self:flex-start; margin-top:var(--s1); border:0; background:none;
               padding:2px 0; font-size:12px; color:var(--dim); }
   .more-btn:hover { background:none; color:var(--accent); }
@@ -424,7 +443,7 @@
         </div>
         <div id="paste-btns">
           <button id="btn-clip-to-phone" title="Copy text to iPhone clipboard">📋 Copy to phone</button>
-          <button id="btn-clip-from-phone" title="Read iPhone clipboard and copy to PC">📋 Copy from phone</button>
+          <button id="btn-clip-from-phone" title="Extract and copy text visible on the phone screen">📋 Copy screen text</button>
         </div>
       </div>
     </div>
@@ -546,6 +565,13 @@
         <div id="full-sends" hidden></div>
         <div id="full-console" hidden></div>
         <div id="full-approval" hidden></div>
+        <div id="screen-text" hidden>
+          <div id="screen-text-top">
+            <input id="screen-text-filter" placeholder="Filter text on screen…" aria-label="Filter screen text">
+            <button id="btn-copy-all-screen" class="sec">📋 Copy all text</button>
+          </div>
+          <div id="screen-text-list"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -697,7 +723,7 @@ function escapeHtml(s) {
 
 // ---- overlay controller: one shell, five hidden bodies, exactly one visible.
 let ovOpen = null;
-const OV_BODIES = ['doctor','fix-panel','setup','full-activity','full-apps','full-sends','full-console','full-approval'];
+const OV_BODIES = ['doctor','fix-panel','setup','full-activity','full-apps','full-sends','full-console','full-approval','screen-text'];
 let ovReturnFocus = null;
 function openOverlay(id, title) {
   OV_BODIES.forEach(b => document.getElementById(b).hidden = b !== id);
@@ -1413,31 +1439,105 @@ document.getElementById('btn-clip-to-phone').onclick = async () => {
   } finally { btn.disabled = false; }
 };
 
-document.getElementById('btn-clip-from-phone').onclick = async () => {
+let screenTexts = [];
+
+async function copyToClipboard(text, label = 'text') {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(text); } catch (e) {}
+  }
   const box = document.getElementById('paste-text');
+  if (box) box.value = text;
+  const snippet = text.length > 30 ? text.slice(0, 30) + '…' : text;
+  showHint('Copied ' + label + ': "' + snippet.replace(/[\r\n]+/g, ' ') + '"');
+}
+
+function renderScreenTextList(filter = '') {
+  const list = document.getElementById('screen-text-list');
+  const q = filter.trim().toLowerCase();
+  const filtered = q ? screenTexts.filter(item => item.text.toLowerCase().includes(q)) : screenTexts;
+  if (!filtered.length) {
+    list.innerHTML = '<div class="dim" style="padding:16px 0;text-align:center;">' +
+      (screenTexts.length ? 'No matching text found.' : 'No text detected on the current screen.') +
+      '</div>';
+    return;
+  }
+  list.innerHTML = '';
+  filtered.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'stext-row';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.title = 'Click to copy';
+    const content = document.createElement('span');
+    content.className = 'stext-content';
+    content.textContent = item.text;
+    const meta = document.createElement('span');
+    meta.className = 'stext-meta';
+    if (item.type) {
+      const typeTag = document.createElement('span');
+      typeTag.className = 'stext-type';
+      typeTag.textContent = item.type;
+      meta.appendChild(typeTag);
+    }
+    const btn = document.createElement('button');
+    btn.className = 'sec stext-copy';
+    btn.textContent = 'Copy';
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      copyToClipboard(item.text, 'text');
+      btn.textContent = '✓ Copied';
+      btn.style.color = 'var(--ok)';
+      setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1200);
+    };
+    meta.appendChild(btn);
+    row.appendChild(content);
+    row.appendChild(meta);
+    row.onclick = () => {
+      copyToClipboard(item.text, 'text');
+      btn.textContent = '✓ Copied';
+      btn.style.color = 'var(--ok)';
+      setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1200);
+    };
+    list.appendChild(row);
+  });
+}
+
+document.getElementById('screen-text-filter').oninput = (ev) => {
+  renderScreenTextList(ev.target.value);
+};
+
+document.getElementById('btn-copy-all-screen').onclick = () => {
+  if (!screenTexts.length) return;
+  const all = screenTexts.map(s => s.text).join('\n');
+  copyToClipboard(all, 'all screen text (' + screenTexts.length + ' items)');
+};
+
+async function openScreenTextPicker() {
   const btn = document.getElementById('btn-clip-from-phone');
   btn.disabled = true;
+  document.getElementById('screen-text-list').innerHTML = '<div class="dim" style="padding:16px 0;text-align:center;">Scanning screen for text…</div>';
+  openOverlay('screen-text', '📋 Copy text from screen');
+  document.getElementById('screen-text-filter').value = '';
   try {
-    const r = await fetch('/api/clipboard', {method:'GET', headers:JSON_HDR});
+    const r = await fetch('/api/screen-text', {method:'GET', headers:JSON_HDR});
     const j = await r.json().catch(() => ({}));
-    if (j.ok && typeof j.text === 'string') {
-      box.value = j.text;
-      if (j.text) {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          try { await navigator.clipboard.writeText(j.text); } catch (e) {}
-        }
-        const snippet = j.text.length > 25 ? j.text.slice(0, 25) + '…' : j.text;
-        showHint('Copied from phone: "' + snippet.replace(/[\r\n]+/g, ' ') + '"');
-      } else {
-        showHint('Phone clipboard is empty.');
+    if (j.ok && Array.isArray(j.texts)) {
+      screenTexts = j.texts;
+      renderScreenTextList();
+      if (screenTexts.length === 1) {
+        copyToClipboard(screenTexts[0].text, 'text');
       }
     } else {
-      showHint('Could not read phone clipboard.');
+      document.getElementById('screen-text-list').innerHTML = '<div class="dim" style="padding:16px 0;text-align:center;">Could not read screen text.</div>';
     }
   } catch (e) {
-    showHint('Could not read phone clipboard.');
-  } finally { btn.disabled = false; }
-};
+    document.getElementById('screen-text-list').innerHTML = '<div class="dim" style="padding:16px 0;text-align:center;">Could not read screen text.</div>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-clip-from-phone').onclick = openScreenTextPicker;
 
 // ---- Fix input (re-sign WDA) ----------------------------------------------
 let fixRunning = false;

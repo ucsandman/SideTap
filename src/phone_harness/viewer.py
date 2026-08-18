@@ -598,6 +598,24 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)})
+            elif path == "/api/screen-text":
+                from . import helpers
+
+                try:
+                    with _action_slot():
+                        elements = helpers.ocr()
+                    seen = set()
+                    texts = []
+                    for el in elements:
+                        txt = str(el.get("text", "")).strip()
+                        if txt and txt not in seen:
+                            seen.add(txt)
+                            texts.append({"text": txt, "type": str(el.get("type", ""))})
+                    self._json({"ok": True, "texts": texts})
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc), "texts": []})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:

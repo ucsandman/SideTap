@@ -553,6 +553,26 @@ def test_clipboard_endpoint_get_and_post(base_url):
     assert r.status_code == 200 and r.json() == {"ok": True, "text": "Hello from PC!"}
 
 
+def test_screen_text_endpoint(base_url, monkeypatch):
+    monkeypatch.setattr(
+        "phone_harness.helpers.ocr",
+        lambda: [
+            {"text": "Settings", "type": "Application"},
+            {"text": "General", "type": "Cell"},
+            {"text": "Settings", "type": "StaticText"},  # duplicate text
+            {"text": "  ", "type": "StaticText"},  # empty/whitespace
+        ],
+    )
+    r = requests.get(base_url + "/api/screen-text", timeout=5)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["texts"] == [
+        {"text": "Settings", "type": "Application"},
+        {"text": "General", "type": "Cell"},
+    ]
+
+
 def test_parse_console_accepts_literal_call():
     name, args, kwargs = viewer._parse_console('tap_text("General", exact=True)')
     assert (name, args, kwargs) == ("tap_text", ["General"], {"exact": True})

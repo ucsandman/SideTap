@@ -67,3 +67,9 @@ WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")
 MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")
 MJPEG_QUALITY = int(get("MJPEG_QUALITY", "70") or "70")
 MJPEG_SCALE = int(get("MJPEG_SCALE", "50") or "50")
+
+# Viewer poll for /api/phone: seconds between polls. 0 disables the periodic
+# poll (viewer will still call loadPhone() on load). Default 0 avoids the
+# viewer accidentally triggering a WDA wedge; operators can enable it in
+# .env with VIEWER_PHONE_POLL_SECONDS=10 for a 10s poll.
+VIEWER_PHONE_POLL_SECONDS = float(get("VIEWER_PHONE_POLL_SECONDS", "0") or "0")

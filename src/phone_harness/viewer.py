@@ -563,6 +563,17 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 _LAST_PHONE = info
                 self._json(info)
+            elif path == "/api/config":
+                # Viewer configuration (client-visible). phone_poll_seconds is
+                # the interval in seconds for the viewer to poll /api/phone.
+                # 0 means disabled; the viewer still calls loadPhone() once on
+                # load so the UI shows current state.
+                try:
+                    self._json(
+                        {"phone_poll_seconds": float(config.VIEWER_PHONE_POLL_SECONDS)}
+                    )
+                except Exception:
+                    self._json({"phone_poll_seconds": 0.0})
             elif path == "/api/doctor":
                 global _LAST_DOCTOR
                 if _ACTION_LOCK.locked() and _LAST_DOCTOR is not None:
@@ -653,6 +664,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/type":
                 with _action_slot():
                     self.client.type_text(str(payload.get("text", "")))
+                self._json({"ok": True})
+            elif path == "/api/key":
+                with _action_slot():
+                    self.client.key_press(str(payload["key"]))
                 self._json({"ok": True})
             elif path == "/api/clipboard":
                 text = str(payload.get("text", payload.get("content", "")))

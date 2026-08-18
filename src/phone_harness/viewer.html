@@ -934,7 +934,19 @@ window.addEventListener('load', () => {
   setInterval(loadApproval, 1000);  // a blocked send must surface fast
   loadApproval();
   loadGate();
-  setInterval(loadPhone, 10000);
+  // Configure periodic polling of /api/phone from server side. Server may
+  // return 0 to disable the periodic poll (recommended when a device is
+  // susceptible to WDA heavy-tail wedges). The viewer still calls loadPhone
+  // once on load so the UI is populated.
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    const s = Number(cfg.phone_poll_seconds) || 0;
+    if (s > 0) {
+      setInterval(loadPhone, Math.max(1000, Math.round(s * 1000)));
+    }
+  }).catch(() => {
+    // Fallback: keep the previous 10s poll if config cannot be read.
+    setInterval(loadPhone, 10000);
+  });
   // Both clamps are measured, so both are wrong the moment the window changes
   // size. Re-fit on resize only — never on a poll, or the column would thrash.
   let refit;
@@ -1118,6 +1130,12 @@ screen.addEventListener('wheel', (ev) => {
 // ---- keyboard: type on your keyboard, characters go to the phone -----------
 let keyBuf = '';
 let keyBusy = false;
+const ARROW_KEYS = {
+  ArrowLeft: '\uE012', ArrowRight: '\uE014',
+  ArrowUp: '\uE013', ArrowDown: '\uE015'
+};
+let arrowBuf = [];
+let arrowBusy = false;
 async function flushKeys() {
   if (keyBusy || !keyBuf) return;
   const text = keyBuf; keyBuf = '';
@@ -1128,6 +1146,20 @@ async function flushKeys() {
   } finally {
     keyBusy = false;
     if (keyBuf) flushKeys();   // send what queued up while we were busy
+  }
+}
+async function sendArrowKey(key) {
+  arrowBuf.push(key);
+  if (arrowBusy) return;
+  arrowBusy = true;
+  try {
+    while (arrowBuf.length) {
+      const next = arrowBuf.shift();
+      await fetch('/api/key', {method:'POST', headers:JSON_HDR,
+                                body: JSON.stringify({key: next})});
+    }
+  } finally {
+    arrowBusy = false;
   }
 }
 window.addEventListener('paste', async (ev) => {
@@ -1168,6 +1200,12 @@ window.addEventListener('keydown', (ev) => {
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
   if (phoneBusy()) { ev.preventDefault(); return; }    // keys aimed at the pre-action screen
+  const arrow = ARROW_KEYS[ev.key];
+  if (arrow) {
+    ev.preventDefault();
+    sendArrowKey(arrow);
+    return;
+  }
   let ch = null;
   if (ev.key === 'Enter') ch = '\n';
   else if (ev.key === 'Backspace') ch = '\b';

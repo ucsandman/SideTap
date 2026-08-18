@@ -126,7 +126,10 @@ def _activity_summary(path: str, payload: dict | None) -> str | None:
         return f"open app: {payload.get('bundleId', '?')}"
     if path.endswith("/actions"):
         try:
-            steps = payload["actions"][0]["actions"]
+            action_item = payload["actions"][0]
+            if action_item.get("type") == "key":
+                return "key press"
+            steps = action_item["actions"]
             moves = [s for s in steps if s.get("type") == "pointerMove"]
             pauses = [s.get("duration", 0) for s in steps if s.get("type") == "pause"]
             if len(moves) >= 2:
@@ -504,6 +507,25 @@ class WDAClient:
                         "id": "finger1",
                         "parameters": {"pointerType": "touch"},
                         "actions": steps,
+                    }
+                ]
+            },
+        )
+
+    def key_press(self, key: str) -> None:  # noqa: vulture  (called by viewer.py)
+        """Press one non-printing key through W3C keyboard actions."""
+        self._session_request(
+            "POST",
+            "/actions",
+            {
+                "actions": [
+                    {
+                        "type": "key",
+                        "id": "keyboard1",
+                        "actions": [
+                            {"type": "keyDown", "value": key},
+                            {"type": "keyUp", "value": key},
+                        ],
                     }
                 ]
             },

@@ -649,3 +649,22 @@ def test_activity_summary_clipboard():
     )
     assert summary == "set clipboard (8 b64 chars)"
     assert "Hello" not in summary
+
+
+def test_activity_summary_key_press():
+    summary = _activity_summary(
+        "/session/s/actions",
+        {
+            "actions": [
+                {
+                    "type": "key",
+                    "id": "keyboard1",
+                    "actions": [
+                        {"type": "keyDown", "value": "\ue017"},
+                        {"type": "keyUp", "value": "\ue017"},
+                    ],
+                }
+            ]
+        },
+    )
+    assert summary == "key press"

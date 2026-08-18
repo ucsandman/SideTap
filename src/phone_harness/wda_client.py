@@ -395,15 +395,16 @@ class WDAClient:
         _write_shared_session(sid)
         try:
             # Settings ride with the session, so only the creator applies them.
+            settings = {
+                "waitForIdleTimeout": config.WDA_IDLE_WAIT,
+                "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
+            }
+            if config.WDA_ACCESSIBILITY_DEADLINE > 0:
+                settings["accessibilityDeadline"] = config.WDA_ACCESSIBILITY_DEADLINE
             self._request(
                 "POST",
                 f"/session/{sid}/appium/settings",
-                {
-                    "settings": {
-                        "waitForIdleTimeout": config.WDA_IDLE_WAIT,
-                        "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
-                    }
-                },
+                {"settings": settings},
             )
         except WDAError:
             pass  # a session on default waits is slow, not broken

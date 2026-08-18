@@ -467,9 +467,11 @@ def test_new_session_applies_standard_action_waits(wda):
     assert FakeWDA.last_settings == {
         "waitForIdleTimeout": config.WDA_IDLE_WAIT,
         "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
+        "accessibilityDeadline": config.WDA_ACCESSIBILITY_DEADLINE,
     }
     assert config.WDA_IDLE_WAIT == 2.0
     assert config.WDA_ANIM_COOLOFF == 0.0
+    assert config.WDA_ACCESSIBILITY_DEADLINE == 2.0
 
 
 def test_adopting_client_does_not_retune(wda):

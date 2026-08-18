@@ -10,7 +10,7 @@ STATE_DIR = REPO_ROOT / ".state"
 ENV_FILE = REPO_ROOT / ".env"
 
 WDA_PORT = 8100
-MJPEG_PORT = 9100
+MJPEG_PORT = 9100  # noqa: vulture
 
 WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
 
@@ -40,20 +40,20 @@ def get(key: str, default: str | None = None) -> str | None:
 # Optional overrides
 # Read by device.detect_wda_bundle; else auto-detected from installed apps.
 WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # noqa: vulture
-PHONE_PASSCODE = get("PHONE_PASSCODE")  # opt-in: lets helpers.unlock() type it
+PHONE_PASSCODE = get("PHONE_PASSCODE")  # noqa: vulture  (opt-in: lets helpers.unlock() type it)
 
 # Prompt-injection gate: always | flagged | off. The default for this machine;
 # the viewer's toggle writes .state/send_approval, which wins at send time.
 # Anything unrecognized falls back to "always" (approval.mode fails safe).
-SEND_APPROVAL = get("SEND_APPROVAL", "always")
+SEND_APPROVAL = get("SEND_APPROVAL", "always")  # noqa: vulture
 
 # How long a gated send waits for the human to click Approve in the viewer.
 # Running out is a denial, never a send: the safe direction is not sending.
-SEND_APPROVAL_TIMEOUT = float(get("SEND_APPROVAL_TIMEOUT", "120") or "120")
+SEND_APPROVAL_TIMEOUT = float(get("SEND_APPROVAL_TIMEOUT", "120") or "120")  # noqa: vulture
 
 # Default moved off 8765: Practical Systems' pipeline API owns that port on
 # this workstation, and both stacks must run at the same time.
-VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")
+VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")  # noqa: vulture
 
 # Post-gesture waits, applied by whichever client creates the shared session.
 # Measured on device: WDA's default animationCoolOffTimeout=2 made every swipe
@@ -72,4 +72,9 @@ MJPEG_SCALE = int(get("MJPEG_SCALE", "50") or "50")
 # poll (viewer will still call loadPhone() on load). Default 0 avoids the
 # viewer accidentally triggering a WDA wedge; operators can enable it in
 # .env with VIEWER_PHONE_POLL_SECONDS=10 for a 10s poll.
-VIEWER_PHONE_POLL_SECONDS = float(get("VIEWER_PHONE_POLL_SECONDS", "0") or "0")
+VIEWER_PHONE_POLL_SECONDS = float(get("VIEWER_PHONE_POLL_SECONDS", "0") or "0")  # noqa: vulture
+
+# Accessibility snapshot timeout (seconds). Added upstream in WDA #1214
+# (appium/WebDriverAgent#1214) to avoid indefinite hangs on apps with busy main
+# event loops (e.g. TikTok video feeds). 0 disables the bound; default is 2.0s.
+WDA_ACCESSIBILITY_DEADLINE = float(get("WDA_ACCESSIBILITY_DEADLINE", "2.0") or "2.0")

@@ -92,6 +92,15 @@ class FakeWDA(BaseHTTPRequestHandler):
             self._reply(None)
         elif self.path.endswith("/wda/apps/launch"):
             self._reply(None)
+        elif self.path.endswith("/wda/setPasteboard"):
+            if self._session_dead():
+                return
+            FakeWDA.pasteboard = self.payload.get("content", "")
+            self._reply(None)
+        elif self.path.endswith("/wda/getPasteboard"):
+            if self._session_dead():
+                return
+            self._reply(getattr(FakeWDA, "pasteboard", ""))
         elif self.path.endswith("/appium/settings"):
             FakeWDA.last_settings = self.payload.get("settings")
             self._reply(None)
@@ -621,3 +630,22 @@ def test_client_does_not_build_a_session_per_request(wda, monkeypatch):
         f"3 calls built {len(built)} Sessions; one per call means the "
         "connection to WDA is never reused"
     )
+
+
+def test_clipboard_set_and_get(wda):
+    wda.set_clipboard("Hello from clipboard test!")
+    assert wda.get_clipboard() == "Hello from clipboard test!"
+
+
+def test_clipboard_empty(wda):
+    FakeWDA.pasteboard = ""
+    assert wda.get_clipboard() == ""
+
+
+def test_activity_summary_clipboard():
+    summary = _activity_summary(
+        "/session/s/wda/setPasteboard",
+        {"content": "SGVsbG8=", "contentType": "plaintext"},
+    )
+    assert summary == "set clipboard (8 b64 chars)"
+    assert "Hello" not in summary

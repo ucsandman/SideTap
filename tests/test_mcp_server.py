@@ -32,6 +32,8 @@ def test_helper_surface_is_registered():
         "wait_for_text",
         "screenshot",
         "unlock",
+        "get_clipboard",
+        "set_clipboard",
     } <= names
 
 
@@ -152,6 +154,16 @@ def test_act_can_still_reach_the_wrapped_read_tools(monkeypatch):
     out = mcp_server.act([{"tool": "ocr", "args": {}}])
     assert out[0]["ok"] is True
     assert out[0]["result"]["screen"] == [{"text": "General"}]
+
+
+def test_get_clipboard_wrapped_in_envelope(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server.helpers, "get_clipboard", lambda: "Clipboard test text"
+    )
+    env = mcp_server.get_clipboard()
+    assert env["screen"] == "Clipboard test text"
+    assert "data" in env["warning"]
+    assert env["source"] == "clipboard"
 
 
 # ---- compaction -------------------------------------------------------------

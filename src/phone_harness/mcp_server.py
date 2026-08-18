@@ -36,6 +36,7 @@ _TOOLS = [
     helpers.swipe,
     helpers.scroll,
     helpers.type_text,
+    helpers.set_clipboard,
     helpers.press_home,
     helpers.current_page,
     helpers.goto_home_page,
@@ -129,6 +130,11 @@ def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
     return trust.envelope(helpers.find_on_home_screen(text, max_pages), "screen")
 
 
+def get_clipboard() -> dict:
+    """Read the text currently on the iPhone system clipboard."""
+    return trust.envelope(helpers.get_clipboard(), "clipboard")
+
+
 # The note has to land on __doc__ BEFORE registration: FastMCP reads the
 # docstring when the tool is registered, not when it is called.
 _READING_TOOLS = [
@@ -138,6 +144,7 @@ _READING_TOOLS = [
     wait_for_text,
     scroll_until_found,
     find_on_home_screen,
+    get_clipboard,
 ]
 for _fn in _READING_TOOLS:
     _fn.__doc__ = (_fn.__doc__ or "") + _READ_NOTE

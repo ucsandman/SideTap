@@ -2037,3 +2037,30 @@ def test_press_home_returns_at_once_when_already_home(monkeypatch):
     monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
     helpers.press_home()
     assert stub.checks == 1
+
+
+class StubClipboardClient:
+    def __init__(self, clip=""):
+        self.clip = clip
+
+    def get_clipboard(self):
+        return self.clip
+
+    def set_clipboard(self, text):
+        self.clip = text
+
+
+def test_helpers_get_and_set_clipboard(monkeypatch):
+    stub = StubClipboardClient("initial")
+    monkeypatch.setattr(helpers, "_client", stub)
+    assert helpers.get_clipboard() == "initial"
+    helpers.set_clipboard("updated text")
+    assert helpers.get_clipboard() == "updated text"
+
+
+def test_helpers_set_clipboard_refuses_passcode(monkeypatch):
+    stub = StubClipboardClient()
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(config, "PHONE_PASSCODE", "123456")
+    with pytest.raises(WDAError, match="Refused"):
+        helpers.set_clipboard("my secret is 123456")

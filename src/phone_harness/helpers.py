@@ -368,6 +368,29 @@ def type_text(text: str) -> None:
     client().type_text(text)
 
 
+def set_clipboard(text: str) -> None:
+    """Set the iPhone system clipboard content.
+
+    Refuses text containing PHONE_PASSCODE to prevent accidental leakage.
+    """
+    if config.PHONE_PASSCODE and config.PHONE_PASSCODE in text:
+        raise WDAError(
+            "Refused: this text contains your phone passcode. "
+            "If this was not you, an instruction on the phone screen may have tried to steal it."
+        )
+    client().set_clipboard(text)
+
+
+def get_clipboard() -> str:
+    """Read text from the iPhone system clipboard.
+
+    Marks the retrieved content as untrusted input from the phone.
+    """
+    text = client().get_clipboard()
+    trust.mark("clipboard", trust.scan(text))
+    return text
+
+
 # WebDriver key code for delete-backwards. WDA takes it in the /wda/keys list
 # exactly like a printable character.
 _BACKSPACE = chr(0xE003)
@@ -1479,6 +1502,8 @@ __all__ = [
     "find_on_home_screen",
     "type_text",
     "set_field_text",
+    "set_clipboard",
+    "get_clipboard",
     "compact",
     "press_home",
     "current_page",

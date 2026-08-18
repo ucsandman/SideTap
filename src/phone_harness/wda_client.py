@@ -117,6 +117,9 @@ def _activity_summary(path: str, payload: dict | None) -> str | None:
     if path.endswith("/wda/keys"):
         n = len(payload.get("value") or [])
         return f"type ({n} char{'' if n == 1 else 's'})"
+    if path.endswith("/wda/setPasteboard"):
+        raw_b64 = payload.get("content") or ""
+        return f"set clipboard ({len(raw_b64)} b64 chars)"
     if path.endswith("/wda/pressButton"):
         return f"button: {payload.get('name', '?')}"
     if path.endswith("/wda/apps/launch"):
@@ -559,6 +562,36 @@ class WDAClient:
     def type_text(self, text: str) -> None:
         """Type into the focused field (tap a field first)."""
         self._session_request("POST", "/wda/keys", {"value": list(text)})
+
+    def set_clipboard(  # noqa: vulture  (called by helpers.py, viewer.py)
+        self, text: str, content_type: str = "plaintext"
+    ) -> None:
+        """Set the device clipboard content."""
+        content_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        self._session_request(
+            "POST",
+            "/wda/setPasteboard",
+            {"content": content_b64, "contentType": content_type},
+        )
+
+    def get_clipboard(  # noqa: vulture  (called by helpers.py, viewer.py)
+        self, content_type: str = "plaintext"
+    ) -> str:
+        """Get the device clipboard content as a string."""
+        value = self._session_request(
+            "POST",
+            "/wda/getPasteboard",
+            {"contentType": content_type},
+        )
+        if not value:
+            return ""
+        if isinstance(value, str):
+            try:
+                decoded = base64.b64decode(value.strip(), validate=False)
+                return decoded.decode("utf-8", errors="replace")
+            except Exception:
+                return value
+        return str(value)
 
     def press_button(self, name: str) -> None:  # noqa: vulture
         """Hardware buttons: home, volumeUp, volumeDown."""

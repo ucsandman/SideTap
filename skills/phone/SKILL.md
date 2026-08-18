@@ -38,6 +38,7 @@ none of which you can learn by looking at the screen.
 | `long_press(x, y, seconds=1.0)` | context menus and other hidden affordances |
 | `act([{"tool":n,"args":{...}}, ...])` | several tools in ONE round trip; screenshot excluded |
 | `type_text(t)` | type into the focused field (tap the field first) |
+| `get_clipboard()` / `set_clipboard(t)` | read or write the iPhone system clipboard |
 | `open_app("messages")` | friendly name or bundle id |
 | `current_app()` / `wait_for_app(bundle_id)` | frontmost app / wait until one is |
 | `screenshot("out.png")` / `press_home()` / `wait_stable()` / `unlock()` | utilities |

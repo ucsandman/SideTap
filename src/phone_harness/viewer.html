@@ -128,14 +128,17 @@
   /* ---- copy button on doctor fix lines -------------------------------- */
   .copy-btn { padding:2px 8px; font-size:11px; margin-left:6px; vertical-align:baseline; }
 
-  /* ---- paste box ------------------------------------------------------ */
-  #paste-row { display:flex; gap:var(--s1); align-items:stretch; }
+  /* ---- paste / clipboard box ------------------------------------------ */
+  #paste-row { display:flex; flex-direction:column; gap:var(--s1); }
+  #paste-input-wrap { display:flex; gap:var(--s1); align-items:stretch; }
   #paste-text {
     flex:1; resize:vertical; min-height:34px; max-height:140px;
     background:var(--panel); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r1); padding:7px 10px; font-family:inherit; font-size:13px;
   }
   #paste-text:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  #paste-btns { display:flex; gap:var(--s1); }
+  #paste-btns button { flex:1 1 0; font-size:12px; padding:6px 8px; }
 
   /* ---- buttons ------------------------------------------------------- */
   button {
@@ -414,9 +417,15 @@
         <button id="btn-lock-ports" hidden>Lock ports</button>
       </div>
       <div id="paste-row" hidden>
-        <textarea id="paste-text" rows="1" aria-label="Paste text to send to the focused field"
-          placeholder="Paste text. Sends to the focused field"></textarea>
-        <button id="btn-paste-send">Send text</button>
+        <div id="paste-input-wrap">
+          <textarea id="paste-text" rows="1" aria-label="Paste text to send to the focused field"
+            placeholder="Paste text. Sends to the focused field"></textarea>
+          <button id="btn-paste-send" title="Type text into the focused field on the phone">Send text</button>
+        </div>
+        <div id="paste-btns">
+          <button id="btn-clip-to-phone" title="Copy text to iPhone clipboard">📋 Copy to phone</button>
+          <button id="btn-clip-from-phone" title="Read iPhone clipboard and copy to PC">📋 Copy from phone</button>
+        </div>
       </div>
     </div>
     <div class="dim" id="click-hint">Click to tap · drag to swipe · type to send keys.</div>
@@ -1095,6 +1104,27 @@ async function flushKeys() {
     if (keyBuf) flushKeys();   // send what queued up while we were busy
   }
 }
+window.addEventListener('paste', async (ev) => {
+  if (ovOpen) return;
+  if (!inputEnabled || phoneBusy()) return;
+  if (ev.target.closest('input,textarea,[contenteditable]')) return;
+  const text = ev.clipboardData ? ev.clipboardData.getData('text') : '';
+  if (!text) return;
+  ev.preventDefault();
+  const box = document.getElementById('paste-text');
+  if (box) box.value = text;
+  try {
+    const r = await fetch('/api/type', {method:'POST', headers:JSON_HDR,
+                                        body: JSON.stringify({text})});
+    if (r.ok) {
+      showHint('Pasted to phone (' + text.length + ' chars).');
+    } else {
+      showHint('Paste failed. Is a text field focused?');
+    }
+  } catch (e) {
+    showHint('Paste failed.');
+  }
+});
 window.addEventListener('keydown', (ev) => {
   if (ovOpen) {
     if (ev.key === 'Escape') { ev.preventDefault(); closeOverlay(); }
@@ -1102,6 +1132,14 @@ window.addEventListener('keydown', (ev) => {
   }
   if (!inputEnabled) return;
   if (ev.target.closest('input,textarea,button,select,[tabindex]')) return;     // typing in the paste box stays local
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C')) {
+    if (!window.getSelection().toString()) {
+      ev.preventDefault();
+      const btn = document.getElementById('btn-clip-from-phone');
+      if (btn) btn.click();
+      return;
+    }
+  }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
   if (phoneBusy()) { ev.preventDefault(); return; }    // keys aimed at the pre-action screen
   let ch = null;
@@ -1333,7 +1371,7 @@ document.getElementById('btn-notifs').onclick = () =>       // pull from top-lef
 document.getElementById('btn-control').onclick = () =>      // pull from top-right
   edgeSwipe(points.width * 0.92, 1, points.width * 0.92, points.height * 0.5);
 
-// ---- paste box: whole strings in one call (the key path is one char at a time
+// ---- paste box / clipboard: whole strings in one call (the key path is one char at a time
 // and cannot paste at all).
 document.getElementById('btn-paste-send').onclick = async () => {
   const box = document.getElementById('paste-text');
@@ -1346,6 +1384,58 @@ document.getElementById('btn-paste-send').onclick = async () => {
                                         body: JSON.stringify({text})});
     if (r.ok) box.value = '';
     else showHint('Send failed. Is a text field focused?');
+  } finally { btn.disabled = false; }
+};
+
+document.getElementById('btn-clip-to-phone').onclick = async () => {
+  const box = document.getElementById('paste-text');
+  const btn = document.getElementById('btn-clip-to-phone');
+  let text = box.value;
+  if (!text && navigator.clipboard && navigator.clipboard.readText) {
+    try { text = await navigator.clipboard.readText(); } catch (e) {}
+  }
+  if (!text) {
+    showHint('Nothing to copy. Type text or copy to PC clipboard first.');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/clipboard', {method:'POST', headers:JSON_HDR,
+                                             body: JSON.stringify({text})});
+    if (r.ok) {
+      box.value = text;
+      showHint('Copied to phone clipboard (' + text.length + ' chars).');
+    } else {
+      showHint('Could not set phone clipboard.');
+    }
+  } catch (e) {
+    showHint('Could not set phone clipboard.');
+  } finally { btn.disabled = false; }
+};
+
+document.getElementById('btn-clip-from-phone').onclick = async () => {
+  const box = document.getElementById('paste-text');
+  const btn = document.getElementById('btn-clip-from-phone');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/clipboard', {method:'GET', headers:JSON_HDR});
+    const j = await r.json().catch(() => ({}));
+    if (j.ok && typeof j.text === 'string') {
+      box.value = j.text;
+      if (j.text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          try { await navigator.clipboard.writeText(j.text); } catch (e) {}
+        }
+        const snippet = j.text.length > 25 ? j.text.slice(0, 25) + '…' : j.text;
+        showHint('Copied from phone: "' + snippet.replace(/[\r\n]+/g, ' ') + '"');
+      } else {
+        showHint('Phone clipboard is empty.');
+      }
+    } else {
+      showHint('Could not read phone clipboard.');
+    }
+  } catch (e) {
+    showHint('Could not read phone clipboard.');
   } finally { btn.disabled = false; }
 };
 

@@ -45,6 +45,15 @@ class StubClient:
     def lock(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.calls.append("lock")
 
+    clipboard_content = ""
+
+    def get_clipboard(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        return self.clipboard_content
+
+    def set_clipboard(self, text):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.clipboard_content = text
+        self.calls.append(("set_clipboard", text))
+
     window_size_calls = 0
 
     def window_size(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
@@ -531,9 +540,28 @@ def test_apps_endpoint_lists_known_names(base_url):
     assert "settings" in names and names == sorted(names)
 
 
+def test_clipboard_endpoint_get_and_post(base_url):
+    # Set clipboard via POST
+    r = requests.post(
+        base_url + "/api/clipboard", json={"text": "Hello from PC!"}, timeout=5
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert viewer.Handler.client.clipboard_content == "Hello from PC!"
+
+    # Get clipboard via GET
+    r = requests.get(base_url + "/api/clipboard", timeout=5)
+    assert r.status_code == 200 and r.json() == {"ok": True, "text": "Hello from PC!"}
+
+
 def test_parse_console_accepts_literal_call():
     name, args, kwargs = viewer._parse_console('tap_text("General", exact=True)')
     assert (name, args, kwargs) == ("tap_text", ["General"], {"exact": True})
+    assert viewer._parse_console('set_clipboard("test")') == (
+        "set_clipboard",
+        ["test"],
+        {},
+    )
+    assert viewer._parse_console("get_clipboard()") == ("get_clipboard", [], {})
     assert viewer._parse_console("swipe(10, -20, 10.5, 400)")[1] == [10, -20, 10.5, 400]
 
 

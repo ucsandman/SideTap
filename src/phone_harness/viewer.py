@@ -340,6 +340,8 @@ _CONSOLE_TOOLS = (
     "wait_stable",
     "read_messages",
     "send_message",
+    "get_clipboard",
+    "set_clipboard",
     "unlock",
 )
 
@@ -587,6 +589,15 @@ class Handler(BaseHTTPRequestHandler):
                 from . import helpers
 
                 self._json({"known": sorted(helpers.BUNDLE_IDS)})
+            elif path == "/api/clipboard":
+                try:
+                    with _action_slot():
+                        text = self.client.get_clipboard()
+                    self._json({"ok": True, "text": text})
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
             else:
                 self._json({"error": "not found"}, 404)
         except WDAError as exc:
@@ -625,6 +636,16 @@ class Handler(BaseHTTPRequestHandler):
                 with _action_slot():
                     self.client.type_text(str(payload.get("text", "")))
                 self._json({"ok": True})
+            elif path == "/api/clipboard":
+                text = str(payload.get("text", payload.get("content", "")))
+                try:
+                    with _action_slot():
+                        self.client.set_clipboard(text)
+                    self._json({"ok": True})
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
             elif path == "/api/long_press":
                 with _action_slot():
                     self.client.long_press(

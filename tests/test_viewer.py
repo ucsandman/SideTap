@@ -47,6 +47,15 @@ class StubClient:
 
     clipboard_content = ""
 
+    def tap(self, x, y):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.calls.append(("tap", x, y))
+
+    def type_text(self, text):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.calls.append(("type_text", text))
+
+    def key_press(self, key):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.calls.append(("key_press", key))
+
     def get_clipboard(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         return self.clipboard_content
 
@@ -1304,6 +1313,31 @@ def test_gesture_buttons_give_focus_back_to_the_phone():
     assert "ev.detail > 0" in body
     # The guard that makes the blur necessary in the first place.
     assert "input,textarea,button,select,[tabindex]" in html
+
+
+def test_arrow_keys_send_wda_text_caret_controls():
+    # Printable text uses /wda/keys, but caret navigation must use a W3C key
+    # action. The text endpoint inserts private-use values as content on this
+    # WDA build.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("window.addEventListener('keydown'")
+    body = html[start : html.index("const JSON_HDR", start)]
+    assert "const ARROW_KEYS" in html
+    assert "ArrowLeft: '\\uE012'" in html
+    assert "ArrowRight: '\\uE014'" in html
+    assert "ArrowUp: '\\uE013'" in html
+    assert "ArrowDown: '\\uE015'" in html
+    assert "Delete: '\\uE017'" in html
+    assert "NUMPAD_MAP" in html
+    assert "sendArrowKey(arrow)" in body
+    assert "'/api/key'" in html
+    assert "text-cursor" not in html
+
+
+def test_key_endpoint_executes_key_press(base_url):
+    r = requests.post(base_url + "/api/key", json={"key": "\ue017"}, timeout=5)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert ("key_press", "\ue017") in viewer.Handler.client.calls
 
 
 def test_enter_sends_and_only_a_bare_enter_does():

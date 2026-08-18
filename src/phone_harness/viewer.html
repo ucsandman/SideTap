@@ -1132,7 +1132,13 @@ let keyBuf = '';
 let keyBusy = false;
 const ARROW_KEYS = {
   ArrowLeft: '\uE012', ArrowRight: '\uE014',
-  ArrowUp: '\uE013', ArrowDown: '\uE015'
+  ArrowUp: '\uE013', ArrowDown: '\uE015',
+  Delete: '\uE017',
+  Home: '\uE011', End: '\uE010',
+  PageUp: '\uE00E', PageDown: '\uE00F'
+};
+const NUMPAD_MAP = {
+  Decimal: '.', Divide: '/', Multiply: '*', Subtract: '-', Add: '+', Separator: ','
 };
 let arrowBuf = [];
 let arrowBusy = false;
@@ -1149,6 +1155,7 @@ async function flushKeys() {
   }
 }
 async function sendArrowKey(key) {
+  if (keyBuf) flushKeys();
   arrowBuf.push(key);
   if (arrowBusy) return;
   arrowBusy = true;
@@ -1209,7 +1216,9 @@ window.addEventListener('keydown', (ev) => {
   let ch = null;
   if (ev.key === 'Enter') ch = '\n';
   else if (ev.key === 'Backspace') ch = '\b';
+  else if (NUMPAD_MAP[ev.key]) ch = NUMPAD_MAP[ev.key];
   else if (ev.key.length === 1) ch = ev.key;           // letters, digits, space, emoji-less symbols
+  else if (ev.code && /^Numpad\d$/.test(ev.code)) ch = ev.code.slice(6);
   if (ch === null) return;
   ev.preventDefault();
   keyBuf += ch;

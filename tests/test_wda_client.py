@@ -467,9 +467,11 @@ def test_new_session_applies_standard_action_waits(wda):
     assert FakeWDA.last_settings == {
         "waitForIdleTimeout": config.WDA_IDLE_WAIT,
         "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
+        "accessibilityDeadline": config.WDA_ACCESSIBILITY_DEADLINE,
     }
     assert config.WDA_IDLE_WAIT == 2.0
     assert config.WDA_ANIM_COOLOFF == 0.0
+    assert config.WDA_ACCESSIBILITY_DEADLINE == 2.0
 
 
 def test_adopting_client_does_not_retune(wda):
@@ -649,3 +651,22 @@ def test_activity_summary_clipboard():
     )
     assert summary == "set clipboard (8 b64 chars)"
     assert "Hello" not in summary
+
+
+def test_activity_summary_key_press():
+    summary = _activity_summary(
+        "/session/s/actions",
+        {
+            "actions": [
+                {
+                    "type": "key",
+                    "id": "keyboard1",
+                    "actions": [
+                        {"type": "keyDown", "value": "\ue017"},
+                        {"type": "keyUp", "value": "\ue017"},
+                    ],
+                }
+            ]
+        },
+    )
+    assert summary == "key press"

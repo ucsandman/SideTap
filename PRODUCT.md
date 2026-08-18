@@ -11,6 +11,12 @@ Default register when a command does not name a surface: **product**. The viewer
 
 ## Users
 
+Short note: viewer polling and WDA heavy-tail
+
+The viewer's periodic /api/phone poll can trigger a WDA "heavy-tail" wedge on some devices (TikTok For You feed). By default the viewer no longer polls /api/phone periodically; enable it with VIEWER_PHONE_POLL_SECONDS in .env (seconds, 0 = disabled). See docs/VIEWER_PHONE_POLL.md for guidance and log-collection steps.
+
+## Users
+
 **The operator** is a solo developer running SideTap against their own real iPhone, on their own Windows PC, with no Mac and no paid Apple developer account. They are not moving through a sales funnel and they are not an IT admin managing a device fleet. They are one person who just told an LLM agent to do something on their phone (read a text, open an app, send a reply) and now has to watch it happen.
 
 - **On the viewer**, the operator is mid-session with divided attention: half watching a live phone screen, half doing something else, until the moment the agent does something wrong. At that moment their entire job becomes hitting STOP before the next action lands. Supervision with a fast exit is the primary task every time this screen is open, not configuration or exploration.

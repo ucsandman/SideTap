@@ -62,6 +62,23 @@ VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")  # noqa: vulture
 WDA_IDLE_WAIT = float(get("WDA_IDLE_WAIT", "2") or "2")
 WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")
 
+# Scripted finger contact for a tap, in ms. 80 is the shipped value and stays
+# the default: the hold is pure wait (~20% of a bare tap budget), but a contact
+# that is too brief can be DROPPED by iOS and a missed tap is worse than a slow
+# one. Tune on device — 20 taps at 80 and 20 at 40 on a dense screen (keyboard
+# keys, small Settings rows), counting misses. Never on the passcode pad: a
+# wrong or dropped tap there burns an iOS lockout attempt, which is why
+# helpers._enter_passcode passes its own hold rather than riding this.
+WDA_TAP_HOLD_MS = int(get("WDA_TAP_HOLD_MS", "80") or "80")
+
+# Keystrokes per second WDA synthesises for POST /wda/keys. The Python side is
+# ONE request either way; the phone spends len(text)/rate seconds, so this is
+# the whole cost of a long paste. 60 is WDA's own default, so shipping it
+# changes nothing until it is measured. Raising it fails QUIETLY: iOS drops
+# synthesised keystrokes above some device-specific rate, and set_field_text's
+# read-back then makes send_message refuse a message that typed wrong.
+WDA_TYPING_FREQ = int(get("WDA_TYPING_FREQ", "60") or "60")
+
 # Live-view stream tuning (measured on device: WDA captures ~34fps max; 50%
 # scale halves frame weight with no fps cost, and the viewer shows ~1100px max).
 MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")

@@ -207,6 +207,7 @@ class StubPhone:
         self.tree = tree
         self.typed = []
         self.tapped = []  # pad-digit labels resolved from tap coordinates
+        self.hold_ms = []  # finger contact time asked for, per tap
         self.pressed = []
         self.ops = []  # gesture/session events in order, for ordering tests
         self.swipes = 0
@@ -274,9 +275,10 @@ class StubPhone:
         if not self.wrong_pin:
             self.tree = SAMPLE_TREE  # accepted: pad dismissed, home screen
 
-    def tap(self, x, y):
+    def tap(self, x, y, hold_ms=None):
         # Resolve the tap back to whichever button's rect holds the point,
         # like the real pad would.
+        self.hold_ms.append(hold_ms)
         for e in helpers.collect_texts(self.tree):
             r = e["rect"]
             if (
@@ -354,8 +356,8 @@ def test_enter_passcode_restores_idle_wait_when_a_tap_raises(fast):
     dies mid-entry must still put the shared session's settings back."""
 
     class Dies(StubPhone):
-        def tap(self, x, y):
-            super().tap(x, y)
+        def tap(self, x, y, hold_ms=None):
+            super().tap(x, y, hold_ms)
             if len(self.tapped) == 2:
                 raise WDAError("boom")
 
@@ -400,9 +402,9 @@ def test_unlock_digit_taps_are_redacted_in_the_activity_log(fast):
             super().__init__(*args, **kwargs)
             self.redactions = []
 
-        def tap(self, x, y):
+        def tap(self, x, y, hold_ms=None):
             self.redactions.append(getattr(wda_client._REDACT, "label", None))
-            super().tap(x, y)
+            super().tap(x, y, hold_ms)
 
     stub = fast(SpyPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
@@ -734,6 +736,136 @@ def test_wait_for_app_false_on_timeout(fake_clock, monkeypatch):
     monkeypatch.setattr(helpers, "_client", AppSwitchingClient(switch_at=10_000))
     assert helpers.wait_for_app("com.apple.MobileSMS", timeout=2) is False
     assert fake_clock["t"] >= 2  # gave the full timeout before giving up
+
+
+class BusyTreeClient(CountingClient):
+    """source() itself costs `cost` seconds of the fake clock — the whole-tree
+    read wait_for_text pays every single turn (0.22s inside an app, 3.0-5.7s on
+    the Home Screen, measured)."""
+
+    def __init__(self, clock, cost=1.0):
+        super().__init__()
+        self.clock, self.cost = clock, cost
+        self.reads = []
+
+    def source(self):
+        self.reads.append(self.clock["t"])
+        self.clock["t"] += self.cost
+        return super().source()
+
+
+def test_wait_for_text_polls_at_a_quarter_second_not_a_half(fake_clock, monkeypatch):
+    # Half a second between turns of a poll whose own read is 0.22s is pure
+    # tail: the thing appeared, and nobody looked for another 0.5s.
+    helpers._invalidate_tree()
+    monkeypatch.setattr(helpers, "_client", AppearingClient(appear_at=2))
+
+    assert helpers.wait_for_text("Target", timeout=10)
+
+    assert helpers._TEXT_POLL == 0.25
+    assert fake_clock["t"] == pytest.approx(helpers._TEXT_POLL), (
+        f"waited {fake_clock['t']}s to take the second look"
+    )
+
+
+def test_wait_for_text_cannot_burst_into_a_slow_tree_read(fake_clock, monkeypatch):
+    # Same duty cycle press_home runs: a tree read is the most expensive
+    # perception call there is, and WDA serves one request at a time, so a
+    # shorter interval must buy looks on a cheap screen without stacking turns
+    # onto an expensive one. Rest at least as long as the read took.
+    helpers._invalidate_tree()
+    stub = BusyTreeClient(fake_clock, cost=1.0)
+    monkeypatch.setattr(helpers, "_client", stub)
+
+    assert helpers.wait_for_text("Never There", timeout=10) is None
+
+    gaps = [b - a for a, b in zip(stub.reads, stub.reads[1:])]
+    assert gaps and min(gaps) >= 2 * stub.cost, (
+        f"reads {stub.reads}: a 1.0s /source polled every {min(gaps)}s spends "
+        "more than half the loop inside WDA"
+    )
+
+
+class BusyAppReader(AppSwitchingClient):
+    """active_app() that costs `cost` of the fake clock — the wedging call."""
+
+    def __init__(self, clock, cost=1.0):
+        super().__init__(switch_at=10_000)  # never arrives
+        self.clock, self.cost = clock, cost
+        self.reads = []
+
+    def active_app(self):
+        self.reads.append(self.clock["t"])
+        self.clock["t"] += self.cost
+        return super().active_app()
+
+
+def test_wait_for_app_polls_faster_than_half_a_second(fake_clock, monkeypatch):
+    # 0.5s between looks over a 100-156ms active_app() read (measured) is three
+    # intervals of nothing on every open_app().
+    monkeypatch.setattr(helpers, "_client", AppSwitchingClient(switch_at=2))
+
+    assert helpers.wait_for_app("com.apple.MobileSMS", timeout=10) is True
+
+    assert helpers._APP_POLL == 0.1
+    assert fake_clock["t"] == pytest.approx(helpers._APP_POLL), (
+        f"waited {fake_clock['t']}s to take the second look"
+    )
+
+
+def test_wait_for_app_cannot_burst_into_a_slow_active_app(fake_clock, monkeypatch):
+    # active_app() resolves the active application, which can block with no
+    # upper bound in a wedging app. The interval alone does not bound the loop.
+    stub = BusyAppReader(fake_clock, cost=1.0)
+    monkeypatch.setattr(helpers, "_client", stub)
+
+    assert helpers.wait_for_app("com.apple.MobileSMS", timeout=10) is False
+
+    gaps = [b - a for a, b in zip(stub.reads, stub.reads[1:])]
+    assert gaps and min(gaps) >= 2 * stub.cost, (
+        f"reads {stub.reads}: a 1.0s active_app polled every {min(gaps)}s"
+    )
+
+
+def test_wait_for_text_returns_inside_its_timeout(fake_clock, monkeypatch):
+    # `timeout` is what an MCP agent reads as the bound. The duty-cycle rest
+    # can outlast the deadline that gates it — _await_keyboard already clamps
+    # the same shape — so a slow tree read stacked a WHOLE extra read past the
+    # timeout: on a Home Screen /source (5.7s) a wait_for_text(timeout=10) came
+    # back at ~17s. One read of overshoot is unavoidable (the deadline is
+    # checked between reads, and giving up early would under-wait the caller);
+    # a second one is the rest sleeping straight through the deadline.
+    stub = BusyTreeClient(fake_clock, cost=1.0)
+    monkeypatch.setattr(helpers, "_client", stub)
+
+    assert helpers.wait_for_text("Never There", timeout=9.5) is None
+
+    assert fake_clock["t"] <= 9.5 + stub.cost, (
+        f"returned at t={fake_clock['t']} from a 9.5s timeout: the rest slept "
+        "past the deadline and paid for another read"
+    )
+
+
+def test_wait_for_app_returns_inside_its_timeout(fake_clock, monkeypatch):
+    # Same clamp, same reason: both are registered MCP tools.
+    stub = BusyAppReader(fake_clock, cost=1.0)
+    monkeypatch.setattr(helpers, "_client", stub)
+
+    assert helpers.wait_for_app("com.apple.MobileSMS", timeout=9.5) is False
+
+    assert fake_clock["t"] <= 9.5 + stub.cost, (
+        f"returned at t={fake_clock['t']} from a 9.5s timeout"
+    )
+
+
+def test_wait_for_polls_keep_their_interval_parameter():
+    # Both are registered MCP tools: the schema tracks the real signature, so
+    # a caller passing the old interval must still be accepted.
+    import inspect
+
+    for fn, default in ((helpers.wait_for_text, 0.25), (helpers.wait_for_app, 0.1)):
+        param = inspect.signature(fn).parameters["interval"]
+        assert param.default == default, f"{fn.__name__} default is {param.default}"
 
 
 def _bubble_cell(label, y, inner_x, inner_w):
@@ -1332,7 +1464,9 @@ class StubField:
         self.cleared = 0
         self.typed = []
 
-    def find_first(self, _chain):
+    def find_first(self, chain):
+        if "Keyboard" in chain:
+            return "kbd"  # the keyboard is up: set_field_text's wait is over
         return None if self.broken else "E1"
 
     def element_clear(self, _eid):
@@ -1370,6 +1504,8 @@ class StubMessagesThread:
         return self.BUBBLE  # reintroduce the call and the asserts name the bubble
 
     def find_first(self, chain):
+        if "Keyboard" in chain:
+            return "kbd"  # the keyboard is up: set_field_text's wait is over
         return self.COMPOSE if "TextField" in chain else None
 
     def element_clear(self, eid):
@@ -1498,6 +1634,104 @@ def test_set_field_text_never_calls_ocr_for_a_text_field(monkeypatch):
 
     assert ocr_calls == [], f"ocr() was called {len(ocr_calls)} time(s) for a TextField"
     assert stub.cleared == 1, "the field still needs clearing via element_clear"
+
+
+class KeyboardField(StubField):
+    """A field whose keyboard finishes sliding up at `up` seconds.
+
+    The keyboard chain is the only one that answers on the clock; every other
+    lookup is the field itself, exactly as StubField serves it.
+    """
+
+    def __init__(self, clock, up=0.2, fail=False, cost=0.0):
+        super().__init__(value="")
+        self.clock, self.up, self.fail = clock, up, fail
+        self.cost = cost  # what the probe itself costs on the wire
+        self.keyboard_probes = 0
+
+    def find_first(self, chain):
+        if "Keyboard" not in chain:
+            return super().find_first(chain)
+        self.keyboard_probes += 1
+        self.clock["t"] += self.cost
+        if self.fail:
+            raise WDAError("no session")
+        return "kbd" if self.clock["t"] >= self.up else None
+
+
+def _typing_at(monkeypatch, stub, clock):
+    """set_field_text against `stub`; returns the clock reading of each type."""
+    typed = []
+    field = {"type": "TextField", "text": "Message", "x": 100, "y": 800}
+    monkeypatch.setattr(helpers, "client", lambda: stub)
+    monkeypatch.setattr(helpers, "ocr", lambda: [field])
+    monkeypatch.setattr(helpers, "tap", lambda x, y: None)
+    monkeypatch.setattr(helpers, "type_text", lambda t: typed.append(clock["t"]))
+    helpers.set_field_text(field, "On my way", verify=False)
+    return typed
+
+
+def test_set_field_text_waits_for_the_keyboard_not_a_flat_sleep(
+    fake_clock, monkeypatch
+):
+    # The 0.4s here is the keyboard slide-up: type into it early and the first
+    # keys are dropped. It was paid whole whether the keyboard was still
+    # moving or already up. A bounded probe for the keyboard answers that —
+    # one element id, not a /source — so the common case costs the animation
+    # and not the guess.
+    stub = KeyboardField(fake_clock, up=0.2)
+
+    typed = _typing_at(monkeypatch, stub, fake_clock)
+
+    assert stub.keyboard_probes >= 1, "still sleeping blind through the slide-up"
+    assert typed and typed[0] == pytest.approx(0.2), (
+        f"typed at t={typed[0]}; the keyboard was up at 0.2"
+    )
+
+
+def test_keyboard_wait_never_outlasts_the_sleep_it_replaced(fake_clock, monkeypatch):
+    # A keyboard that never reports must cost exactly the old sleep — the cap
+    # is what makes the worst case identical to today's.
+    stub = KeyboardField(fake_clock, up=99)
+
+    typed = _typing_at(monkeypatch, stub, fake_clock)
+
+    assert stub.keyboard_probes >= 2, "the probe ran once and gave up polling"
+    assert typed and typed[0] == pytest.approx(0.4), (
+        f"typed at t={typed[0]}; the sleep it replaced was 0.4"
+    )
+
+
+def test_keyboard_wait_counts_the_probe_against_the_cap(fake_clock, monkeypatch):
+    # The probe is not free on device: the only class-chain lookup measured
+    # here costs 328ms (find_first(PageIndicator), 2026-08-20). Gating only the
+    # REST on the deadline let a last probe start with 0.07s of cap left and
+    # run 0.33s past it, so a keyboard that never reports cost 0.73s where the
+    # flat sleep it replaced cost 0.4 — a loss bigger than the whole best-case
+    # win on this path.
+    stub = KeyboardField(fake_clock, up=99, cost=0.33)
+
+    typed = _typing_at(monkeypatch, stub, fake_clock)
+
+    assert typed and typed[0] == pytest.approx(0.4), (
+        f"typed at t={typed[0]} with a 0.33s probe; the sleep it replaced was 0.4"
+    )
+
+
+def test_keyboard_wait_falls_back_to_the_full_sleep_when_the_probe_fails(
+    fake_clock, monkeypatch
+):
+    # The probe is the optimisation, never the decision: if WDA will not answer
+    # it, pay the sleep. Skipping it types into a keyboard that may not be up,
+    # which is the dropped-first-keys failure the sleep exists for.
+    stub = KeyboardField(fake_clock, fail=True)
+
+    typed = _typing_at(monkeypatch, stub, fake_clock)
+
+    assert stub.keyboard_probes == 1, "kept probing a WDA that raised"
+    assert typed and typed[0] == pytest.approx(0.4), (
+        f"typed at t={typed[0]} after the probe failed; the old sleep was 0.4"
+    )
 
 
 def test_ui_tree_refetches_when_another_process_touched_the_phone(
@@ -1749,16 +1983,34 @@ class PagingClient:
     def __init__(self, index, total=8, stuck=False):
         self.index, self.total, self.stuck = index, total, stuck
         self.swipes = []
+        self.paths = []  # the raw (x1, y1, x2, y2) each swipe was given
         self.slept = []
+        self.chains = []  # every find_first class chain, in order
+        self.values = 0  # element_value round trips
+
+    def window_size(self):
+        return (390.0, 844.0)  # a portrait iPhone: x=400 is off its right edge
+
+    def orientation(self):
+        return "PORTRAIT"
 
     def find_first(self, class_chain):
+        self.chains.append(class_chain)
+        # WDA matches the chain's predicate against what is on screen, so an
+        # exact-value probe only answers on the page it names.
+        if "value ==" in class_chain:
+            return (
+                "42" if f'"Page {self.index} of {self.total}"' in class_chain else None
+            )
         return "42"
 
     def element_value(self, element_id):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.values += 1
         return f"Page {self.index} of {self.total}"
 
     def swipe(self, x1, y1, x2, y2, seconds=0.3):
         self.swipes.append("toward" if x2 > x1 else "away")
+        self.paths.append((x1, y1, x2, y2))
         if not self.stuck:
             self.index += -1 if x2 > x1 else 1
 
@@ -2021,14 +2273,13 @@ def test_press_home_waits_for_the_springboard(monkeypatch):
     assert stub.checks >= 3  # it kept looking instead of trusting the return
 
 
-def test_press_home_gives_up_rather_than_hanging(monkeypatch):
+def test_press_home_gives_up_rather_than_hanging(fake_clock, monkeypatch):
     """The physical gesture cannot fail, so this must not raise either — but it
     must stay bounded. Callers that need to know check the screen."""
     stub = SlowSpringboard(arrives_on=10_000)  # never
     monkeypatch.setattr(helpers, "_client", stub)
-    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
     helpers.press_home()  # returns, does not raise
-    assert stub.checks == helpers._HOME_ATTEMPTS
+    assert fake_clock["t"] <= helpers._HOME_DEADLINE + helpers._HOME_POLL
 
 
 def test_press_home_returns_at_once_when_already_home(monkeypatch):
@@ -2064,3 +2315,615 @@ def test_helpers_set_clipboard_refuses_passcode(monkeypatch):
     monkeypatch.setattr(config, "PHONE_PASSCODE", "123456")
     with pytest.raises(WDAError, match="Refused"):
         helpers.set_clipboard("my secret is 123456")
+
+
+# ---- latency: bounded probes instead of whole-tree reads ---------------------
+
+
+def test_send_message_does_not_sleep_after_tapping_send(
+    sendable, gate_calls, monkeypatch
+):
+    # Nothing after the Send tap reads the screen, and the tap already blocked
+    # on waitForIdleTimeout server-side inside /actions — the same argument
+    # that retired goto_home_page()'s _PAGE_SETTLE. The sleep was 1.5s of dead
+    # wall clock on every single send.
+    slept = []
+    monkeypatch.setattr(helpers.time, "sleep", slept.append)
+
+    helpers.send_message("Mom", "on my way")
+
+    assert 1.5 not in slept, f"still sleeping after the Send tap: {slept}"
+
+
+def test_send_message_rescans_for_the_send_button_instead_of_a_flat_sleep(
+    sendable, gate_calls, monkeypatch
+):
+    # The toolbar may be up by the time the read-back returned, so check
+    # immediately instead of paying the flat 0.5s first — and drop the ~2s
+    # ui_tree cache before the re-scan, or both reads answer from the same
+    # stale tree. Exactly ONE retry: every re-scan is a guaranteed-cold whole
+    # /source on an open Messages thread, so four of them is a far worse miss
+    # path than the sleep this replaced, and "the first look usually hits" was
+    # never measured. The worst case here is the old wait plus one extra read.
+    slept, reads, dropped = [], [], []
+    monkeypatch.setattr(helpers.time, "sleep", slept.append)
+    monkeypatch.setattr(helpers, "_invalidate_tree", lambda: dropped.append(1))
+    field = {
+        "text": "Message",
+        "type": "TextField",
+        "x": 195.0,
+        "y": 800.0,
+        "rect": {"x": 0, "y": 780, "width": 300, "height": 40},
+    }
+    send = {
+        "text": "Send",
+        "type": "Button",
+        "x": 360.0,
+        "y": 800.0,
+        "rect": {"x": 340, "y": 780, "width": 40, "height": 40},
+    }
+
+    def slow_toolbar():
+        reads.append(1)
+        return [field, send] if len(reads) >= 3 else [field]
+
+    monkeypatch.setattr(helpers, "ocr", slow_toolbar)
+
+    result = helpers.send_message("Mom", "on my way")
+
+    assert result["sent"] is True
+    assert slept == [0.5], f"send-button scan slept {slept}"
+    assert dropped, "re-scanned the cached tree without dropping it first"
+    assert len(reads) <= 3, (
+        f"{len(reads)} whole-tree reads on the send path; the scan gets one retry"
+    )
+
+
+class ProbingPages:
+    """Home Screen pages that answer a bounded probe and count /source dumps.
+
+    Mirrors WDA: find_first() matches the chain's predicate against whatever
+    page is on screen, source() serializes the whole tree.
+    """
+
+    def __init__(self, wanted_on=3, total=3):
+        self.index, self.total, self.wanted_on = 1, total, wanted_on
+        self.source_calls = 0
+        self.chains = []
+
+    def window_size(self):
+        return (390.0, 844.0)
+
+    def orientation(self):
+        return "PORTRAIT"
+
+    def find_first(self, class_chain):
+        self.chains.append(class_chain)
+        if "PageIndicator" in class_chain:
+            if "value ==" in class_chain:
+                want = f'"Page {self.index} of {self.total}"'
+                return "42" if want in class_chain else None
+            return "42"
+        return "icon" if self.index == self.wanted_on else None
+
+    def element_value(self, _eid):
+        return f"Page {self.index} of {self.total}"
+
+    def swipe(self, x1, _y1, x2, _y2, _seconds=0.3):
+        self.index += -1 if x2 > x1 else 1
+
+    def home(self):
+        pass
+
+    def active_app(self):
+        return {"bundleId": "com.apple.springboard"}
+
+    def source(self):
+        self.source_calls += 1
+        label = "Wanted" if self.index == self.wanted_on else f"Other {self.index}"
+        return {
+            "type": "Application",
+            "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+            "children": [
+                {
+                    "type": "Icon",
+                    "label": label,
+                    "isVisible": "1",
+                    "rect": {"x": 80, "y": 300, "width": 80, "height": 100},
+                }
+            ],
+        }
+
+
+def test_find_on_home_screen_probes_before_dumping_the_tree(monkeypatch):
+    # find_text() per page is ocr() -> ui_tree() -> /source, and the swipe
+    # invalidates the cache every turn, so each page paid the Home Screen's
+    # worst case (3.0-5.7s, 554-610 nodes, 244 KB measured) to answer one
+    # yes/no question. A bounded find_first answers it in 0.37s.
+    stub = ProbingPages(wanted_on=3)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+
+    el = helpers.find_on_home_screen("Wanted", max_pages=3)
+
+    assert el["type"] == "Icon"
+    icon_probes = [c for c in stub.chains if "Icon" in c]
+    assert icon_probes, "no bounded probe: every page still paid a full /source"
+    assert "name CONTAINS" in icon_probes[0], (
+        "probing label only silently skips a page find_text would have matched"
+    )
+    assert stub.source_calls == 1, (
+        f"{stub.source_calls} full /source dumps for a three-page scan"
+    )
+
+
+def _messages_search_tree(ready):
+    """Messages search: the field, plus the result cell and the thread header
+    once the search has actually returned something."""
+    children = [
+        {
+            "type": "SearchField",
+            "label": "Search",
+            "isVisible": "1",
+            "rect": {"x": 20, "y": 60, "width": 350, "height": 36},
+        }
+    ]
+    if ready:
+        children += [
+            {
+                "type": "Cell",
+                "label": "Wes Sander",
+                "isVisible": "1",
+                "rect": {"x": 0, "y": 200, "width": 390, "height": 60},
+            },
+            {
+                "type": "Button",
+                "label": "Contact photo for Wes Sander",
+                "isVisible": "1",
+                "rect": {"x": 160, "y": 40, "width": 60, "height": 60},
+            },
+        ]
+    return {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+        "children": children,
+    }
+
+
+class ThreadSearchClient:
+    """Messages search whose results land `after` seconds into the poll."""
+
+    def __init__(self, clock, after=2.0):
+        self.clock, self.after = clock, after
+        self.probes = 0
+        self.source_calls = 0
+
+    def _ready(self):
+        return self.clock["t"] >= self.after
+
+    def find_first(self, class_chain):
+        if "Cell" in class_chain:
+            self.probes += 1
+            return "cell" if self._ready() else None
+        return None
+
+    def source(self):
+        self.source_calls += 1
+        return _messages_search_tree(self._ready())
+
+
+def test_open_thread_probes_for_result_cells_before_reading_the_tree(
+    fake_clock, monkeypatch
+):
+    # Every turn of the 20s result poll was a whole-tree fetch (~3s on a busy
+    # screen, the code's own comment) plus a sleep, to answer "has the search
+    # returned anything yet". A bounded Cell probe answers that; the tree is
+    # read only once it says yes, so _conversation_cells' exact-match and
+    # dedup logic runs on exactly the same input as before.
+    stub = ThreadSearchClient(fake_clock)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers, "open_app", lambda _name: None)
+    monkeypatch.setattr(helpers, "wait_stable", lambda **_k: True)
+    monkeypatch.setattr(helpers, "tap", lambda *_a, **_k: None)
+    monkeypatch.setattr(helpers, "type_text", lambda _t: None)
+
+    assert helpers._open_thread("Wes Sander") == "Wes Sander"
+
+    assert stub.probes >= 1, "the poll still fetched the whole tree every turn"
+    assert stub.source_calls == 2, (
+        f"{stub.source_calls} /source dumps; expected the entry read plus one hit"
+    )
+
+
+class ColdProbeClient:
+    """The result cell is on screen from the start, and the Cell predicate
+    never matches it.
+
+    The real case: _title_matches accepts containment BOTH ways, so a cell
+    labelled "Wes" verifies the contact "Wes Sander" — and no one-directional
+    CONTAINS predicate says that. A label-only predicate misses a name-only
+    cell the same way (collect_texts reads `label or name or value`).
+    """
+
+    def __init__(self):
+        self.taps = 0
+        self.probes = 0
+        self.source_calls = 0
+
+    def find_first(self, class_chain):
+        if "Cell" in class_chain:
+            self.probes += 1
+        return None
+
+    def source(self):
+        self.source_calls += 1
+        children = [
+            {
+                "type": "SearchField",
+                "label": "Search",
+                "isVisible": "1",
+                "rect": {"x": 20, "y": 60, "width": 350, "height": 36},
+            },
+            {
+                "type": "Cell",
+                "label": "Wes",  # a fuller contact name still verifies this
+                "isVisible": "1",
+                "rect": {"x": 0, "y": 200, "width": 390, "height": 60},
+            },
+        ]
+        if self.taps >= 2:  # the search-field tap, then the result cell
+            children.append(
+                {
+                    "type": "Button",
+                    "label": "Contact photo for Wes",
+                    "isVisible": "1",
+                    "rect": {"x": 160, "y": 40, "width": 60, "height": 60},
+                }
+            )
+        return {
+            "type": "Application",
+            "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+            "children": children,
+        }
+
+
+def test_open_thread_still_finds_a_thread_the_probe_cannot_match(
+    fake_clock, monkeypatch
+):
+    # The probe is an OPTIMISATION, never the decision. Gating the tree read on
+    # it forever turns a patient 20s poll into a hard 20s failure on input the
+    # old loop handled — on the path CLAUDE.md documents as THE way
+    # send_message and read_messages find a thread.
+    stub = ColdProbeClient()
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers, "open_app", lambda _name: None)
+    monkeypatch.setattr(helpers, "wait_stable", lambda **_k: True)
+    monkeypatch.setattr(helpers, "type_text", lambda _t: None)
+
+    def tap(*_a, **_k):  # the real tap invalidates the tree cache
+        stub.taps += 1
+        helpers._invalidate_tree()
+
+    monkeypatch.setattr(helpers, "tap", tap)
+
+    assert helpers._open_thread("Wes Sander") == "Wes"
+    assert stub.probes, "the probe stopped being tried at all"
+    assert fake_clock["t"] < 20, "it burned the whole deadline before looking"
+
+
+class ChromeRowClient(ThreadSearchClient):
+    """The probe matches from t=0 (the 'Messages with:' filter row is a Cell
+    carrying the contact's name) while the real conversation row is still
+    landing — so every turn costs the probe AND a whole-tree dump."""
+
+    def find_first(self, class_chain):
+        if "Cell" in class_chain:
+            self.probes += 1
+            return "chrome-row"
+        return None
+
+
+def test_open_thread_never_reads_more_trees_than_the_poll_it_replaced(
+    fake_clock, monkeypatch
+):
+    # An optimisation that can cost MORE than the code it replaced is not one.
+    # At a 0.25s throttle this path paid 6 /source dumps against the old
+    # loop's 4, on exactly the just-woken phone the 20s deadline exists for.
+    stub = ChromeRowClient(fake_clock, after=2.0)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers, "open_app", lambda _name: None)
+    monkeypatch.setattr(helpers, "wait_stable", lambda **_k: True)
+    monkeypatch.setattr(helpers, "tap", lambda *_a, **_k: None)
+    monkeypatch.setattr(helpers, "type_text", lambda _t: None)
+
+    assert helpers._open_thread("Wes Sander") == "Wes Sander"
+
+    # 2s of polling at the 0.5s throttle the loop always had. Measured: 4
+    # dumps here, against 6 with the probe gating a 0.25s loop — 50% more
+    # whole-tree reads than the code the "optimisation" replaced.
+    assert stub.source_calls <= 4, (
+        f"{stub.source_calls} /source dumps for a 2s wait the old loop did in 4"
+    )
+
+
+class KeyboardSearchClient(ThreadSearchClient):
+    """Messages search whose keyboard slides up at `up` seconds."""
+
+    def __init__(self, clock, after=0.1, up=0.2):
+        super().__init__(clock, after=after)
+        self.up = up
+        self.keyboard_probes = 0
+
+    def find_first(self, class_chain):
+        if "Keyboard" not in class_chain:
+            return super().find_first(class_chain)
+        self.keyboard_probes += 1
+        return "kbd" if self.clock["t"] >= self.up else None
+
+
+def test_open_thread_waits_for_the_keyboard_before_typing_the_contact(
+    fake_clock, monkeypatch
+):
+    # Same flat-sleep story as set_field_text, twice as long: 0.8s bought after
+    # the search-field tap whether or not the keyboard was still moving. The
+    # probe is capped at that 0.8s, so a keyboard that never reports costs
+    # exactly what it costs today.
+    stub = KeyboardSearchClient(fake_clock, up=0.2)
+    typed = []
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers, "open_app", lambda _name: None)
+    monkeypatch.setattr(helpers, "wait_stable", lambda **_k: True)
+    monkeypatch.setattr(helpers, "tap", lambda *_a, **_k: None)
+    monkeypatch.setattr(helpers, "type_text", lambda _t: typed.append(fake_clock["t"]))
+
+    assert helpers._open_thread("Wes Sander") == "Wes Sander"
+
+    assert stub.keyboard_probes >= 1, "still sleeping blind through the slide-up"
+    assert typed and typed[0] == pytest.approx(0.2), (
+        f"typed the contact at t={typed[0]}; the keyboard was up at 0.2"
+    )
+
+
+class ThreadBackClient:
+    """An open thread whose header is already gone when the back tap lands."""
+
+    def __init__(self):
+        self.source_calls = 0
+        self.header_probes = 0
+        self.tapped = []
+
+    def find_first(self, class_chain):
+        if "Contact photo for" in class_chain:
+            self.header_probes += 1
+        return None
+
+    def tap(self, x, y, hold_ms=None):
+        self.tapped.append((x, y))
+
+    def source(self):
+        self.source_calls += 1
+        return {
+            "type": "Application",
+            "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+            "children": [
+                {
+                    "type": "TextField",
+                    "label": "iMessage",
+                    "isVisible": "1",
+                    "rect": {"x": 20, "y": 780, "width": 300, "height": 40},
+                },
+                {
+                    "type": "Button",
+                    "label": "Back",
+                    "isVisible": "1",
+                    "rect": {"x": 20, "y": 60, "width": 60, "height": 40},
+                },
+            ],
+        }
+
+
+def test_go_back_probes_for_the_thread_header_instead_of_polling_source(monkeypatch):
+    # Same trade as the result poll: "is the header gone yet" is a yes/no, and
+    # the common answer is yes on the first look, which must not cost a dump.
+    stub = ThreadBackClient()
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.time, "sleep", lambda _s: None)
+
+    assert helpers._go_back() is True
+
+    assert stub.tapped, "never tapped the nav back button"
+    assert stub.header_probes >= 1, "still answering from a whole-tree fetch"
+    assert stub.source_calls == 1, (
+        f"{stub.source_calls} /source dumps; the entry read is the only one needed"
+    )
+
+
+def test_thread_header_probe_matches_what_thread_title_matches(monkeypatch):
+    # _thread_title reads collect_texts' `label or name or value`, so a
+    # label-only probe reads a name-only header as GONE — and unlike the poll
+    # it replaced, a miss here returns True on the FIRST turn with no waiting
+    # at all. That is the 2026-08-09 trap the wait exists for: a second tap
+    # issued mid-animation lands on the list's profile button.
+    chain = helpers._THREAD_HEADER_CHAIN
+    assert 'label BEGINSWITH "Contact photo for "' in chain
+    assert 'name BEGINSWITH "Contact photo for "' in chain, (
+        "a header whose text is in `name` reads as already gone"
+    )
+
+
+def test_class_chain_predicates_refuse_their_own_delimiters():
+    # A class chain delimits its predicate with BACKTICKS, so the old
+    # `'"' not in text` guard left the actual delimiter open: a backtick (or a
+    # backslash) in an agent-supplied string breaks out of the predicate and
+    # WDA rejects the whole chain, raising out of an MCP tool.
+    assert helpers._predicate_safe("Settings")
+    assert not helpers._predicate_safe('Ba"ck')
+    assert not helpers._predicate_safe("Ba`ck")
+    assert not helpers._predicate_safe("Ba\\ck")
+
+
+def test_find_on_home_screen_never_interpolates_a_backtick(monkeypatch):
+    # find_on_home_screen is a registered MCP tool, so the text is whatever an
+    # agent (or an injected instruction) hands it. The bare-type chain is the
+    # safe degradation and it already exists.
+    stub = _paging(monkeypatch, 1)
+    monkeypatch.setattr(helpers, "find_text", lambda *_a, **_k: [])
+    monkeypatch.setattr(helpers, "_window_size", lambda: (390.0, 844.0))
+
+    with pytest.raises(WDAError):
+        helpers.find_on_home_screen("Ba`ck", max_pages=1)
+
+    icons = [c for c in stub.chains if "Icon" in c]
+    assert icons, "no icon lookup was issued"
+    for chain in icons:
+        assert "`" not in chain.split("Icon", 1)[1], (
+            f"a backtick reached the predicate: {chain}"
+        )
+
+
+class BusyReader(SlowSpringboard):
+    """active_app() itself takes time — the wedging call WDA serves one at a
+    time. `cost` seconds of the fake clock per read."""
+
+    def __init__(self, clock, cost=0.2):
+        super().__init__(arrives_on=10_000)  # never
+        self.clock, self.cost = clock, cost
+
+    def active_app(self):
+        self.clock["t"] += self.cost
+        return super().active_app()
+
+
+def test_press_home_cannot_burst_requests_into_a_slow_wda(fake_clock, monkeypatch):
+    # The interval alone does not bound the loop: a warm active_app() turns
+    # 0.05s into a 40-request burst, and a SLOW one is worse, because
+    # active_app resolves the active application — one of the calls that can
+    # block with no upper bound in a wedging app, on the path the viewer's
+    # Home button drives. Resting at least as long as the read took caps the
+    # loop at half its time inside WDA.
+    stub = BusyReader(fake_clock, cost=0.2)
+    monkeypatch.setattr(helpers, "_client", stub)
+
+    helpers.press_home()
+
+    ceiling = helpers._HOME_DEADLINE / (2 * 0.2) + 2  # +2: the last read overruns
+    assert stub.checks <= ceiling, (
+        f"{stub.checks} reads in {helpers._HOME_DEADLINE}s at 0.2s each; "
+        f"a >=50% duty cycle allows at most {ceiling}"
+    )
+
+
+def test_goto_home_page_skips_the_verify_read_when_it_swiped_nothing(monkeypatch):
+    # Zero swipes means the phone never moved, so there is nothing to confirm.
+    # The re-read cost 0.37s of busy overlay on the viewer's commonest Home
+    # press. Every walk that DID swipe keeps its verify and its RuntimeError.
+    stub = _paging(monkeypatch, 1)
+
+    helpers.goto_home_page(1)
+
+    assert stub.swipes == []
+    assert stub.values == 1, f"{stub.values} page reads for a walk of zero swipes"
+    # The entry read's chain and nothing else. Without the early return the
+    # walk still runs with delta=0 and the value-predicate fast path answers
+    # before current_page(), so `swipes` and `values` alone stay green.
+    assert stub.chains == [helpers._PAGE_INDICATOR_CHAIN], (
+        f"a verify round trip ran for a walk that never moved: {stub.chains}"
+    )
+
+
+def test_goto_home_page_verifies_with_one_predicate_round_trip(monkeypatch):
+    # current_page() is find_first + element_value (0.37s); find_first alone on
+    # a comparable chain is 0.11s, so the second round trip is the larger half
+    # and `total` is already known from the entry read. A miss falls through to
+    # current_page(), which is why both RuntimeErrors below stay reachable.
+    stub = _paging(monkeypatch, 4)
+
+    helpers.goto_home_page(1)
+
+    assert stub.swipes == ["toward"] * 3
+    assert any('value == "Page 1 of 8"' in c for c in stub.chains), (
+        "the verify still re-read the indicator's value in a second round trip"
+    )
+    assert stub.values == 1, (
+        f"{stub.values} element_value reads; the entry one is enough"
+    )
+
+
+def test_goto_home_page_verify_still_arms_the_send_gate(monkeypatch):
+    # The fast path is still a screen read, and current_page() marks one. The
+    # taint is cleared after the LAST swipe, so only the verify itself can arm
+    # it — the entry current_page() marks one too, and asserting on that pins
+    # nothing about the predicate path.
+    trust.clear()
+    stub = _paging(monkeypatch, 4)
+    real_swipe = stub.swipe
+
+    def swipe(*args, **kwargs):
+        real_swipe(*args, **kwargs)
+        trust.clear()
+
+    stub.swipe = swipe
+
+    helpers.goto_home_page(1)
+
+    assert trust.tainted(), "the predicate verify read the screen without marking it"
+    assert trust.tainted()["source"] == "screen"
+
+
+def test_goto_home_page_swipes_inside_the_real_screen(monkeypatch):
+    # The walk swipes were hardcoded x=40 <-> x=400 while every other gesture
+    # derives from _window_size(). x=400 is off the right edge of a 390-393pt
+    # portrait iPhone, and a gesture that starts off-screen is swallowed in
+    # silence — which costs a full corrective pass.
+    stub = _paging(monkeypatch, 3)
+
+    helpers.goto_home_page(1)
+
+    w, h = stub.window_size()
+    assert stub.paths, "no swipe was issued"
+    for x1, y1, x2, y2 in stub.paths:
+        assert 0 <= x1 <= w and 0 <= x2 <= w, (
+            f"swipe {(x1, y1, x2, y2)} left the screen"
+        )
+        assert y1 == y2 == h / 2, f"swipe {(x1, y1, x2, y2)} is not at mid-height"
+
+
+def test_press_home_polls_fast_inside_a_wall_clock_ceiling(fake_clock, monkeypatch):
+    # A 0.25s interval on top of a ~102ms active_app() read is a ~352ms cycle
+    # against a recorded ~830ms arrival, so detection landed ~280ms late. The
+    # ceiling is wall clock now, so shortening the interval buys looks, not
+    # patience: still bounded, still never raises.
+    stub = SlowSpringboard(arrives_on=10_000)  # never
+    monkeypatch.setattr(helpers, "_client", stub)
+
+    helpers.press_home()  # returns, does not raise
+
+    assert stub.checks >= 20, (
+        f"looked {stub.checks} times in ~2s; a 0.05s interval should look far more"
+    )
+    assert helpers._HOME_POLL == 0.05
+    assert fake_clock["t"] <= helpers._HOME_DEADLINE + helpers._HOME_POLL, (
+        "the wall-clock ceiling moved when the interval did"
+    )
+
+
+def test_wait_stable_interval_defaults_to_one_round_trip():
+    # Two screenshots are a WDA round trip apart (~50-100ms, the docstring's
+    # own number), so 0.5s between compares was five intervals of nothing.
+    import inspect
+
+    default = inspect.signature(helpers.wait_stable).parameters["interval"].default
+    assert default == 0.15
+
+
+def test_enter_passcode_taps_with_a_short_hold(fast):
+    # The pad is static and each tap's 80ms contact is pure scripted wait, but
+    # a dropped pad tap burns an iOS lockout attempt — so this path names its
+    # hold explicitly instead of riding whatever the client defaults to.
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+
+    helpers.unlock()
+
+    assert stub.hold_ms == [80] * len(config.PHONE_PASSCODE), (
+        f"pad taps asked for hold_ms {stub.hold_ms}"
+    )

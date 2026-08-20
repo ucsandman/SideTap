@@ -5,6 +5,309 @@ entries only. Newest first.
 
 ---
 
+## 2026-08-20 — A latency pass: the time is on the phone, and most of what we could remove was reads and sleeps nobody needed
+
+**Symptom.** Three complaints, no error: swiping in the viewer is slow, the Home
+button is slow, and the whole thing does not feel real time. The phone was
+unreachable for the entire pass (WDA bring-up dies with XCTest error 103), so
+nothing below was measured live — every number is a previously recorded device
+figure or derived from one, and everything gesture-shaped ships behind a named
+constant with the safe value as its default.
+
+**What it was not: Python.** One viewer tap or swipe spends 3-5ms in Python plus
+loopback plus the go-ios usbmux forward, bounded above by the recorded 3.8ms
+`/status` round trip. That is ~1% of a tap and ~0.3% of a Home walk. A rewrite in
+Rust or Go replaces that stage and touches nothing else, and there is no other
+injection path on Windows: idb's companion is macOS-only, pymobiledevice3 has no
+touch or HID service, and go-ios's own DeviceKit runner still goes through
+testmanagerd. The rest is WDA HTTP dispatch, active-app resolution (72-102ms),
+XCTest event synthesis and the scripted finger path — none of it host-language
+work. Do not re-open the rewrite question without a new measurement.
+
+**What it actually was, in three groups.** (1) Reads that only ever answered a
+yes/no question pulled a whole `/source` — the Home Screen's worst case, 3.0-5.7s,
+554-610 nodes, 244 KB — once per page in `find_on_home_screen`, and once per poll
+turn in `_open_thread` and `_go_back`. (2) Dead wall clock: a 1.5s sleep after
+`send_message`'s Send tap that nothing reads past, a flat 0.5s before its Send
+scan, a 0.37s `goto_home_page` verify read after a walk that issued zero swipes,
+and a `press_home` detection cycle of ~352ms against a recorded ~830ms springboard
+arrival. (3) The viewer synthesising slow drags: a wheel notch was a fixed 0.25s
+drag, which carries no iOS inertia, so sustained wheeling bought distance the slow
+way and topped out near 0.64 screens/s, and the drag handler timed its gesture
+from pointerdown, so a press-hesitate-flick went out as a 0.4s or clamped 0.5s
+drag.
+
+**What changed.** Bounded `find_first` probes now gate the tree reads in
+`find_on_home_screen`, `_open_thread` and `_go_back`, and the full `/source` runs
+only on a hit; `goto_home_page`'s verify is one value predicate with the old
+`current_page()` as its fallback, and it returns before the walk loop when it is
+already on page n. `press_home` polls at `_HOME_POLL` 0.05 inside a
+`_HOME_DEADLINE` 2.8s wall clock, resting at least as long as the last
+`active_app()` read took so the shorter interval cannot burst 40 requests into
+WDA's one-at-a-time queue. `send_message` lost the trailing 1.5s and the flat
+0.5s. `wait_stable`'s interval is `_STABLE_INTERVAL` 0.15. `_create_session` now
+applies `maxTypingFrequency` and the MJPEG keys, `WDAClient.tap` takes a
+`hold_ms`, the viewer's four human gesture endpoints run at
+`waitForIdleTimeout=0` through `_human_gesture()`, the viewer's window-size memo
+dropped its vestigial session key, and `Handler` speaks HTTP/1.1 with keep-alive.
+Two safety notes that came out of it and are load-bearing: keep-alive makes an
+unread request body the next request on the wire, so every guard that answers
+without reading a body now closes the connection and a `Transfer-Encoding`
+request is refused outright (a cross-origin page could otherwise smuggle a
+Host-correct `POST /api/tap` past the origin guard, and a test asserts nothing but
+EOF follows the 403); and every interpolated class-chain predicate goes through
+`_predicate_safe()`, because a chain delimits its predicate with BACKTICKS and the
+old `'"' not in text` guard left the actual delimiter open to agent-supplied text
+in two registered MCP tools.
+
+**A probe is an optimisation, never the decision.** `_open_thread`'s probe is not
+a superset of the Python matcher it gates — `_conversation_cells` reads
+`label or name or value` and `_title_matches` accepts containment BOTH ways (a
+cell labelled "Wes" verifies the contact "Wes Sander"), which no one-directional
+CONTAINS predicate expresses. So it gates only the first `_SEARCH_PROBE_SECONDS`
+(10s) of the 20s deadline; past that the loop is the plain tree poll it always
+was, and a predicate that can never match costs cheap probes instead of a hard
+failure. `_SEARCH_POLL` also stayed at 0.5s: the "Messages with: <name>" filter
+row is itself a Cell carrying the contact's name, so the probe answers yes while
+the real row is still landing, and at 0.25s that path paid 6 `/source` dumps
+against the old loop's 4.
+
+**Pass 2 (same day): the watchdog was pressing Home on a phone that was merely
+busy, and the sleeps pass 1 left behind.** The live find first. With the phone
+back, `.state/agent_activity.log` showed "recovered a wedged link (pressed Home)"
+every ~70s for over ten minutes, while `/status` answered in 49ms and
+`/screenshot` in 218ms whenever they were probed by hand in between. Nothing was
+wedged: another process was driving the phone hard (the old
+`find_on_home_screen`, a 3.0-5.7s `/source` per page, back to back), and the
+watchdog's evidence is three timeouts of a `WDAClient(timeout=3)` probe over 45s,
+which a deep serial queue produces just as reliably as a wedge does. The
+difference is that a wedge means NO request lands for ANYONE, and every landed
+action POST already appends to the shared feed from every process
+(`wda_client._append_activity`), so `_actions_landing()` now stats that file and
+an mtime inside one poll resets `down_since` exactly like an answered probe. It
+is a stat and not a probe on purpose: a WDA call aimed at a link suspected of
+being wedged queues behind the very hang it is trying to detect. The window is
+ONE POLL (`_HEAL_POLL`, 20s) and not the 45s silence floor — stacking the two
+windows doubled time-to-recovery on a real wedge (~120s against ~80s) while the
+viewer is dark — and `_should_heal` is untouched, so staleness alone still heals
+nothing. Tests pin `viewer.activity_file` to a path of their own; against the
+repo's real feed, which any local phone session touches, every healing test
+passes by doing nothing.
+
+The rest of pass 2 is the sleeps and reads pass 1 listed and did not take.
+`set_field_text`'s 0.4s and `_open_thread`'s 0.8s "keyboard slide-up" are now
+`_await_keyboard(cap)`: one bounded `**/XCUIElementTypeKeyboard` probe on a
+`_KEYBOARD_POLL` 0.1 throttle, capped at that caller's own old sleep, so the
+worst case is byte-identical to the sleep it replaces. The cap bounds the PROBES,
+not just the rests between them — the only class chain timed on this device costs
+328ms, so a probe started with less cap left than that runs past the sleep it
+replaced; the loop sleeps out the remainder instead, and a probe that raises
+`WDAError` pays out the REST of the cap rather than typing into a keyboard that
+may not be up (dropped first keys is the recorded failure, and it is not being
+re-run). `wait_for_text` and `wait_for_app` keep their `interval` parameter (both
+are registered MCP tools) but default to `_TEXT_POLL` 0.25 and `_APP_POLL` 0.1
+and rest `max(interval, last read)` clamped to the deadline, so `timeout` bounds
+them at one read of overshoot instead of two. `/api/type` moved into
+`_human_gesture` — `flushKeys` and the paste box are the viewer's real keystroke
+path, nothing reads the tree after them, and every batch of typed characters was
+paying WDA_IDLE_WAIT=2. `Handler.timeout = 60` reaps the connection a keep-alive
+tab leaves parked in `rfile.readline()` (socket read timeout only; a test proves
+a 2s handler survives a 1s timeout, rather than reasoning about it). The wheel's
+flick threshold became `WHEEL_FLICK_MIN_PT` (150). `_create_session`'s settings
+POST prints its swallowed `WDAError` to stderr — still best effort, but seven
+keys the live view and every gesture wait ride on should not miss in silence, and
+it is the line that will name an older WDA rejecting `accessibilityDeadline`.
+`VIEWER_PHONE_POLL_SECONDS` and `WDA_ACCESSIBILITY_DEADLINE` are in
+`.env.example` at last.
+
+One bug found by review inside pass 2 and worth its own line: the hand-written
+MCP wrapper `mcp_server.wait_for_text` passed `interval=0.5` positionally, so
+tuning the helper's default moved nothing an agent could see. A wrapper must
+never re-declare a helper's default; the guard is a test that walks every
+`mcp_server` function shadowing a helper name and compares the defaults of every
+shared parameter, so the next tuned default cannot be shadowed either.
+
+**What still needs a device measurement.** Nothing here was timed on hardware.
+The knobs, and the exact check each one wants (measurement plan, section 6 of the
+review: 10 samples per number, median and p95, and re-run the control after every
+config change — this codebase has killed three "obvious" theories that survived
+only until their control was re-run):
+
+- `viewer.html WHEEL_FLICK_SECONDS` (0.15, unmeasured) and `WHEEL_MAX_TRAVEL`
+  (0.45, the measured value, restored after 0.6 was found to put the swipe
+  endpoint at y=-84 off a 390x844 screen). On a long list, wheel one notch and one
+  hard spin at `seconds` 0.25, 0.18, 0.15, 0.12, 0.10, five times each. Record two
+  things: did the gesture land at all (screenshots before and after must differ),
+  and how far the content moved. Repeat on Safari and on the Home Screen — paging
+  is a different recogniser. Stop at the shortest duration that lands 5/5 on all
+  three surfaces, then back off one step. Same pass re-checks the drag handler's
+  `drag.moveT` change.
+- The three predicates, BEFORE benchmarking anything that rides on them.
+  `c.find_first('**/XCUIElementTypeIcon[`label CONTAINS[c] "Settings" OR name CONTAINS[c] "Settings"`]')`
+  must return an id on the page holding Settings and None on a page that does not;
+  same for the Cell predicate with a real contact name, the
+  `label BEGINSWITH "Contact photo for " OR name BEGINSWITH ...` button predicate
+  inside a thread, and the PageIndicator `value == "Page N of T"` verify. If any
+  returns None where it should match, only `_open_thread`'s probe gate keeps that
+  path alive and the rest are silently slower, not broken. Then
+  `bench("find_icon", lambda: helpers.find_on_home_screen("<icon on page 3>"))`
+  from page 1, before and after.
+- `WDA_TYPING_FREQ` (60, WDA's own default, a deliberate no-op today). Run
+  `helpers.set_field_text(field, "x" * 100)` five times each at 60, 80, 100, 120
+  in a scratch field, diff the read-back character for character, record the wall
+  clock. Stop at the highest rate with 5/5 exact read-backs — it fails quietly, as
+  refused sends, not as an error.
+- `WDA_TAP_HOLD_MS` (80, the shipped literal). 20 taps at 80 and 20 at 40 on a
+  dense screen (keyboard keys, small Settings rows), counting misses. Never on the
+  passcode pad — `_enter_passcode` pins its own 80 for that reason.
+- `helpers._STABLE_INTERVAL` (0.15, was 0.5). Time `scroll_until_found(...)` on a
+  long list at 0.5 and 0.15, five runs each, and confirm the same result is found.
+  Walk it back to 0.5 if a scroll starts stopping short.
+- The viewer idle wait (`_human_gesture`, `waitForIdleTimeout=0` on
+  `/api/tap`, `/api/swipe`, `/api/long_press`, `/api/key`). Interleaved A/B on one
+  screen, ten swipes at 2 and ten at 0, alternating, restoring in a finally. Then,
+  with 0 set, run `goto_home_page(4)` and `find_on_home_screen(...)` five times
+  each and count how often they need the corrective pass. That count is the whole
+  decision, and it is also the measure of the accepted cross-process exposure: an
+  MCP agent in another process is not held by `_ACTION_LOCK`.
+- `_HOME_DEADLINE` (2.8) and the duty-cycle floor: instrument the loop to print
+  the iteration and elapsed on return, from three apps, five times each. Confirm
+  the total stays inside the ceiling and that detection lands closer to 830ms.
+- `_SEND_SCAN_TRIES` / `_SEND_SCAN_INTERVAL` (2 / 0.5): after the Send tap, poll
+  `ocr()` for the Send button and record how long the toolbar takes to be ready.
+- `_SEARCH_POLL` / `_SEARCH_PROBE_SECONDS`, on a just-woken phone, which is what
+  the 20s deadline exists for.
+- `_tune_mjpeg` (T2-6): mint a fresh session with the viewer open and watch the
+  stream. Note whether the picture degrades in place, hiccups, or drops to the PNG
+  poll, and how long until `/api/status` retunes it. No user-facing claim about
+  this should be made before that.
+- Free, no code: turn on Reduce Motion (iOS Settings, Accessibility, Motion) and
+  re-time a page walk — the Home Screen page transition is part of what a swipe
+  round trip waits out.
+- Pass 2's knobs, all unmeasured. `**/XCUIElementTypeKeyboard` FIRST, like the
+  other three predicates: `c.find_first("**/XCUIElementTypeKeyboard")` must
+  return an id while the keyboard is up (Messages compose, Messages search) and
+  None with it down. A predicate that never matches is not a breakage here — the
+  cap makes `_await_keyboard` exactly the sleep it replaced — but it makes the
+  whole change a no-op, so confirm it rather than assume it. Then time
+  `set_field_text(field, "hi")` and `_open_thread` five times each with the
+  keyboard already up and with it down; `_KEYBOARD_POLL` (0.1) only matters if
+  the probe turns out cheaper than the 328ms class chain measured today.
+- `_TEXT_POLL` (0.25) and `_APP_POLL` (0.1): with the duty-cycle floor these
+  should not raise the request COUNT against a slow read, which is the thing to
+  check. Instrument `wait_for_text` on the Home Screen (a 3.0-5.7s `/source`)
+  and count polls per 10s timeout at 0.5 and at 0.25 — the two numbers should
+  match, because the floor, not the constant, is what bounds them there. Then
+  the same in-app, where the read is 0.22s and the shorter interval is the point.
+- `WHEEL_FLICK_MIN_PT` (150): same wheel pass as `WHEEL_FLICK_SECONDS` above,
+  one extra question — does a one-notch (sub-threshold) wheel still nudge a list
+  without overshooting, and is 150pt the right place for the boundary on a long
+  Settings list and in Safari.
+- `Handler.timeout` (60) needs no phone: it is a socket read timeout and the test
+  already proves it does not bound handler execution.
+
+**Left on the table** (noticed during the pass, deliberately not implemented):
+
+Pass 2 landed 1, 2, 5, 6, 7, 8, 10, 11 and 12; each item below is the pass-1
+record of why it was left, and the Pass 2 section above says what actually
+shipped. 9 (`unlock()`'s flat sleeps) stays open BY DESIGN — three entries in
+this file live on that path, a burned swipe costs a whole extra wake cycle, and
+the pad gets one attempt before an iOS lockout, so it is not tuned without the
+phone in hand. 3, 4, 13 and 14 are still open.
+
+1. src/phone_harness/config.py:75 and :80 — VIEWER_PHONE_POLL_SECONDS and
+   WDA_ACCESSIBILITY_DEADLINE are both operator-facing knobs with no entry in
+   .env.example (which stops at MJPEG_SCALE). WDA_ACCESSIBILITY_DEADLINE in
+   particular is the one bound on the TikTok wedge and the one an operator would
+   want to disable if a heavy app starts erroring instead of just being slow. Two
+   comment blocks and two blank keys. I did not add them: only WDA_TYPING_FREQ
+   traces to a finding in my brief.
+2. src/phone_harness/wda_client.py:_create_session — the settings POST is still
+   `except WDAError: pass`, and it now carries seven keys instead of three,
+   including the MJPEG values the viewer's live view depends on. A silent miss
+   there is now invisible in one more way than before (the report flags this under
+   T3-2 for animationCoolOffTimeout; it applies to the stream keys too). The cheap
+   version is not a read-back round trip but logging the swallowed exception, since
+   the whole point of the `pass` is that a mis-tuned session is slow, not broken.
+   Not implemented — it changes failure behaviour on the session path and is
+   outside my findings.
+3. src/phone_harness/wda_client.py:_append_activity — mkdir(exist_ok=True) runs on
+   every single action append even though _write_shared_session already made the
+   directory at session create. Microseconds, correctly listed as "already fine" in
+   the report's section 5. Listing it only so the next auditor does not re-derive
+   it.
+4. Not on the hot path but worth a line: tests/test_wda_client.py's `wda` fixture
+   resets six FakeWDA class attributes but not `last_settings` (pre-existing) and
+   now not `last_actions` (mine). Both are always written before they are read in
+   every test that uses them, but a future test that asserts "nothing was sent"
+   would inherit the previous test's value. The fixture is not in my findings so I
+   left the existing pattern alone rather than half-fixing it.
+5. helpers.py:946 — `_open_thread`'s `time.sleep(0.8)  # keyboard slide-up` after
+   tapping the Messages search field is the exact flat-sleep pattern T1-2 just
+   retired on the send path, and it runs on every viewer "Text someone", every
+   "Thread" click, every MCP send_message and every read_messages. A bounded probe
+   for the keyboard (e.g. `**/XCUIElementTypeKeyboard`) with a 0.1s throttle would
+   pay the real slide-up instead of the worst case. Needs the predicate verified on
+   device first, same caveat as T1-3/T1-4.
+6. helpers.py:510 — `set_field_text`'s
+   `time.sleep(0.4)  # keyboard slide-up, or the first keys are dropped` is the
+   same thing one layer down, and it runs on every send. Same fix shape, same
+   probe. The comment records a real failure (dropped first keys), so this one must
+   not be deleted, only made conditional on the keyboard actually being up.
+7. helpers.py:1165-1166 — `wait_for_text`'s `interval: float = 0.5` is the same
+   overshoot T2-3 just fixed in `wait_stable`, and it is worse: each poll calls
+   `_invalidate_tree()` and re-reads the WHOLE tree, so on a busy screen the
+   interval is dwarfed by the read and the 0.5s is pure tail. Cutting it needs a
+   judgement call about how hard to hammer /source, which is why I left it — but it
+   is a registered MCP tool, so an agent pays it directly.
+8. helpers.py:699 — `wait_for_app`'s `interval: float = 0.5` sits on top of a
+   ~76-102ms `active_app()` read, the same ratio T1-7 just fixed in `press_home`
+   (~352ms cycle against an ~830ms event). The same wall-clock-deadline shape
+   applies cleanly.
+9. helpers.py:1422 — another bare `time.sleep(0.4)` inside `unlock()`'s wake/swipe
+   sequence. Not touched because unlock's timing is the most incident-scarred path
+   in the file and the report did not cover it; worth a look with the phone
+   present, not without.
+10. src/phone_harness/viewer.py:718 (`/api/type`) — this is the viewer's real
+    keystroke path: viewer.html:1172 (flushKeys) and :1204/:1478 (paste box) all
+    POST /api/type, while /api/key only carries arrows and numpad specials. Nothing
+    reads the tree after it, so by T3-1's own criterion it belongs in
+    `_human_gesture` and is probably the single biggest remaining win of that
+    finding (every batch of typed characters pays WDA_IDLE_WAIT=2 today). Left
+    alone because the brief enumerated tap/swipe/long_press/key; one-word change if
+    the coordinator wants it, and test_human_gestures_run_with_the_idle_wait_off
+    extends by one tuple.
+11. src/phone_harness/viewer.html:1136 — the 150pt flick threshold is inline next
+    to WHEEL_FLICK_SECONDS. If the device check turns into real tuning it wants to
+    be a constant too; not done to keep the brief's "single named constant".
+12. src/phone_harness/viewer.py:401 (Handler) — with keep-alive, an idle connection
+    now holds its thread parked in rfile.readline forever. Browsers close their own
+    idle sockets so this is not a leak in practice, but `Handler.timeout = 60` would
+    reap pathological ones (BaseHTTPRequestHandler already turns a read timeout into
+    close_connection). Not added: no evidence it is needed, and it is a behaviour
+    change nobody asked for.
+13. src/phone_harness/viewer.py:479-500 (/api/status) — `_tune_mjpeg(self.client)`
+    still runs on every 5s poll and is the only thing that reapplies the MJPEG
+    settings after a remint, which is T2-6's territory (wda_client.py, not my file).
+    Nothing I changed makes it worse — orientation() still heals the session before
+    it — but T2-5's comment block and T2-6 describe the same coupling, so whoever
+    lands T2-6 should re-read that comment.
+14. Report correction worth recording: the report's T1-1 fix text says the drag
+    handler already ships `dist > 150 ? 0.12 : 0.25`. It does not — there is no 0.12
+    anywhere in viewer.html, and the drag handler's duration was a plain elapsed-time
+    clamp. Anyone re-reading the report will otherwise think 0.15 is a regression
+    from a proven 0.12; it is a fresh, unmeasured guess.
+
+**Do not re-propose** (measured dead or already correct, from the same review):
+`find_first` switching to POST /element; `waitForIdleTimeout=0` as a general lever
+or as a wedge cure; `snapshotMaxDepth`; `defaultActiveApplication` pinning;
+`enforceCustomSnapshots`; `shouldUseCompactResponses` (already YES);
+`activeAppDetectionPoint`; lowering MJPEG_FPS; merging the viewer's `_app_is_open`
+read into `press_home`'s loop; queueing or lengthening `_ACTION_LOCK`'s 409 drop;
+batching gestures into one pointer source.
+
+---
+
 ## 2026-08-17 — TikTok's feed wedges WDA outright, and every diagnostic blamed the signature (issue #2)
 
 **Symptom.** Reported by tqninh: `swipe(200, 700, 200, 250, 0.5)` works in Photos,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -398,6 +399,19 @@ class WDAClient:
             settings = {
                 "waitForIdleTimeout": config.WDA_IDLE_WAIT,
                 "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
+                # /wda/keys is one request from here and len(text)/rate seconds
+                # on the phone, so the rate is the whole cost of a long paste.
+                # Config default is WDA's own 60, i.e. a no-op until tuned.
+                "maxTypingFrequency": config.WDA_TYPING_FREQ,
+                # The stream settings ride with the session like the rest, and
+                # this never applied them: every mint (the 30s-idle remint,
+                # unlock, an eviction heal) dropped the live view to WDA's
+                # defaults until the viewer's next 5s /api/status tick called
+                # configure_mjpeg. That call stays, for a session this process
+                # ADOPTED rather than created.
+                "mjpegServerFramerate": config.MJPEG_FPS,
+                "mjpegServerScreenshotQuality": config.MJPEG_QUALITY,
+                "mjpegScalingFactor": config.MJPEG_SCALE,
             }
             if config.WDA_ACCESSIBILITY_DEADLINE > 0:
                 settings["accessibilityDeadline"] = config.WDA_ACCESSIBILITY_DEADLINE
@@ -406,8 +420,17 @@ class WDAClient:
                 f"/session/{sid}/appium/settings",
                 {"settings": settings},
             )
-        except WDAError:
-            pass  # a session on default waits is slow, not broken
+        except WDAError as exc:
+            # Still best effort — a session on default waits is slow, not
+            # broken. But these seven keys are the live view and every gesture
+            # wait, so a silent miss reads as "the viewer is laggy today" with
+            # nothing to grep. Not log_event: that feed is things that MOVED
+            # the phone, and this moved nothing.
+            print(
+                f"warning: WDA session settings not applied: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         return sid
 
     # ---- perception --------------------------------------------------------
@@ -532,12 +555,22 @@ class WDAClient:
             },
         )
 
-    def tap(self, x: float, y: float) -> None:
+    def tap(self, x: float, y: float, hold_ms: int | None = None) -> None:
+        """Tap at (x, y). hold_ms is the scripted finger contact; None means
+        config.WDA_TAP_HOLD_MS (80, the shipped value). The hold is pure wait,
+        but a contact that is too brief can be DROPPED and a missed tap is
+        worse than a slow one — so a caller that cannot afford a miss pins its
+        own value instead of riding a knob someone may tune down
+        (helpers._enter_passcode: a wrong pad tap burns an iOS lockout
+        attempt)."""
         self._pointer_actions(
             [
                 {"type": "pointerMove", "duration": 0, "x": x, "y": y},
                 {"type": "pointerDown", "button": 0},
-                {"type": "pause", "duration": 80},
+                {
+                    "type": "pause",
+                    "duration": config.WDA_TAP_HOLD_MS if hold_ms is None else hold_ms,
+                },
                 {"type": "pointerUp", "button": 0},
             ]
         )

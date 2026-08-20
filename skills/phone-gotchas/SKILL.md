@@ -196,7 +196,7 @@ Lead with 1. Only reach for mass drags after the user has been told the cost.
 | Element sits at y < ~120 | The nav bar overlaps it. Scroll it to mid-screen, then tap. |
 | `tap_text("X")` on a screen already titled X | It taps the **NavigationBar title**, not the row you meant, and you end up somewhere unrelated. Filter to a `Cell`/`Button` with `y > 160` before tapping. |
 | Target is below the fold | Use `scroll_until_found("X")` — one call, and it refuses to stop on a hit hiding under the nav bar. |
-| Looking for a Home Screen icon | Use `find_on_home_screen("X")` — a plain read only sees the current page. It walks to page 1 first, so it sees the pages behind you too; budget ~7s per page swept, plus the walk back. |
+| Looking for a Home Screen icon | Use `find_on_home_screen("X")` — a plain read only sees the current page. It walks to page 1 first, so it sees the pages behind you too. Each page costs a bounded icon lookup (~0.4s), not a full read — only the page that matches pays the ~3s tree read — so budget ~0.4s per page swept plus one read at the end, plus the walk back. |
 | `scroll(amount=N)` | N is a **fraction of screen height**, default 0.4. 0.7 overshoots most lists. |
 | Tapped the right label, wrong thing happened | Several elements share text. `find_text()` returns all; pick the `Cell` or `Button`, not the `StaticText` inside it. |
 | Searched an app for an action by remembered name | Names drift. "Add New Reminder" is really "New Reminder". Search a broad substring, read what comes back. |

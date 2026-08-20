@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import admin, approval, capture, config, device, syslog, trust
-from .wda_client import WDAClient, WDAError, stop_engaged, stop_file
+from .wda_client import WDAClient, WDAError, activity_file, stop_engaged, stop_file
 
 _HTML = Path(__file__).with_name("viewer.html")
 
@@ -65,6 +65,57 @@ def _action_slot():
         _ACTION_LOCK.release()
 
 
+@contextlib.contextmanager
+def _human_gesture(client):
+    """An _action_slot for a gesture NOBODY READS THE TREE AFTER.
+
+    WDA_IDLE_WAIT=2 is what makes a bare swipe ~0.7s instead of ~0.35s, and it
+    buys a settled accessibility tree that a human tap, swipe, long press or
+    keystroke never looks at — the human is watching the MJPEG stream, which
+    shows the settle happening. _enter_passcode already proved the win on the
+    static passcode pad: six taps went 4.94s -> 2.8s.
+
+    NOT for /api/home, /api/page, /api/text or /api/read-thread: their helpers
+    read the tree right after the gesture, and goto_home_page's "first read
+    after swipe() returns is correct 6/6" plus find_on_home_screen's per-page
+    read both ride on that settle, so a 0 there buys a corrective second pass
+    and ends up slower.
+
+    The setting rides the SHARED WDA session, so it is restored in a finally,
+    inside the _ACTION_LOCK so no other viewer gesture sees the window. An MCP
+    agent in ANOTHER PROCESS is not held by that lock, and this is the one bet
+    here that is not free: a swipe of its own landing inside this window
+    returns before the app settles, and goto_home_page gets exactly ONE
+    corrective pass before it raises. The window is a few hundred ms per human
+    gesture and a human driving the viewer is not usually racing an agent, so
+    the exposure is accepted rather than engineered away — but it is real, and
+    it is why nothing whose helpers read the tree is routed through here.
+
+    A settings POST that fails is never allowed to swallow the gesture: the
+    gesture is what the human asked for, and its own errors surface as today.
+    A failed set is also not restored — nothing was changed, and on a WEDGED
+    link (WDA accepts and never answers) each of these calls costs the client's
+    full 10s timeout inside the lock, where every other gesture is 409-dropped.
+    If the POST landed anyway and the answer was merely lost, the gesture's own
+    timeout marks the session for replacement and the fresh one is created with
+    config.WDA_IDLE_WAIT.
+    """
+    with _action_slot():
+        try:
+            client.set_wait_for_idle(0)
+            armed = True
+        except WDAError:
+            armed = False
+        try:
+            yield
+        finally:
+            if armed:
+                try:
+                    client.set_wait_for_idle(config.WDA_IDLE_WAIT)
+                except WDAError:
+                    pass
+
+
 # Last good /api/status payload. Served while a gesture holds _ACTION_LOCK so
 # the browser's poll doesn't queue requests inside WDA mid-sequence (unlock is
 # timing-sensitive: added latency lets the lock screen fall back asleep).
@@ -99,6 +150,36 @@ _HEAL_COOLDOWN = 300.0  # after a failed up(): don't thrash a broken link
 # backgrounding the app cleared it), so waiting for sustained silence costs the
 # case this exists for nothing and protects every slow-but-live call.
 _HEAL_MIN_SILENCE = 45.0
+
+
+def _actions_landing() -> bool:
+    """Did ANY process land an action since about the last watchdog poll?
+
+    A wedge means no request lands, for anybody. Three 3s probe timeouts over
+    45s prove only that the serial queue is deep — and it was, live on
+    2026-08-20: another process was running the old find_on_home_screen (a
+    3-5.7s /source per page, back to back), so the watchdog read a BUSY WDA as
+    a wedged one and pressed Home on the phone every ~70s for ten minutes,
+    while /status answered in 49ms and /screenshot in 218ms whenever it was
+    probed by hand in between. Moving someone's phone while another process is
+    driving it is the harness acting behind their back.
+
+    Every successful action POST appends to the shared feed from every process
+    (wda_client._append_activity), so its mtime is proof a request got through.
+    A pure stat: the watchdog must never add a WDA call to a link it suspects
+    of being wedged, since that call would queue behind the same hang.
+
+    The window is ONE POLL, not the 45s silence floor: this evidence sits
+    beside a probe that is refreshed every poll, and stacking the two windows
+    would double the time to recover a real wedge (~120s against ~80s) while
+    the viewer is dark. Staleness alone still heals nothing — _should_heal
+    wants 45s of CONTINUOUS silence, so a borderline-stale feed only costs a
+    down_since that the next landed action clears.
+    """
+    try:
+        return time.time() - activity_file().stat().st_mtime < _HEAL_POLL
+    except OSError:
+        return False  # no feed yet: no evidence either way, judge on silence
 
 
 def _should_heal(
@@ -142,15 +223,18 @@ def _heal_loop() -> None:
         time.sleep(_HEAL_POLL)
         try:
             now = time.monotonic()
-            up = probe.is_up()
-            if up:
+            # A landed action from ANY process is the same evidence as an
+            # answered probe: the link is busy, not wedged (see
+            # _actions_landing). It resets the clock for exactly that reason.
+            answering = probe.is_up() or _actions_landing()
+            if answering:
                 _HEAL["down_since"] = 0.0
             elif not _HEAL["down_since"]:
                 _HEAL["down_since"] = now
-            down_for = 0.0 if up else now - _HEAL["down_since"]
+            down_for = 0.0 if answering else now - _HEAL["down_since"]
             if _should_heal(
                 now,
-                wda_up=up,
+                wda_up=answering,
                 lockdown_ok=device.lockdown_ready(),
                 stopped=stop_engaged(),
                 down_for=down_for,
@@ -231,11 +315,14 @@ def _png_size(png: bytes) -> tuple[int, int]:
 _TUNED_SESSION: str | None = None
 
 # window_size() is a device constant (201ms, never changes for a given screen)
-# but its HTTP round trip also heals client.session_id on eviction, which is
-# exactly what _tune_mjpeg checks right after — so this is keyed on session id,
-# same as _TUNED_SESSION above, not cached forever. A genuine session change
-# still pays the round trip once.
-_WINDOW_SESSION: str | None = None
+# and ROTATION is the only thing that changes it, so orientation is the only
+# key. It used to carry a session id too, on the reasoning that the round trip
+# heals client.session_id on eviction for the _tune_mjpeg check right after —
+# but the orientation() call above the guard is a session request and does that
+# for 7.7ms. Meanwhile the session id changes on every 30s-idle remint and
+# every unlock(), so keying on it paid the full 201ms for a size that cannot
+# have changed, with no _ACTION_LOCK held, microseconds before the user's next
+# tap. Leave _TUNED_SESSION alone: MJPEG settings genuinely ride the session.
 _WINDOW_SIZE: tuple[float, float] | None = None
 _WINDOW_ORIENT: str | None = None
 
@@ -398,6 +485,27 @@ def _parse_console(line: str) -> tuple[str, list, dict]:
 class Handler(BaseHTTPRequestHandler):
     client = WDAClient(timeout=10)
 
+    # HTTP/1.0 reconnected for every /api/* call. Replicated with a copy of
+    # this handler, 300 requests each: 0.54-0.60ms median against 0.12-0.29ms
+    # keep-alive. Keep-alive needs an accurate Content-Length on EVERY response
+    # or the browser hangs waiting for a body that already ended: _send is the
+    # only wfile.write in the file and always sets it, and BaseHTTPRequestHandler's
+    # own send_error does too — anything new that writes the socket directly
+    # must. It also makes an UNREAD request body the next request on the wire,
+    # so the two guards at the top of do_POST close the connection instead of
+    # leaving a smuggled, Host-correct POST /api/tap sitting in the buffer.
+    # The MJPEG stream never passes through here (browser goes straight to :9100).
+    protocol_version = "HTTP/1.1"  # noqa: vulture  (BaseHTTPRequestHandler reads it)
+    disable_nagle_algorithm = True  # noqa: vulture  (BaseHTTPRequestHandler reads it)
+    # ...and the price of keep-alive: a tab that goes away (closed, slept,
+    # crashed) leaves a ThreadingHTTPServer thread blocked in rfile.readline()
+    # with no deadline, one per connection, for the life of the process. This
+    # is the SOCKET READ timeout, which BaseHTTPRequestHandler turns into
+    # close_connection — it does NOT bound handler execution, so /api/unlock
+    # (up to ~45s on its 45s client) and /api/read-thread (10-20s) are
+    # untouched; a test pins that rather than reasoning about it.
+    timeout = 60  # noqa: vulture  (socketserver reads it in setup())
+
     def log_message(self, *args):  # keep the terminal quiet  # noqa: vulture
         pass
 
@@ -405,6 +513,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:  # a guard that answered without reading the body
+            self.send_header("Connection", "close")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
@@ -435,6 +545,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: vulture
         if not self._allowed():
+            self.close_connection = True  # same reasoning as do_POST's guards
             self._json({"error": "forbidden"}, 403)
             return
         path = self.path.split("?")[0]
@@ -465,7 +576,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({**_LAST_STATUS, **fresh})
                     return
                 try:
-                    global _WINDOW_SESSION, _WINDOW_SIZE, _WINDOW_ORIENT
+                    global _WINDOW_SIZE, _WINDOW_ORIENT
                     # window_size() is 201ms and answers a value that only a
                     # rotation changes, so it is memoised — but it was also the
                     # ONLY WDA request this endpoint made, and "input": True
@@ -483,18 +594,11 @@ class Handler(BaseHTTPRequestHandler):
                     # _tune_mjpeg still sees the change, and it doubles as the
                     # rotation guard the memo needs.
                     orient = self.client.orientation()
-                    sid = self.client.session_id
-                    if (
-                        sid
-                        and sid == _WINDOW_SESSION
-                        and _WINDOW_SIZE is not None
-                        and orient == _WINDOW_ORIENT
-                    ):
+                    if _WINDOW_SIZE is not None and orient == _WINDOW_ORIENT:
                         w, h = _WINDOW_SIZE
                     else:
                         w, h = self.client.window_size()
-                        _WINDOW_SESSION, _WINDOW_SIZE = sid, (w, h)
-                        _WINDOW_ORIENT = orient
+                        _WINDOW_SIZE, _WINDOW_ORIENT = (w, h), orient
                     _tune_mjpeg(self.client)
                     _LAST_STATUS = {
                         "window": {"width": w, "height": h},
@@ -637,10 +741,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, 500)
 
     def do_POST(self):  # noqa: vulture
+        # Both guards answer WITHOUT reading the body, so the connection must
+        # not be reused: under keep-alive the unread body IS the next request.
         if not self._allowed():
+            self.close_connection = True
             self._json({"error": "forbidden"}, 403)
             return
         if not self.headers.get("Content-Type", "").startswith("application/json"):
+            self.close_connection = True
+            self._json({"error": "forbidden"}, 403)
+            return
+        if self.headers.get("Transfer-Encoding"):
+            # A chunked body has no Content-Length, so the read below skips it
+            # and leaves it on the wire to be parsed as the NEXT request. No
+            # viewer request is ever chunked; refuse and close.
+            self.close_connection = True
             self._json({"error": "forbidden"}, 403)
             return
         path = self.path.split("?")[0]
@@ -648,11 +763,11 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
         try:
             if path == "/api/tap":
-                with _action_slot():
+                with _human_gesture(self.client):
                     self.client.tap(float(payload["x"]), float(payload["y"]))
                 self._json({"ok": True})
             elif path == "/api/swipe":
-                with _action_slot():
+                with _human_gesture(self.client):
                     self.client.swipe(
                         float(payload["x1"]),
                         float(payload["y1"]),
@@ -662,11 +777,11 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 self._json({"ok": True})
             elif path == "/api/type":
-                with _action_slot():
+                with _human_gesture(self.client):
                     self.client.type_text(str(payload.get("text", "")))
                 self._json({"ok": True})
             elif path == "/api/key":
-                with _action_slot():
+                with _human_gesture(self.client):
                     self.client.key_press(str(payload["key"]))
                 self._json({"ok": True})
             elif path == "/api/clipboard":
@@ -680,7 +795,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)})
             elif path == "/api/long_press":
-                with _action_slot():
+                with _human_gesture(self.client):
                     self.client.long_press(
                         float(payload["x"]),
                         float(payload["y"]),

@@ -562,6 +562,73 @@ def test_unlock_gives_up_after_two_dark_swipes(fast):
     assert stub.typed == []
 
 
+def _lock_screen_tree():
+    """The lit-but-locked lock screen a priority notification produces
+    (device dump 2026-08-20): a CoverSheet window, no passcode pad yet."""
+    return {
+        "type": "Application",
+        "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+        "children": [
+            {
+                "type": "Window",
+                "name": "SBCoverSheetWindow",
+                "isVisible": "1",
+                "rect": {"x": 0, "y": 0, "width": 390, "height": 844},
+                "children": [
+                    {
+                        "type": "Other",
+                        "label": "Swipe up to unlock",
+                        "isVisible": "1",
+                        "rect": {"x": 100, "y": 780, "width": 190, "height": 20},
+                    },
+                    {
+                        "type": "Other",
+                        "label": "Locked",
+                        "isVisible": "1",
+                        "rect": {"x": 170, "y": 60, "width": 50, "height": 20},
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_on_lock_screen_detects_coversheet():
+    assert helpers._on_lock_screen(_lock_screen_tree())
+    assert not helpers._on_lock_screen(SAMPLE_TREE)
+    assert not helpers._on_lock_screen(_buttons_tree(list("1234567890")))
+
+
+def test_unlock_does_not_claim_success_on_a_lit_lock_screen(fast):
+    """A priority notification keeps the lock screen LIT while still locked, so
+    the "lit and no pad, must be awake+usable" shortcut used to return
+    {ok: true} over a phone still on its lock screen — Wes's "runs ~20s then
+    nothing happens" (2026-08-20). A lit CoverSheet is not an unlocked phone:
+    unlock() must NOT return success, and must raise if the pad never comes."""
+    stub = fast(StubPhone(_lock_screen_tree()))  # lit (default 200 KB frame)
+    with pytest.raises(WDAError, match="never appeared"):
+        helpers.unlock()
+    assert stub.swipes == 2  # bounded: tried the second wake+swipe, no loop
+    assert stub.typed == [] and stub.tapped == []
+
+
+def test_unlock_recovers_when_the_second_swipe_finally_raises_the_pad(fast):
+    """The pad is behind the notification and the second wake+swipe brings it
+    up: unlock() must NOT bail on the first lit-lock-screen read, but retry and
+    then enter the passcode."""
+
+    class NotifiedPhone(StubPhone):
+        def swipe(self, *args):
+            super().swipe(*args)
+            if self.swipes == 2:  # second swipe finally raises the pad
+                self.tree = _buttons_tree(list("1234567890"))
+
+    stub = fast(NotifiedPhone(_lock_screen_tree()))
+    helpers.unlock()
+    assert stub.swipes == 2
+    assert stub.tapped == list("246810")
+
+
 def test_unlock_reraises_unrelated_active_app_errors(fast):
     """Only the lit-lock-screen "insert nil object" crash means carry-on. Any
     OTHER WDAError from active_app() (timeout, dead session) leaves the

@@ -1388,6 +1388,30 @@ def _passcode_pad_visible(tree: dict) -> bool:
     return any("passcode" in e["text"].lower() for e in texts)
 
 
+def _on_lock_screen(tree: dict) -> bool:
+    """True when this tree is the (still-locked) lock screen — CoverSheet.
+
+    unlock()'s "lit and no pad, so it was just asleep and is now usable"
+    shortcut assumes a lit screen means unlocked. A PRIORITY NOTIFICATION
+    breaks that: it keeps the lock screen LIT while the phone stays locked,
+    so when the wake swipe fails to raise the pad (the ~16s wake-transition
+    hang, then the notification-lit screen never darkens to trigger the retry)
+    the shortcut returned {ok: true} over a phone still on its lock screen
+    ("runs ~20s then nothing happens"; Wes 2026-08-20). The lock screen's own
+    markers — SBCoverSheetWindow, "Swipe up to unlock", "Locked" — say which
+    lit screen this is (device dump 2026-08-20). Same lying-success class as
+    the dark-screen silent return fixed 2026-08-13, pointed at the lit case.
+    """
+    for e in collect_texts(tree):
+        t = e["text"]
+        if e["type"] == "Window" and "CoverSheet" in t:
+            return True
+        low = t.lower()
+        if "swipe up to unlock" in low or low == "locked":
+            return True
+    return False
+
+
 def _pad_digit_probe(pad_tree: dict) -> str:
     """Class chain matching one digit of the pad we are about to tap.
 
@@ -1588,8 +1612,10 @@ def unlock(c: WDAClient | None = None) -> None:
 
     wake_and_swipe()
     if not pad_appears(3.0):
-        if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
-            return  # lit and no pad: was just asleep, now awake+usable
+        if len(c.screenshot()) >= _LIT_SCREEN_BYTES and not _on_lock_screen(pad_tree):
+            return  # lit and no pad, not the lock screen: was just asleep,
+            # now awake+usable. A notification-lit lock screen fails this and
+            # falls through to a second wake+swipe instead of a false success.
         # Dark again: a slow swipe landed after the lock screen re-slept and
         # burned on a black screen. One more charge, then stop — endless
         # gesturing at a phone that will not show a pad helps nobody. But
@@ -1597,8 +1623,16 @@ def unlock(c: WDAClient | None = None) -> None:
         # {"ok": true} and the MCP tool say "unlocked" over a still-dark phone.
         wake_and_swipe()
         if not pad_appears(3.0):
-            if len(c.screenshot()) >= _LIT_SCREEN_BYTES:
-                return  # lit without a pad: awake and usable after all
+            if len(c.screenshot()) >= _LIT_SCREEN_BYTES and not _on_lock_screen(
+                pad_tree
+            ):
+                return  # lit without a pad, not the lock screen: awake+usable
+            if _on_lock_screen(pad_tree):
+                raise WDAError(
+                    "Woke the phone but the passcode pad never appeared — a "
+                    "lock-screen notification can hold the swipe. Swipe up on "
+                    "the phone to bring up the passcode, then try again."
+                )
             raise WDAError(
                 "Woke the phone twice but the screen stayed dark and no "
                 "passcode pad appeared. Wake it by hand (side button), then "

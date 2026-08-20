@@ -328,6 +328,17 @@ def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
     to find one. Icons inside folders are not visible to this.
     """
     w, h = _window_size()
+    # "Is the icon on THIS page" is a yes/no, and find_text() answered it with
+    # ocr() -> ui_tree() -> /source. The swipe invalidates the cache every
+    # turn, so every page paid the Home Screen's worst case (3.0-5.7s, 554-610
+    # nodes, 244 KB measured) against 0.37s for a bounded lookup. Probe first,
+    # dump the tree only on a hit. `name` is in the predicate because
+    # find_text matches label OR name OR value, and a label-only probe would
+    # silently skip a page it would have found. One bounded query returning
+    # one id, so the unbounded `**/*` incident does not apply here.
+    chain = "**/XCUIElementTypeIcon"
+    if _predicate_safe(text):
+        chain += f'[`label CONTAINS[c] "{text}" OR name CONTAINS[c] "{text}"`]'
     # Start at page 1 or the scan silently begins wherever you happen to be and
     # misses everything behind you. This used to be two press_home() calls on
     # the belief that a second press pages back — it does not, /wda/homescreen
@@ -335,9 +346,10 @@ def find_on_home_screen(text: str, max_pages: int = 15) -> dict:
     # Caught on device 2026-08-12: from page 2 the scan started on page 2.
     goto_home_page(1)
     for _ in range(max_pages):
-        for el in find_text(text):
-            if el.get("type") == "Icon":
-                return el
+        if client().find_first(chain):
+            for el in find_text(text):
+                if el.get("type") == "Icon":
+                    return el
         # No wait_stable() here (unlike scroll_until_found): WDA_IDLE_WAIT
         # already absorbs the swipe settle inside the /actions call itself
         # (same evidence that retired goto_home_page()'s old 0.55s
@@ -396,6 +408,20 @@ def get_clipboard() -> str:
 _BACKSPACE = chr(0xE003)
 
 
+def _predicate_safe(text: str) -> bool:
+    """Is `text` safe to interpolate into a class-chain predicate?
+
+    An iOS class chain delimits its predicate with BACKTICKS and its string
+    literals with double quotes, so a backtick, a double quote or a backslash
+    in the interpolated text closes the predicate early, WDA rejects the whole
+    malformed chain, and find_first raises straight out of an MCP tool. The
+    guard used to be `'"' not in text` alone, which left the backtick — the
+    actual delimiter — open. Every call site degrades to its bare type chain,
+    which is the safe answer, so False here is slower and never wrong.
+    """
+    return not any(ch in text for ch in '"`\\')
+
+
 def _field_element(field: dict) -> str | None:
     """Element id for the field the CALLER pointed at, or None.
 
@@ -416,7 +442,7 @@ def _field_element(field: dict) -> str | None:
     kind = "**/XCUIElementType" + str(field.get("type", ""))
     label = str(field.get("text", "")).strip()
     chains = [kind]
-    if label and '"' not in label:  # a quote would break out of the predicate
+    if label and _predicate_safe(label):
         chains.insert(0, f'{kind}[`label == "{label}"`]')
     for chain in chains:
         try:
@@ -476,6 +502,64 @@ def _clear_field(eid: str | None, field: dict | None = None) -> None:
         type_text(_BACKSPACE * (len(current) + 2))
 
 
+def _duty_rest(started: float, interval: float, deadline: float) -> float:
+    """Rest between two polls: never shorter than the read, never past `deadline`.
+
+    The floor keeps a shorter interval from bursting into WDA's one-at-a-time
+    queue on an expensive read; the deadline clamp keeps the rest from sleeping
+    straight through the timeout it is gated by and buying another whole read.
+    """
+    rest = max(interval, time.monotonic() - started)
+    return max(0.0, min(rest, deadline - time.monotonic()))
+
+
+_KEYBOARD_CHAIN = "**/XCUIElementTypeKeyboard"
+# needs device check: the throttle between probes, not a measured slide-up. The
+# slide-up itself is never guessed — each caller passes its own flat sleep as
+# the cap, so the worst case is byte-identical to the wait it replaces.
+_KEYBOARD_POLL = 0.1
+
+
+def _await_keyboard(cap: float) -> None:
+    """Wait for the keyboard to be up, at most `cap` — the sleep this replaces.
+
+    Typing before the keyboard has finished sliding up DROPS THE FIRST KEYS, so
+    the two flat sleeps that stood here were paying for the animation blind: a
+    fixed 0.4s/0.8s whether the keyboard was already up or still moving. The
+    wait is conditional on the keyboard now, never removed — a bounded probe
+    (one element id, not a /source) returns the moment it is there, the cap
+    keeps the worst case at today's sleep (it bounds the probes as well as the
+    rests: a probe is NOT free, and one started with less cap left than it
+    costs would run past the sleep it replaces), and a probe WDA refuses pays
+    out the rest of that sleep rather than typing into a keyboard that may not
+    be up.
+    """
+    c = client()
+    deadline = time.monotonic() + cap
+    cost = 0.0  # what the last probe took on the wire
+    while True:
+        left = deadline - time.monotonic()
+        # The cap bounds the PROBES too, not just the rests between them: a
+        # probe is not free (the only class chain measured on this device costs
+        # 328ms), so one started with less cap than that left runs past the
+        # sleep it replaces. Sleep out what is left instead — identical to the
+        # flat sleep, which is what the cap promises.
+        if left <= 0 or left < cost:
+            time.sleep(max(0.0, left))
+            return
+        started = time.monotonic()
+        try:
+            if c.find_first(_KEYBOARD_CHAIN):
+                return
+        except WDAError:  # no answer: pay out the old sleep, drop no keys
+            time.sleep(max(0.0, deadline - time.monotonic()))
+            return
+        cost = time.monotonic() - started
+        # Duty-cycle floor, like press_home's: a class-chain query resolves the
+        # active application, so never rest less than the probe itself cost.
+        time.sleep(_duty_rest(started, _KEYBOARD_POLL, deadline))
+
+
 def set_field_text(field: dict, text: str, verify: bool = True) -> str:
     """Replace `field`'s contents with `text`. Returns what actually landed.
 
@@ -495,7 +579,7 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
     a class chain and not from the coordinates that were just tapped.
     """
     tap(field["x"], field["y"])
-    time.sleep(0.4)  # keyboard slide-up, or the first keys are dropped
+    _await_keyboard(0.4)  # keyboard slide-up, or the first keys are dropped
     eid = _field_element(field)
     _clear_field(eid, field)
     type_text(text)  # /wda/keys goes to the real first responder, which is right
@@ -506,8 +590,15 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
 
 
 _SPRINGBOARD = "com.apple.springboard"
-_HOME_POLL = 0.25
-_HOME_ATTEMPTS = 8  # ~2s of polling; active_app() is an 80ms read
+_HOME_POLL = 0.05
+# Wall clock, not an attempt count: at a 0.25s interval on top of a ~102ms
+# active_app() read the cycle was ~352ms against a recorded ~830ms arrival, so
+# detection landed ~280ms late. Bounding the ceiling in seconds means a shorter
+# interval buys more looks, not less patience — and the ceiling is the old
+# loop's own effective one (8 reads at ~102ms plus 7 x 0.25s), so this is a
+# detection win with no patience given up on a path whose recorded failure was
+# returning EARLY.
+_HOME_DEADLINE = 2.8
 
 
 def press_home() -> None:
@@ -531,11 +622,20 @@ def press_home() -> None:
     _invalidate_tree()
     c = client()
     c.home()
-    for i in range(_HOME_ATTEMPTS):
+    deadline = time.monotonic() + _HOME_DEADLINE
+    while True:
+        started = time.monotonic()
         if c.active_app().get("bundleId") == _SPRINGBOARD:
             return
-        if i < _HOME_ATTEMPTS - 1:
-            time.sleep(_HOME_POLL)
+        if time.monotonic() >= deadline:
+            return
+        # Rest at least as long as the read took, so the loop can never spend
+        # more than half its time inside WDA. active_app() resolves the active
+        # application, one of the calls that can block with no upper bound in a
+        # wedging app, and this loop is what the viewer's Home button drives —
+        # a warm 10ms read would otherwise turn the interval into a 40-request
+        # burst into WDA's one-at-a-time queue.
+        time.sleep(max(_HOME_POLL, time.monotonic() - started))
 
 
 _PAGE_VALUE = re.compile(r"Page (\d+) of (\d+)")
@@ -613,13 +713,33 @@ def goto_home_page(n: int = 1) -> None:
             f"page {n} is not a Home Screen page (1..{page['total']}); "
             "Today View is 0 and the App Library is past the end"
         )
+    if page["index"] == n:
+        return  # zero swipes: the phone never moved, so there is nothing to
+        # verify, and the re-read cost 0.37s of viewer busy overlay on the
+        # commonest Home press of all. Every walk that DOES swipe keeps its
+        # verify and its RuntimeError.
+    # Derive the walk from the real screen. These were hardcoded x=40 <-> x=400
+    # while every other gesture goes through _window_size(), and 400 is off the
+    # right edge of a 390-393pt portrait iPhone — a gesture that starts
+    # off-screen is swallowed in silence and costs a full corrective pass.
+    w, h = _window_size()
     for _ in range(2):  # walk, verify, then one corrective pass
         delta = page["index"] - n
         for _ in range(abs(delta)):
             if delta > 0:
-                swipe(40, 500, 400, 500, 0.25)  # left->right: toward page 1
+                swipe(40, h / 2, w - 40, h / 2, 0.25)  # left->right: toward page 1
             else:
-                swipe(400, 500, 40, 500, 0.25)
+                swipe(w - 40, h / 2, 40, h / 2, 0.25)
+        # Verify in one round trip where it can: current_page() is find_first
+        # plus element_value (0.37s), and find_first alone on a comparable
+        # chain is 0.11s. `total` is already known from the entry read. A miss
+        # falls through to the full read, so both RuntimeErrors below stay
+        # exactly as reachable — an unparseable indicator must still fail loud.
+        if client().find_first(
+            f'{_PAGE_INDICATOR_CHAIN}[`value == "Page {n} of {page["total"]}"`]'
+        ):
+            trust.mark("screen", [])  # still a screen read; the send gate arms
+            return
         page = current_page()
         if page is None:
             raise RuntimeError("lost the PageIndicator mid-walk")
@@ -658,19 +778,34 @@ def current_app() -> dict:
     return client().active_app()
 
 
-def wait_for_app(bundle_id: str, timeout: float = 10.0, interval: float = 0.5) -> bool:
+# needs device check: a floor on the poll gap, over a 100-156ms active_app()
+# read (measured). 0.5s was three intervals of nothing per launch; the rest is
+# the read's own duration, so the loop still cannot outrun WDA (see press_home).
+_APP_POLL = 0.1
+
+
+def wait_for_app(
+    bundle_id: str, timeout: float = 10.0, interval: float = _APP_POLL
+) -> bool:
     """Poll until `bundle_id` is frontmost. True on success, False on timeout.
 
     Lets open_app() flows fail fast and loud instead of inferring foreground
     state from wait_stable() timing.
+
+    Rests at least as long as the last read took: active_app() resolves the
+    active application, one of the calls that can block with no upper bound in
+    a wedging app, so a shorter interval must buy looks and not a burst into
+    WDA's one-at-a-time queue. The rest is clamped to the deadline, so `timeout`
+    still bounds the call at one read of overshoot rather than two.
     """
     deadline = time.monotonic() + timeout
     while True:
+        started = time.monotonic()
         if current_app().get("bundleId") == bundle_id:
             return True
         if time.monotonic() >= deadline:
             return False
-        time.sleep(interval)
+        time.sleep(_duty_rest(started, interval, deadline))
 
 
 def open_app(name: str) -> None:
@@ -812,6 +947,31 @@ def _nav_back_button(tree: dict) -> dict | None:
     return min(candidates, key=lambda e: e["rect"]["x"]) if candidates else None
 
 
+# The thread header's own button, as _thread_title() identifies it. The list's
+# row photos match this too, which is why a hit only earns a full read: the
+# geometry test in _thread_title() is what actually separates them. `name` is
+# in the predicate for the same reason it is in find_on_home_screen's:
+# _thread_title reads collect_texts' `label or name or value`, so a label-only
+# probe reads a name-only header as GONE and _go_back returns without waiting
+# at all — which is the mid-animation second tap this loop exists to prevent.
+_THREAD_HEADER_CHAIN = (
+    "**/XCUIElementTypeButton["
+    '`label BEGINSWITH "Contact photo for " OR name BEGINSWITH "Contact photo for "`]'
+)
+_THREAD_POLL = 0.25  # a probe is cheap; do not spin on it
+# The search-result poll keeps the 0.5s it always had. Its turn can still cost
+# a whole /source — the "Messages with: <name>" filter row is itself a Cell
+# carrying the contact's name, so the probe answers yes while the real
+# conversation row is still landing — and at 0.25s that path paid MORE /source
+# dumps than the loop this replaced, on the just-woken phone the 20s deadline
+# exists for.
+_SEARCH_POLL = 0.5
+# How long the probe is allowed to gate the tree read. Half the deadline, so a
+# probe that structurally cannot match still leaves a full 10s of the patient
+# poll that worked before it.
+_SEARCH_PROBE_SECONDS = 10.0
+
+
 def _go_back() -> bool:
     """Tap the nav back button; wait until the thread header is gone.
 
@@ -830,8 +990,15 @@ def _go_back() -> bool:
         return False
     tap(back["x"], back["y"])
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and _thread_title(ui_tree()) is not None:
-        time.sleep(0.5)
+    # "Is the header gone yet" is a yes/no, and the usual answer is yes on the
+    # first look — which must not cost a whole-tree fetch (~3s on a busy
+    # screen). A bounded probe for the header button answers it; the full read
+    # runs only while the probe still sees one, so _thread_title() keeps the
+    # last word and the 5s deadline is unchanged.
+    while time.monotonic() < deadline and client().find_first(_THREAD_HEADER_CHAIN):
+        if _thread_title(ui_tree()) is None:
+            break
+        time.sleep(_THREAD_POLL)
         _invalidate_tree()
     return True
 
@@ -889,7 +1056,7 @@ def _open_thread(contact: str) -> str | None:
             "screen? Call ocr() to check."
         )
     tap(fields[0]["x"], fields[0]["y"])
-    time.sleep(0.8)  # keyboard slide-up
+    _await_keyboard(0.8)  # keyboard slide-up
     # Messages can resume mid-search with a stale query; clear it before typing.
     stale = [e for e in ocr() if e["type"] == "Button" and e["text"] == "Clear text"]
     if stale:
@@ -897,16 +1064,40 @@ def _open_thread(contact: str) -> str | None:
     type_text(contact)
 
     # Poll for result cells: the caret blink defeats wait_stable here. Be
-    # patient — /source takes ~3s on a busy screen, so a short window only
-    # fits 2 reads and a just-woken phone missed it (bit live 2026-08-10).
-    deadline = time.monotonic() + 20
-    while not _conversation_cells(ui_tree(), contact):
+    # patient — the 20s deadline is tuned against a just-woken phone that
+    # missed a shorter window (bit live 2026-08-10). The turn is a bounded
+    # probe first, not a whole-tree fetch: "has the search returned anything"
+    # is a yes/no, and /source takes ~3s on a busy screen. The tree is read
+    # only once the probe says yes, so _conversation_cells() still decides on
+    # exactly the input it always saw.
+    #
+    # The probe can only ever be an OPTIMISATION, never the decision: it is not
+    # a superset of _conversation_cells. That matches on `label or name or
+    # value` and accepts containment BOTH ways (`_title_matches` verifies a
+    # cell labelled "Wes" for the contact "Wes Sander"), and no one-directional
+    # CONTAINS predicate expresses that. So the probe gates only the first half
+    # of the deadline; past that the loop is the plain tree poll it always was,
+    # and a predicate that can never match costs some cheap probes instead of
+    # turning a patient 20s wait into a hard 20s failure.
+    needle = contact.strip()  # _title_matches strips both sides; match it
+    cells_chain = "**/XCUIElementTypeCell"
+    if _predicate_safe(needle):
+        cells_chain += (
+            f'[`label CONTAINS[c] "{needle}" OR name CONTAINS[c] "{needle}"`]'
+        )
+    start = time.monotonic()
+    deadline = start + 20
+    probe_until = start + _SEARCH_PROBE_SECONDS
+    while True:
+        if time.monotonic() >= probe_until or client().find_first(cells_chain):
+            if _conversation_cells(ui_tree(), contact):
+                break
         if time.monotonic() >= deadline:
             raise WDAError(
                 f"No conversation named {contact!r} in Messages search. "
                 "Check the name, or open the conversation by hand."
             )
-        time.sleep(0.5)
+        time.sleep(_SEARCH_POLL)
         _invalidate_tree()
 
     tried: set[str] = set()
@@ -1011,6 +1202,19 @@ _GATE_REFUSALS = {
     ),
 }
 
+# Send-button scan: one look straight away plus ONE retry. Bounded so a slow
+# toolbar cannot become a spurious "Send button not found" on text that typed
+# correctly, which is what the flat 0.5s sleep it replaced was insuring.
+#
+# One retry, not three: every re-scan drops the tree first, so each one is a
+# guaranteed-cold whole /source on an open Messages thread. Four of them is a
+# far worse miss path than the flat sleep, and the premise that the first look
+# usually hits is UNMEASURED — _field_value is a ~0.1s attribute read, so the
+# gap between typing and this scan is much smaller than the 0.5s it replaced.
+# At these values the worst case is the old wait plus exactly one extra read.
+_SEND_SCAN_TRIES = 2
+_SEND_SCAN_INTERVAL = 0.5
+
 
 def send_message(contact: str, text: str) -> dict:
     """Send a Message to a conversation: open Messages, open the thread, type, send.
@@ -1066,42 +1270,78 @@ def send_message(contact: str, text: str) -> dict:
                 f"Asked to send {text!r} but the field reads {landed!r}. "
                 "Clear the conversation's draft on the phone and try again."
             )
-        time.sleep(0.5)
-        sends = [
-            e
-            for e in ocr()
-            if e["type"] == "Button" and e["text"].strip().lower() == "send"
-        ]
+        # Look immediately, then retry in small steps: the toolbar is usually
+        # up by the time the read-back returned, and a flat 0.5s paid for the
+        # slow case on every send. The re-scan must drop the tree first —
+        # ocr() is cached ~2s, so it would otherwise answer three times from
+        # the one read that already missed the button.
+        for attempt in range(_SEND_SCAN_TRIES):
+            sends = [
+                e
+                for e in ocr()
+                if e["type"] == "Button" and e["text"].strip().lower() == "send"
+            ]
+            if sends:
+                break
+            if attempt < _SEND_SCAN_TRIES - 1:
+                time.sleep(_SEND_SCAN_INTERVAL)
+                _invalidate_tree()
         if not sends:
             raise WDAError("Send button not found — text may not have been typed.")
         _log_action(contact, title, text, sent=False)  # attempt, before the tap
         tap(sends[0]["x"], sends[0]["y"])
-        time.sleep(1.5)
+        # Nothing after this reads the screen, and the tap already blocked on
+        # waitForIdleTimeout inside /actions — the same argument that retired
+        # goto_home_page()'s _PAGE_SETTLE. The 1.5s that sat here was dead.
         _log_action(contact, title, landed, sent=True)  # confirmed
     return {"contact": contact, "resolved_title": title, "text": landed, "sent": True}
 
 
+# needs device check: a floor on the poll gap. Every turn here drops the cache
+# and re-reads the WHOLE tree, so the interval is pure tail on top of a read
+# that already costs 0.22s inside an app and 3.0-5.7s on the Home Screen — the
+# rest is the read's own duration, which is what actually paces this loop.
+_TEXT_POLL = 0.25
+
+
 def wait_for_text(
-    text: str, timeout: float = 10.0, interval: float = 0.5, exact: bool = False
+    text: str, timeout: float = 10.0, interval: float = _TEXT_POLL, exact: bool = False
 ) -> dict | None:
     """Poll until `text` appears on screen; returns the element or None.
 
     The complement of wait_stable(): that says the screen stopped moving, this
     says the thing you were waiting for actually showed up. The returned
     element carries x/y, so the caller can tap it without re-searching.
+
+    Rests at least as long as the last read took (press_home's duty cycle): a
+    tree read is the most expensive perception call there is, so a shorter
+    interval buys looks on a cheap screen and cannot burst on an expensive one.
+    The rest is clamped to the deadline, so `timeout` still bounds the call at
+    one read of overshoot rather than two.
     """
     deadline = time.monotonic() + timeout
     while True:
+        started = time.monotonic()
         hits = find_text(text, exact=exact)
         if hits:
             return hits[0]
         if time.monotonic() >= deadline:
             return None
-        time.sleep(interval)
+        time.sleep(_duty_rest(started, interval, deadline))
         _invalidate_tree()  # never poll the cached tree — read a fresh one
 
 
-def wait_stable(timeout: float = 10.0, interval: float = 0.5) -> bool:
+# Gap between two stability compares. One WDA round trip (~50-100ms) is how
+# far apart two screenshots have to be to differ mid-animation, which is a
+# LOWER bound on this, not proof that 0.15 is enough. needs device check: the
+# interval is only paid while the screen is genuinely still moving, and
+# scroll_until_found is the one caller where nothing else waits list momentum
+# out (WDA_ANIM_COOLOFF=0), so this is the one constant to walk back to the
+# 0.5 it shipped with if a scroll starts stopping short.
+_STABLE_INTERVAL = 0.15
+
+
+def wait_stable(timeout: float = 10.0, interval: float = _STABLE_INTERVAL) -> bool:
     """Wait until two consecutive screenshots are identical. True if stable.
 
     The first comparison happens IMMEDIATELY. Callers reach here straight after
@@ -1110,7 +1350,10 @@ def wait_stable(timeout: float = 10.0, interval: float = 0.5) -> bool:
     are asked. Sleeping before the first compare made that common case cost a
     guaranteed extra `interval`, up to 9 times per scroll_until_found and 17
     times per find_on_home_screen. Two screenshots are a WDA round trip apart
-    (~50-100ms), which is far enough to differ mid-animation.
+    (~50-100ms), which is far enough to differ mid-animation — and that same
+    number is why `interval` defaults to 0.15 and not the 0.5s it used to: the
+    interval is only paid while the screen is genuinely still moving, so
+    anything longer than one round trip is overshoot on the tail.
     """
     prev = capture.screenshot_png()
     deadline = time.time() + timeout
@@ -1221,7 +1464,11 @@ def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:
             try:
                 for ch in passcode:
                     x, y = centers[ch]
-                    c.tap(x, y)
+                    # Name the finger contact instead of riding the client's
+                    # default: a dropped pad tap burns an iOS lockout attempt,
+                    # so this path must not silently follow a shorter default
+                    # tuned for dense app screens.
+                    c.tap(x, y, hold_ms=80)
             finally:
                 try:
                     c.set_wait_for_idle(config.WDA_IDLE_WAIT)
@@ -1304,6 +1551,11 @@ def unlock(c: WDAClient | None = None) -> None:
         # On a locked phone the bottom-edge swipe summons the passcode pad;
         # on a merely-asleep phone it lands on the home screen. Higher swipe
         # starts scroll the lock-screen notification list instead.
+        # The flat sleeps in here stay flat ON PURPOSE — the one path in this
+        # file whose waits are not tuned down. Three ERRORS.md entries live on
+        # it (burned swipe on a re-slept screen, the ~16s poisoned-session
+        # hang, the notification that ate six typed digits) and nothing here
+        # can be re-measured without the phone in hand.
         c.press_button("home")  # wake the display
         time.sleep(0.5)
         c.swipe(w / 2, h * 0.98, w / 2, h * 0.30, 0.25)
@@ -1331,7 +1583,7 @@ def unlock(c: WDAClient | None = None) -> None:
                 # after a slow first read is still caught.
                 if i >= 1 and time.monotonic() - start > seconds:
                     return False
-                time.sleep(0.4)
+                time.sleep(0.4)  # flat by design too — see wake_and_swipe above
         return False
 
     wake_and_swipe()

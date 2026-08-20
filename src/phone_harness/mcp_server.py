@@ -90,7 +90,10 @@ def read_messages(contact: str, limit: int = 20) -> dict:
 
 
 def wait_for_text(
-    text: str, timeout: float = 10.0, interval: float = 0.5, exact: bool = False
+    text: str,
+    timeout: float = 10.0,
+    interval: float = helpers._TEXT_POLL,
+    exact: bool = False,
 ) -> dict:
     """Poll until `text` appears on screen; 'screen' is the element or null.
 

@@ -973,8 +973,12 @@ document.addEventListener('visibilitychange', () => {
     screen.src = '';
     streaming = false;
   } else {
-    // Instant restore, not a wait for the next poll tick.
-    loadStatus(); loadPhone(); poll();
+    // Instant restore, not a wait for the next poll tick. poll() waits for
+    // loadStatus (which never rejects) because it is async: run bare, it saw
+    // `streaming` still false and fetched a /api/screenshot still frame —
+    // 0.22s of WDA time, one request at a time — that startStream() was about
+    // to make pointless, in the instant the human is about to click.
+    loadStatus().finally(poll); loadPhone();
   }
 });
 
@@ -1072,7 +1076,14 @@ screen.addEventListener('pointerdown', (ev) => {
 screen.addEventListener('pointermove', (ev) => {
   if (!drag || drag.fired || !drag.timer) return;
   // Past the same 8px that already separates a tap from a swipe: it's a drag.
-  if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) >= 8) cancelHold();
+  // Stamp when the drag actually STARTS (this fires exactly once, the timer is
+  // gone after cancelHold): timing it from pointerdown counted the dwell too,
+  // so press-hesitate-flick went out as a 0.4s or clamped 0.5s drag with no
+  // inertia — and the 400ms long-press ring invites exactly that dwell.
+  if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) >= 8) {
+    drag.moveT = Date.now();
+    cancelHold();
+  }
 });
 
 screen.addEventListener('pointercancel', () => { cancelHold(); drag = null; });
@@ -1092,8 +1103,10 @@ screen.addEventListener('pointerup', async (ev) => {
     await postGesture('/api/tap', p, start.x - r.left, start.y - r.top);
   } else {
     const a = toPt(start.x, start.y, r), b = toPt(ev.clientX, ev.clientY, r);
-    // Cap at 0.5s: iOS pages the home screen only on quick flicks.
-    const seconds = Math.min(Math.max((Date.now() - start.t) / 1000, 0.1), 0.5);
+    // Cap at 0.5s: iOS pages the home screen only on quick flicks. Measured
+    // from the 8px crossing, falling back to the press for a drag so fast no
+    // pointermove landed in between.
+    const seconds = Math.min(Math.max((Date.now() - (start.moveT || start.t)) / 1000, 0.1), 0.5);
     await postGesture('/api/swipe', {x1:a.x, y1:a.y, x2:b.x, y2:b.y, seconds},
                       start.x - r.left, start.y - r.top);
   }
@@ -1102,6 +1115,24 @@ screen.addEventListener('pointerup', async (ev) => {
 // ---- mouse wheel over the phone scrolls the phone ---------------------------
 // Deltas accumulate while a swipe is in flight (one at a time, like flushKeys),
 // so fast wheeling becomes one bigger swipe instead of a queue of laggy ones.
+// A long slow drag buys distance the hard way and carries NO iOS inertia: at
+// 45% of a screen per ~0.7s round trip, sustained wheeling topped out near
+// 0.64 screens/s. Inertia scales with release speed, not drag length, so past
+// a real flick's worth of travel the same request goes further by ending
+// sooner. needs device check: a synthetic swipe that is too short or too fast
+// is swallowed in silence (see GESTURES — Back at 45%/0.25s did nothing while
+// 91%/0.6s worked every time), so this is one constant to walk back.
+// The travel cap is a fraction of the screen and the swipe is anchored at
+// mid-height, so anything past 0.5 puts the endpoint OFF the screen: at 0.6 on
+// a 390x844 phone a hard trackpad spin ended at y=-84. 0.45 is the measured
+// shipped value and leaves a 5% margin. Distance was never the lever anyway —
+// inertia scales with release SPEED, so WHEEL_FLICK_SECONDS is what buys the
+// travel.
+const WHEEL_MAX_TRAVEL = 0.45;  // needs device check
+const WHEEL_FLICK_SECONDS = 0.15;
+// Below this much travel the swipe stays a 0.25s drag: a short hop is meant to
+// nudge a list a little, and inertia there would overshoot what was asked for.
+const WHEEL_FLICK_MIN_PT = 150;  // needs device check
 let wheelAcc = 0;
 let wheelBusy = false;
 async function flushWheel() {
@@ -1110,10 +1141,12 @@ async function flushWheel() {
   wheelBusy = true;
   try {
     const cx = points.width / 2, cy = points.height / 2;
-    const dist = Math.min(Math.max(Math.abs(delta) * 0.7, 30), points.height * 0.45);
+    const dist = Math.min(Math.max(Math.abs(delta) * 0.7, 30),
+                          points.height * WHEEL_MAX_TRAVEL);
     const dy = delta > 0 ? -dist : dist;   // wheel down = content moves up
+    const seconds = dist > WHEEL_FLICK_MIN_PT ? WHEEL_FLICK_SECONDS : 0.25;
     await fetch('/api/swipe', {method:'POST', headers:JSON_HDR, body: JSON.stringify(
-      {x1: cx, y1: cy, x2: cx, y2: cy + dy, seconds: 0.25})});
+      {x1: cx, y1: cy, x2: cx, y2: cy + dy, seconds})});
   } finally {
     wheelBusy = false;
     if (wheelAcc) flushWheel();

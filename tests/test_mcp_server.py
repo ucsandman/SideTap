@@ -143,6 +143,27 @@ def test_reading_tool_schemas_still_match_the_helpers():
     )
 
 
+def test_wrapper_defaults_match_the_helpers_they_wrap():
+    """A hand-written wrapper re-declares the signature, so it SHADOWS a
+    default the helper tuned. wait_for_text sat at interval=0.5 here while the
+    helper moved to 0.25, and every agent call got the old number — invisible
+    to both test files, since each one only ever looks at its own module."""
+    import inspect
+
+    empty = inspect.Parameter.empty
+    for name, fn in vars(mcp_server).items():
+        helper = getattr(mcp_server.helpers, name, None)
+        if not inspect.isfunction(fn) or not inspect.isfunction(helper):
+            continue
+        wrapped = inspect.signature(fn).parameters
+        for pname, param in inspect.signature(helper).parameters.items():
+            if pname in wrapped and param.default is not empty:
+                assert wrapped[pname].default == param.default, (
+                    f"{name}({pname}=) is {wrapped[pname].default} here and "
+                    f"{param.default} in helpers"
+                )
+
+
 def test_screenshot_still_returns_an_image(monkeypatch):
     """Pixels cannot carry a JSON envelope; its framing is the tool description."""
     monkeypatch.setattr(mcp_server.helpers, "screenshot", lambda: b"\x89PNG")

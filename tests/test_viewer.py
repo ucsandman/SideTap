@@ -1,5 +1,6 @@
 """Viewer HTTP origin-guard tests. No phone; loopback only."""
 
+import os
 import sys
 import threading
 import time
@@ -19,6 +20,9 @@ class StubClient:
 
     def __init__(self):
         self.calls = []
+        # waitForIdleTimeout values in the order they were set. Kept off
+        # self.calls: tests index that list positionally.
+        self.idle_waits = []
 
     session_id = "stub-session"
     window = None  # set to (w, h) to make /api/status succeed
@@ -55,6 +59,9 @@ class StubClient:
 
     def key_press(self, key):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.calls.append(("key_press", key))
+
+    def set_wait_for_idle(self, seconds):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        self.idle_waits.append(seconds)
 
     def get_clipboard(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         return self.clipboard_content
@@ -122,11 +129,9 @@ def base_url():
     original_helpers_client = helpers._client
     helpers._client = stub
     helpers._invalidate_tree()
-    # window_size() is cached per session id (T2b); every test gets a fresh
-    # StubClient whose session_id defaults to the same "stub-session" string,
-    # so a stale cache from a previous test would otherwise be served here
-    # without ever calling window_size() again.
-    viewer._WINDOW_SESSION = None  # noqa: vulture  (viewer.py reads these)
+    # window_size() is cached per orientation; every test gets a fresh
+    # StubClient reporting the same PORTRAIT, so a stale cache from a previous
+    # test would otherwise be served here without ever calling window_size().
     viewer._WINDOW_SIZE = None  # noqa: vulture  (viewer.py reads these)
     viewer._WINDOW_ORIENT = None  # noqa: vulture  (viewer.py reads these)
     # helpers keeps its own size memo, on the same reasoning, and /api/home
@@ -140,7 +145,6 @@ def base_url():
         viewer.Handler.client = original
         helpers._client = original_helpers_client
         helpers._invalidate_tree()
-        viewer._WINDOW_SESSION = None  # noqa: vulture  (viewer.py reads these)
         viewer._WINDOW_SIZE = None  # noqa: vulture  (viewer.py reads these)
         viewer._WINDOW_ORIENT = None  # noqa: vulture  (viewer.py reads these)
         helpers._size_cache.update(
@@ -417,11 +421,18 @@ def test_tune_mjpeg_reapplies_on_new_session(monkeypatch):
     assert client.tuned == 2  # recreated session: re-applied
 
 
-def test_window_size_is_cached_per_session(base_url, monkeypatch):
+def test_window_size_is_cached_across_session_changes(base_url, monkeypatch):
     # window_size() is a 201ms device constant; /api/status polls every 5s and
-    # must not re-fetch it unless the session actually changed.
-    monkeypatch.setattr(viewer, "_WINDOW_SESSION", None)
+    # must not re-fetch it unless the SCREEN changed. The session id is not
+    # that signal: it changes on every 30s-idle remint and every unlock, so
+    # keying on it paid 201ms — unlocked, with no _ACTION_LOCK held, so it
+    # could start microseconds before the user's next tap — for a size that
+    # cannot have changed. Rotation is the only thing that changes it, and
+    # orientation() (7.7ms) already keys that AND does the two jobs the
+    # session key was added for: it heals an evicted session and it raises
+    # when WDA is gone.
     monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
+    monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
     client = viewer.Handler.client
     client.window = (390.0, 844.0)
     client.session_id = "s1"
@@ -434,7 +445,7 @@ def test_window_size_is_cached_per_session(base_url, monkeypatch):
 
     client.session_id = "s2"
     requests.get(base_url + "/api/status", timeout=5)
-    assert client.window_size_calls == 2  # session change forced a refetch
+    assert client.window_size_calls == 1  # a remint does not resize the screen
 
 
 def test_status_reports_input_down_after_wda_dies_behind_the_cache(
@@ -446,7 +457,6 @@ def test_status_reports_input_down_after_wda_dies_behind_the_cache(
     # link") and btn-fix while input is true — so the lie also removed the two
     # buttons that fix it. orientation() is the 7.7ms liveness probe that keeps
     # the cached path honest.
-    monkeypatch.setattr(viewer, "_WINDOW_SESSION", None)
     monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
     monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
     client = viewer.Handler.client
@@ -471,7 +481,6 @@ def test_status_reports_input_down_after_wda_dies_behind_the_cache(
 def test_status_refetches_the_window_after_a_rotation(base_url, monkeypatch):
     # /window/size reports the ACTIVE APPLICATION's frame, so width and height
     # swap on rotation and the session id cannot see it.
-    monkeypatch.setattr(viewer, "_WINDOW_SESSION", None)
     monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
     monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
     client = viewer.Handler.client
@@ -700,9 +709,18 @@ def test_should_heal_waits_for_sustained_silence(monkeypatch):
     assert heal(100.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=45.0)
 
 
-def _run_heal_loop(monkeypatch, *, answers, clock):
+def _run_heal_loop(monkeypatch, *, answers, clock, activity=None):
     """Drive _heal_loop over scripted (is_up, monotonic) values. Returns the
-    number of admin.up() calls; the loop ends when the fakes run out."""
+    number of admin.up() calls; the loop ends when the fakes run out.
+
+    `activity` is the shared action feed the loop stats. It defaults to a path
+    that does not exist: the repo's real .state/agent_activity.log is touched
+    by any local phone session, and a fresh one would silently turn every
+    healing test into a no-op.
+    """
+    monkeypatch.setattr(
+        viewer, "activity_file", lambda: Path(activity or "no-such-activity.log")
+    )
     monkeypatch.setitem(viewer._HEAL, "down_since", 0.0)
     monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
     monkeypatch.setattr(viewer.time, "sleep", lambda _s: None)
@@ -748,6 +766,10 @@ def test_heal_loop_heals_a_socket_that_accepts_and_never_answers(monkeypatch):
     monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
     monkeypatch.setattr(viewer, "_HEAL_POLL", 0.05)
     monkeypatch.setattr(viewer, "_HEAL_MIN_SILENCE", 1.0)
+    # Same reason as _run_heal_loop's default: the repo's real
+    # .state/agent_activity.log is touched by any local phone session, and a
+    # fresh one is now proof the link is busy rather than wedged.
+    monkeypatch.setattr(viewer, "activity_file", lambda: Path("no-such-activity.log"))
     # Bounded through the once-per-poll call, so a watchdog that never fires
     # FAILS here instead of hanging the suite (it hung for 240s when the gate
     # was broken on purpose to check that this test can fail at all). Counting
@@ -803,6 +825,73 @@ def test_heal_loop_clears_the_silence_clock_when_wda_answers(monkeypatch):
             clock=[100.0, 120.0, 160.0, 170.0],
         )
         == 0
+    )
+
+
+def test_heal_loop_leaves_a_phone_another_process_is_driving_alone(
+    monkeypatch, tmp_path
+):
+    # A wedge means NO request lands, for anyone. A 3s probe timing out three
+    # times over 45s only proves the serial queue is deep — and it was, live on
+    # 2026-08-20: another process was running the old find_on_home_screen (a
+    # 3-5.7s /source per page, back to back) while the watchdog pressed Home on
+    # the phone every ~70s for ten minutes, and WDA answered /status in 49ms
+    # whenever it was probed by hand in between. Every landed action POST
+    # appends to the shared feed from every process, so its mtime is proof a
+    # request got through. Pure stat, no WDA call.
+    feed = tmp_path / "agent_activity.log"
+    feed.write_text("2026-08-20 tap\n", encoding="utf-8")  # mtime = now
+    assert (
+        _run_heal_loop(
+            monkeypatch,
+            answers=[False, False],
+            clock=[100.0, 200.0, 201.0],
+            activity=feed,
+        )
+        == 0
+    )
+
+
+def test_heal_loop_still_heals_when_the_feed_is_stale(monkeypatch, tmp_path):
+    # The other half: a real wedge lands nothing, so the feed stops moving and
+    # the watchdog must behave exactly as it did before the guard.
+    feed = tmp_path / "agent_activity.log"
+    feed.write_text("2026-08-20 tap\n", encoding="utf-8")
+    old = time.time() - 10 * viewer._HEAL_MIN_SILENCE
+    os.utime(feed, (old, old))
+    assert (
+        _run_heal_loop(
+            monkeypatch,
+            answers=[False, False],
+            clock=[100.0, 200.0, 201.0],
+            activity=feed,
+        )
+        == 1
+    )
+
+
+def test_a_feed_older_than_one_poll_is_not_evidence_of_a_live_link(
+    monkeypatch, tmp_path
+):
+    # The feed answers "is the link answering RIGHT NOW", beside a probe that
+    # is refreshed every poll, so its evidence has to be as fresh as the
+    # probe's. Reusing the 45s silence floor as the staleness window stacked
+    # the two: a wedge whose last action landed at t=0 still read as answering
+    # at t=44, down_since only started after that, and the 45s floor then ran
+    # again from there — ~120s to press Home against ~80s before the guard, on
+    # a condition that never ends on its own.
+    feed = tmp_path / "agent_activity.log"
+    feed.write_text("2026-08-20 tap\n", encoding="utf-8")
+    old = time.time() - 1.5 * viewer._HEAL_POLL  # stale, but under the 45s floor
+    os.utime(feed, (old, old))
+    assert (
+        _run_heal_loop(
+            monkeypatch,
+            answers=[False, False],
+            clock=[100.0, 200.0, 201.0],
+            activity=feed,
+        )
+        == 1
     )
 
 
@@ -1461,3 +1550,342 @@ def test_fix_input_worker_never_stays_running_on_a_crash(monkeypatch):
     assert job["running"] is False
     assert job["ok"] is False
     assert "uncaught surprise" in job["message"]
+
+
+def test_wheel_scroll_flicks_instead_of_dragging():
+    # A synthetic drag carries no iOS inertia, so distance had to be bought the
+    # slow way: capped at 45% of a screen per ~0.7s round trip, sustained
+    # wheeling topped out near 0.64 screens/s. Inertia scales with release
+    # speed, so a shorter, faster gesture travels further than a longer one.
+    # The duration is a named constant because a too-short synthetic swipe is
+    # swallowed in silence and this one has not been checked on the device yet.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    block = re.search(r"async function flushWheel\(\) \{(.*?)\n\}", html, re.S)
+    assert block, "flushWheel changed shape — the wheel gesture lives inside it"
+    src = block.group(1)
+    assert "WHEEL_MAX_TRAVEL" in src, "the travel cap must be the named constant"
+    assert "WHEEL_FLICK_SECONDS" in src, "the flick duration must be the constant"
+    assert "seconds: 0.25}" not in src, "a fixed 0.25s drag is the slow gesture"
+    assert "WHEEL_FLICK_MIN_PT" in src, "the flick threshold must be the constant"
+    assert "dist > 150" not in src, "the threshold is a guess; it must be named"
+    assert "const WHEEL_FLICK_SECONDS = 0.15;" in html, (
+        "one named constant, so a device check that fails is a one-line revert"
+    )
+    assert "const WHEEL_FLICK_MIN_PT = 150;" in html, (
+        "the travel below which the wheel stays a drag is the third knob to walk back"
+    )
+    # The swipe is anchored at mid-height and ends at cy +/- dist, so a cap
+    # past 0.5 of a screen sends the endpoint OFF the phone: at 0.6 on a
+    # 390x844 device a hard trackpad spin ended at y=-84, and an off-screen
+    # gesture is swallowed in silence. Distance was never the lever anyway.
+    cap = re.search(r"const WHEEL_MAX_TRAVEL = ([\d.]+);", html)
+    assert cap, "the travel cap must be one named constant to walk back"
+    assert float(cap.group(1)) <= 0.5, (
+        f"a {cap.group(1)} cap puts the wheel swipe's endpoint off the screen"
+    )
+
+
+def test_drag_swipe_times_from_the_first_movement():
+    # `seconds` used to run from pointerdown, so press-hesitate-flick was sent
+    # as a 0.4s (or clamped 0.5s) drag with no inertia — and the 400ms
+    # long-press ring encourages exactly that deliberate press. The clock now
+    # starts where the drag does: the 8px crossing, which fires exactly once.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    move = re.search(r"screen\.addEventListener\('pointermove'.*?\n\}\);", html, re.S)
+    assert move, "the pointermove handler changed shape"
+    assert "drag.moveT = Date.now()" in move.group(0), (
+        "the drag clock must start at the 8px crossing"
+    )
+    assert ">= 8" in move.group(0), "the 8px tap/swipe threshold must not move"
+    up = re.search(r"screen\.addEventListener\('pointerup'.*?\n\}\);", html, re.S)
+    assert up, "the pointerup handler changed shape"
+    assert "start.moveT || start.t" in up.group(0), (
+        "the swipe duration must count from the first movement, not the press"
+    )
+    assert "0.1), 0.5)" in up.group(0), "the 0.1s floor and 0.5s cap stay"
+
+
+def test_visibility_restore_does_not_race_the_stream():
+    # loadStatus is async, so `loadStatus(); poll();` ran poll() while
+    # `streaming` was still false: it fetched a /api/screenshot still frame
+    # (0.22s of WDA time, one request at a time) that startStream() was about
+    # to make pointless — in the exact instant the human is about to click.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    assert "loadStatus().finally(poll); loadPhone();" in html, (
+        "the still-frame poll must wait for loadStatus to decide about the stream"
+    )
+    assert "loadStatus(); loadPhone(); poll();" not in html
+
+
+def _read_response(sock):
+    """Read one HTTP response off a live socket (status line, headers, body)."""
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            return buf, b""
+        buf += chunk
+    head, _, rest = buf.partition(b"\r\n\r\n")
+    length = 0
+    for line in head.split(b"\r\n")[1:]:
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":")[1])
+    while len(rest) < length:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        rest += chunk
+    return head, rest
+
+
+def test_keep_alive_serves_two_requests_on_one_connection(base_url):
+    # HTTP/1.0 made every /api/* call reconnect. Replicated locally over 300
+    # requests: 0.54-0.60ms median against 0.12-0.29ms on a kept-alive
+    # connection. Every response path already sets Content-Length, which is
+    # what HTTP/1.1 needs or the browser hangs waiting for a body that ended.
+    import socket
+
+    port = int(base_url.rsplit(":", 1)[1])
+    req = f"GET /api/stop HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(req)
+        head1, body1 = _read_response(s)
+        s.sendall(req)
+        head2, body2 = _read_response(s)
+    assert head1.startswith(b"HTTP/1.1 200"), head1
+    assert b'"stopped"' in body1
+    assert head2.startswith(b"HTTP/1.1 200"), (
+        f"the connection did not survive the first response: {head2!r}"
+    )
+    assert b'"stopped"' in body2
+
+
+def test_rejected_post_cannot_smuggle_a_second_request(base_url):
+    # Keep-alive turns an unread request body into the next request on the
+    # wire. The two guards at the top of do_POST answer 403 WITHOUT reading
+    # the body, so a cross-origin page could hide a well-formed, Host-correct
+    # POST /api/tap inside a text/plain body and drive the phone with it —
+    # the origin guard's whole job, undone by a transport change. Those paths
+    # close the connection instead, exactly as HTTP/1.0 did.
+    import socket
+
+    port = int(base_url.rsplit(":", 1)[1])
+    smuggled = (
+        f"POST /api/tap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        "Content-Type: application/json\r\nContent-Length: 15\r\n\r\n"
+        '{"x":10,"y":10}'
+    ).encode()
+    attack = (
+        f"POST /api/tap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        f"Content-Type: text/plain\r\nContent-Length: {len(smuggled)}\r\n\r\n"
+    ).encode() + smuggled
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(attack)
+        head, _body = _read_response(s)
+        rest = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+    assert head.startswith(b"HTTP/1.1 403"), head
+    assert rest == b"", f"the smuggled request was answered: {rest!r}"
+    assert not [c for c in viewer.Handler.client.calls if c[0] == "tap"]
+
+
+def test_an_idle_keepalive_connection_is_closed_instead_of_parking_a_thread(
+    base_url, monkeypatch
+):
+    # Keep-alive is what bought the 0.12-0.29ms round trip, but it also means a
+    # tab that goes away (closed, slept, crashed) leaves a ThreadingHTTPServer
+    # thread blocked in rfile.readline() with NO deadline. Handler.timeout is
+    # the socket read timeout, which BaseHTTPRequestHandler turns into
+    # close_connection, so the thread finishes instead of leaking.
+    import socket
+
+    assert viewer.Handler.timeout == 60, "the idle keep-alive reaper must ship"
+    # socketserver applies it in setup(), i.e. when the connection opens, so it
+    # is shortened before connecting — the 60s wait itself is not what is tested.
+    monkeypatch.setattr(viewer.Handler, "timeout", 0.5)
+    port = int(base_url.rsplit(":", 1)[1])
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(
+            f"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
+        )
+        head, _body = _read_response(s)
+        assert head.startswith(b"HTTP/1.1 200"), head
+        assert s.recv(4096) == b"", "the idle connection was parked forever"
+
+
+def test_a_slow_handler_is_not_cut_by_the_idle_timeout(base_url, monkeypatch):
+    # The timeout applies to SOCKET READS, not to handler execution — /api/unlock
+    # runs up to ~45s on a 45s client and /api/read-thread 10-20s, and cutting
+    # either would be a far worse bug than a leaked thread. Proven, not reasoned:
+    # a 2s handler under a 1s timeout still answers 200.
+    monkeypatch.setattr(viewer.Handler, "timeout", 1)
+    client = viewer.Handler.client
+    client.tap = lambda _x, _y: time.sleep(2)
+    try:
+        r = requests.post(base_url + "/api/tap", json={"x": 1, "y": 2}, timeout=10)
+    finally:
+        del client.tap
+    assert r.status_code == 200, r.status_code
+    assert r.json() == {"ok": True}
+
+
+def test_human_gestures_run_with_the_idle_wait_off(base_url):
+    # WDA_IDLE_WAIT=2 is what makes a bare swipe ~0.7s instead of ~0.35s, and
+    # it buys a settled tree nobody reads here: the human watches the MJPEG
+    # stream. _enter_passcode already proved the win (six pad taps 4.94s ->
+    # 2.8s). The setting rides the SHARED session, so it is restored in a
+    # finally, inside the same _ACTION_LOCK the gesture holds.
+    client = viewer.Handler.client
+    for path, payload in (
+        ("/api/tap", {"x": 10, "y": 20}),
+        ("/api/swipe", {"x1": 1, "y1": 2, "x2": 3, "y2": 4}),
+        ("/api/long_press", {"x": 10, "y": 20}),
+        ("/api/key", {"key": "a"}),
+        # The real keystroke path: flushKeys and the paste box both POST here,
+        # and nothing reads the tree after it. /api/text is NOT here — it runs
+        # send_message, which reads the field back before it taps Send.
+        ("/api/type", {"text": "hi"}),
+    ):
+        client.idle_waits = []
+        assert requests.post(base_url + path, json=payload, timeout=5).ok
+        assert client.idle_waits == [0, viewer.config.WDA_IDLE_WAIT], (
+            f"{path} must drop the idle wait and restore it: {client.idle_waits}"
+        )
+
+
+def test_tree_reading_endpoints_keep_the_idle_wait(base_url):
+    # NOT for anything whose helpers read the tree afterwards: goto_home_page's
+    # "first read after swipe() returns is correct 6/6" and
+    # find_on_home_screen's per-page read both depend on that settle, so a 0
+    # here pushes them into a corrective second pass and ends up slower.
+    client = viewer.Handler.client
+    client.idle_waits = []
+    assert requests.post(base_url + "/api/home", json={}, timeout=5).ok
+    assert client.idle_waits == []
+
+
+def test_gesture_survives_a_settings_call_that_fails(base_url):
+    # The idle wait is an optimisation; the gesture is what the human asked
+    # for. A settings POST that fails must not swallow the tap, and the
+    # gesture's own error must still surface the way it does today.
+    client = viewer.Handler.client
+
+    def boom(_seconds):
+        raise viewer.WDAError("settings refused")
+
+    client.set_wait_for_idle = boom
+    try:
+        assert requests.post(base_url + "/api/tap", json={"x": 5, "y": 6}, timeout=5).ok
+    finally:
+        del client.set_wait_for_idle
+    assert ("tap", 5.0, 6.0) in client.calls
+
+
+def test_a_failed_idle_wait_set_is_not_restored(base_url):
+    # Nothing was changed, so there is nothing to restore — and on a WEDGED
+    # link every one of these calls costs the client's full 10s timeout inside
+    # the _ACTION_LOCK, where every other gesture is 409-dropped. Three of them
+    # around one human tap is 30s of a dark viewer.
+    client = viewer.Handler.client
+    tries = []
+
+    def boom(seconds):
+        tries.append(seconds)
+        raise viewer.WDAError("WDA did not answer")
+
+    client.set_wait_for_idle = boom
+    try:
+        assert requests.post(base_url + "/api/tap", json={"x": 7, "y": 8}, timeout=5).ok
+    finally:
+        del client.set_wait_for_idle
+    assert tries == [0], f"the restore ran after the set failed: {tries}"
+
+
+def test_human_gesture_restores_the_idle_wait_when_the_gesture_raises(base_url):
+    # The setting rides the ONE shared WDA session across processes, so a
+    # gesture that raises inside the window would leave waitForIdleTimeout at 0
+    # for the MCP agent too, until the next viewer gesture happened to restore
+    # it. _enter_passcode has the same test for the same reason.
+    client = viewer.Handler.client
+    client.idle_waits = []
+
+    def boom(_x, _y):
+        raise RuntimeError("gesture blew up")
+
+    client.tap = boom
+    try:
+        r = requests.post(base_url + "/api/tap", json={"x": 1, "y": 2}, timeout=5)
+    finally:
+        del client.tap
+    assert r.status_code == 500, r.status_code
+    assert client.idle_waits == [0, viewer.config.WDA_IDLE_WAIT], (
+        f"the idle wait was left at 0 for every other process: {client.idle_waits}"
+    )
+
+
+def test_cross_origin_post_cannot_smuggle_a_second_request(base_url):
+    # The sibling test above trips the Content-Type guard. A REAL cross-origin
+    # fetch is well formed and is rejected by _allowed() instead, so that guard
+    # is the one that matters — and it answers without reading the body too.
+    import socket
+
+    port = int(base_url.rsplit(":", 1)[1])
+    smuggled = (
+        f"POST /api/tap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        "Content-Type: application/json\r\nContent-Length: 15\r\n\r\n"
+        '{"x":10,"y":10}'
+    ).encode()
+    attack = (
+        f"POST /api/tap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        "Origin: https://evil.example\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(smuggled)}\r\n\r\n"
+    ).encode() + smuggled
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(attack)
+        head, _body = _read_response(s)
+        rest = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+    assert head.startswith(b"HTTP/1.1 403"), head
+    assert rest == b"", f"the smuggled request was answered: {rest!r}"
+    assert not [c for c in viewer.Handler.client.calls if c[0] == "tap"]
+
+
+def test_a_chunked_post_cannot_smuggle_a_second_request(base_url):
+    # A chunked body carries no Content-Length, so the handler's read skips it
+    # and leaves it on the wire as the next request. Reproduced before the
+    # guard: a 500 with no Connection: close, immediately followed by
+    # "HTTP/1.1 400 Bad request syntax" — the leftover body, parsed.
+    import socket
+
+    port = int(base_url.rsplit(":", 1)[1])
+    attack = (
+        f"POST /api/tap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "f\r\n"
+        '{"x":10,"y":10}\r\n'
+        "0\r\n\r\n"
+    ).encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(attack)
+        head, _body = _read_response(s)
+        rest = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+    assert head.startswith(b"HTTP/1.1 403"), head
+    assert rest == b"", f"the leftover body was parsed as a request: {rest!r}"
+    assert not [c for c in viewer.Handler.client.calls if c[0] == "tap"]

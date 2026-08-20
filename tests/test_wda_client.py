@@ -31,6 +31,8 @@ class FakeWDA(BaseHTTPRequestHandler):
     kill_next_session = False
     session_counter = 0
     last_settings = None
+    last_actions = None  # the /actions payload, for gesture-shape assertions
+    fail_settings = False  # make the settings POST answer 500
     valid_sessions = set()
     infinity_sessions = set()  # sessions whose /actions fail with INFINITY
     hanging_sessions = set()  # sessions whose /actions hang past the timeout
@@ -74,6 +76,7 @@ class FakeWDA(BaseHTTPRequestHandler):
         elif self.path.endswith("/actions") or self.path.endswith("/wda/keys"):
             if self._session_dead():
                 return
+            FakeWDA.last_actions = self.payload
             sid = self.path.split("/")[2]
             if sid in FakeWDA.hanging_sessions:
                 # XCTest's snapshot timeout: the real one blocks ~16s before
@@ -102,6 +105,9 @@ class FakeWDA(BaseHTTPRequestHandler):
                 return
             self._reply(getattr(FakeWDA, "pasteboard", ""))
         elif self.path.endswith("/appium/settings"):
+            if FakeWDA.fail_settings:
+                self._reply({"error": "unknown error", "message": "no settings"}, 500)
+                return
             FakeWDA.last_settings = self.payload.get("settings")
             self._reply(None)
         elif self.path in ("/wda/homescreen", "/wda/lock"):
@@ -133,6 +139,12 @@ def wda(tmp_path, monkeypatch):
     FakeWDA.valid_sessions = set()
     FakeWDA.infinity_sessions = set()
     FakeWDA.hanging_sessions = set()
+    # Both of these are what a later "nothing was sent" assertion reads; left
+    # unreset they carry the previous test's payload into this one and the
+    # assertion passes on stale evidence.
+    FakeWDA.last_settings = None
+    FakeWDA.last_actions = None
+    FakeWDA.fail_settings = False
     client = WDAClient(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5)
     yield client
     server.shutdown()
@@ -468,10 +480,70 @@ def test_new_session_applies_standard_action_waits(wda):
         "waitForIdleTimeout": config.WDA_IDLE_WAIT,
         "animationCoolOffTimeout": config.WDA_ANIM_COOLOFF,
         "accessibilityDeadline": config.WDA_ACCESSIBILITY_DEADLINE,
+        "maxTypingFrequency": config.WDA_TYPING_FREQ,
+        "mjpegServerFramerate": config.MJPEG_FPS,
+        "mjpegServerScreenshotQuality": config.MJPEG_QUALITY,
+        "mjpegScalingFactor": config.MJPEG_SCALE,
     }
     assert config.WDA_IDLE_WAIT == 2.0
     assert config.WDA_ANIM_COOLOFF == 0.0
     assert config.WDA_ACCESSIBILITY_DEADLINE == 2.0
+
+
+def test_typing_frequency_default_matches_wda_own_default(wda):
+    # /wda/keys is ONE request from here; the phone spends len(text)/rate
+    # seconds synthesising the keystrokes, so the rate is the whole cost of a
+    # long paste. 60 is WDA's own default, so shipping it changes nothing until
+    # it is measured on device — raising it fails QUIETLY (iOS drops
+    # synthesised keystrokes above some device-specific rate, and
+    # set_field_text's read-back then makes send_message refuse the send).
+    assert config.WDA_TYPING_FREQ == 60
+    wda.window_size()  # creator applies the settings
+    assert FakeWDA.last_settings["maxTypingFrequency"] == 60
+
+
+def test_new_session_carries_the_mjpeg_stream_settings(wda):
+    # The MJPEG keys ride with the session like every other setting, and
+    # _create_session never applied them: every mint (the 30s-idle remint,
+    # unlock, an eviction heal) dropped the live view to WDA's defaults until
+    # the viewer's next 5s /api/status tick called configure_mjpeg. Minting is
+    # the common case, so the tuned values have to be there from the start.
+    wda.window_size()  # sess-1
+    FakeWDA.last_settings = None
+    wda.fresh_session()
+    assert FakeWDA.last_settings["mjpegServerFramerate"] == config.MJPEG_FPS
+    assert FakeWDA.last_settings["mjpegServerScreenshotQuality"] == config.MJPEG_QUALITY
+    assert FakeWDA.last_settings["mjpegScalingFactor"] == config.MJPEG_SCALE
+
+
+def test_tap_hold_comes_from_config_and_is_overridable(wda):
+    # The scripted finger contact is pure wait, ~20% of a bare tap budget, but
+    # a contact that is too brief can be DROPPED and a missed tap is worse than
+    # a slow one — so the constant became a knob rather than a smaller literal,
+    # and callers that cannot afford a miss (the passcode pad, where a wrong
+    # tap burns an iOS lockout attempt) pass their own value.
+    assert config.WDA_TAP_HOLD_MS == 80  # shipped value, unchanged until measured
+
+    def pause_ms():
+        steps = FakeWDA.last_actions["actions"][0]["actions"]
+        return [s["duration"] for s in steps if s["type"] == "pause"][0]
+
+    wda.tap(10, 20)
+    assert pause_ms() == config.WDA_TAP_HOLD_MS
+    wda.tap(10, 20, hold_ms=40)
+    assert pause_ms() == 40
+
+
+def test_settings_failure_is_swallowed_but_named(wda, capsys):
+    # A session on default waits is slow, not broken, so the POST stays best
+    # effort — but it now carries seven keys the live view and every gesture
+    # wait ride on, and a silent miss reads as "the viewer is laggy today"
+    # with nothing to grep for.
+    FakeWDA.fail_settings = True
+    assert wda.window_size() == (390.0, 844.0)  # the session still works
+    assert FakeWDA.last_settings is None
+    err = capsys.readouterr().err
+    assert "settings" in err.lower()
 
 
 def test_adopting_client_does_not_retune(wda):

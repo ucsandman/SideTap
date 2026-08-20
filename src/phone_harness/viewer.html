@@ -1655,8 +1655,12 @@ async function edgeSwipe(x1, y1, x2, y2, seconds = 0.3) {
 }
 document.getElementById('btn-notifs').onclick = () =>       // pull from top-left
   edgeSwipe(points.width * 0.25, 1, points.width * 0.25, points.height * 0.55);
+// Control Center pages VERTICALLY (favourites / music / home / connectivity),
+// so the pull must stop once it is open: to 0.5h it kept travelling and landed
+// on the music page every time, at 0.3s AND 0.6s — distance is the lever, not
+// speed. 0.3h opens it on the top (favourites) page. Measured on device 2026-08-20.
 document.getElementById('btn-control').onclick = () =>      // pull from top-right
-  edgeSwipe(points.width * 0.92, 1, points.width * 0.92, points.height * 0.5);
+  edgeSwipe(points.width * 0.92, 1, points.width * 0.92, points.height * 0.3);
 
 // ---- paste box / clipboard: whole strings in one call (the key path is one char at a time
 // and cannot paste at all).

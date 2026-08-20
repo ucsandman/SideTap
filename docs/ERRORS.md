@@ -1223,3 +1223,44 @@ findings were real:
 dev machine" tested the wrong half: the dev machine has a phone, so the
 phoneless path never ran, and it was never updated while running. A clean
 machine plus "report, don't fix" found both in under two minutes of runtime.
+
+---
+
+## 2026-08-20 — Unlock ran ~20s then "nothing happens" with a priority notification: lit ≠ unlocked
+
+**Symptom.** Wes: the viewer's Unlock button, with a priority notification on
+the lock screen, ran ~20s showing "Unlocking…" and then did nothing — the phone
+stayed locked but the button reported done.
+
+**Root cause.** `unlock()` had a shortcut: after the wake+swipe, if no passcode
+pad appeared but the screen was LIT (`>= _LIT_SCREEN_BYTES`), it returned
+declaring success on the theory "lit + no pad = phone was merely asleep and the
+swipe took it to the home screen." A priority notification KEEPS THE LOCK SCREEN
+LIT while the phone is still locked. When the wake swipe failed to raise the pad
+(the ~16s wake-transition hang from 2026-08-14, after which the notification-lit
+screen never darkens to trigger the dark-screen retry), that shortcut fired and
+returned `{ok: true}` over a phone still on its lock screen. Without a
+notification the screen re-sleeps to dark between reads, so the code took the
+correct retry path and eventually unlocked — which is why it only broke WITH a
+notification. Confirmed by trace: no-notification unlock reaches the dark retry
+and succeeds in ~35s; the lit branch returns early.
+
+**Fix.** `_on_lock_screen(tree)` reads the CoverSheet markers already present in
+the tree pad_appears fetched — `SBCoverSheetWindow`, "Swipe up to unlock",
+"Locked" (device dump 2026-08-20). The two "lit and no pad → return usable"
+branches now also require NOT being on the lock screen; a lit lock screen falls
+through to the second wake+swipe (which typically raises the pad) and, if the
+pad still never comes, raises an honest error naming the notification instead of
+lying success. Same lying-success class as the dark-screen silent return fixed
+2026-08-13, pointed at the lit case. Verified live: a locked phone unlocks to the
+887 KB home-screen frame, no false early return.
+
+**Not fixed (pre-existing, out of scope).** The ~16s first-gesture-after-wake
+hang still costs the unlock ~35s end-to-end. Twelve session-ordering trials on
+device 2026-08-20 showed it fires ~50% regardless of session freshness (a
+fresh session born while dark hung 3/3 in one run), so the 2026-08-14
+mint-up-front does NOT reliably avoid it — it is a WDA wake-transition AX-snapshot
+heavy tail, the same class as the TikTok wedge, and nothing cheap predicts it
+(a coversheet-readiness probe that hit fast correlated with a fast swipe but did
+not prevent the hang when it missed). Left alone deliberately: unlock() has three
+ERRORS.md entries and its flat waits are the one untuned path in helpers.py.

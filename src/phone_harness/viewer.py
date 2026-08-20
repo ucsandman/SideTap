@@ -21,7 +21,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import admin, approval, capture, config, device, syslog, trust
-from .wda_client import WDAClient, WDAError, activity_file, stop_engaged, stop_file
+from .wda_client import (
+    WDAClient,
+    WDAError,
+    WDATimeout,
+    activity_file,
+    stop_engaged,
+    stop_file,
+)
 
 _HTML = Path(__file__).with_name("viewer.html")
 
@@ -132,6 +139,24 @@ _LAST_PHONE: dict | None = None
 # asleep mid-unlock.
 _LAST_DOCTOR: list | None = None
 
+# ...and one pass at a time. A run is ~2s of go-ios subprocesses plus a
+# screenshot, and 5-15s on a WEDGED link (`_check_wda_responding` builds a 5s
+# client and `_check_perception`'s screenshot sits on WDA's 10s back-off before
+# it falls back to the subprocess), while the page has six independent
+# loadDoctor triggers and every open tab carries its own — so two passes racing
+# each other, competing for go-ios and for WDA's one-at-a-time loop with the
+# very up() they are diagnosing, is the normal boot case rather than an edge
+# one. The second request BLOCKS on the pass in flight instead of serving
+# _LAST_DOCTOR: the cached pass can be an all-green snapshot from before the
+# link died, the page stops its retry chain on a green result, and the header
+# would then read "All N checks pass" over a dead link until someone reloaded
+# by hand — the same lying-status bug two adversarial reviews already caught in
+# this file (the /api/status window_size memo, the module-global memoized_run).
+# So a waiter is only ever handed a result STAMPED AFTER its own request
+# arrived; anything older it re-runs for itself.
+_DOCTOR_LOCK = threading.Lock()
+_LAST_DOCTOR_AT = 0.0
+
 # Self-healing link. Deep sleep kills WDA (iOS kills the test runner ~15min
 # after the screen goes dark; watched it die live 2026-08-10) and NOTHING over
 # USB can wake the phone — lockdown itself is gated while it sleeps (ReadPair
@@ -235,7 +260,14 @@ def _heal_loop() -> None:
             if _should_heal(
                 now,
                 wda_up=answering,
-                lockdown_ok=device.lockdown_ready(),
+                # `ios date` is a go-ios subprocess and Python evaluates every
+                # argument before the call, while _should_heal discards this
+                # one on its first clause whenever wda_up. At _HEAL_POLL = 20s
+                # that is ~4,300 spawns a day for an answer nothing reads, so
+                # only ask whether the human has woken the phone on a poll that
+                # could actually heal. stop_engaged() stays unconditional: it
+                # is a file stat, and the kill switch is read every poll.
+                lockdown_ok=(not answering) and device.lockdown_ready(),
                 stopped=stop_engaged(),
                 down_for=down_for,
             ):
@@ -567,10 +599,28 @@ class Handler(BaseHTTPRequestHandler):
                 # First run = WDA has never published a session on this
                 # machine; the page swaps its checks auto-open for the guided
                 # setup wizard until it has, and shows the Setup guide button.
+                # How long the watchdog has seen NOTHING answer, so the page
+                # can stop showing a frozen MJPEG frame as a live picture: on a
+                # wedge this endpoint still answers 200 (orientation() times
+                # out and the handler falls through to the go-ios branch
+                # below), so nothing on the wire says the view has stopped
+                # moving. _heal_loop already keeps the clock; publish the AGE
+                # and never the raw monotonic stamp, which means nothing
+                # outside this process. It rides in `fresh` for the same reason
+                # `starting` does — served from _LAST_STATUS it would go stale
+                # for the 20-30s an unlock holds _ACTION_LOCK, which is most of
+                # the way to the page's own threshold. Zero WDA calls and zero
+                # go-ios spawns on purpose: this number describes a link
+                # already suspected of being wedged, and any probe aimed at one
+                # queues behind the very hang it is trying to measure.
+                silent_since = _HEAL["down_since"]
                 fresh = {
                     "starting": starting,
                     "setup_done": (config.STATE_DIR / "wda_session").exists(),
                     "app_dir": str(config.REPO_ROOT),
+                    "silent_for": (
+                        time.monotonic() - silent_since if silent_since else 0.0
+                    ),
                 }
                 if _ACTION_LOCK.locked() and _LAST_STATUS is not None:
                     self._json({**_LAST_STATUS, **fresh})
@@ -603,12 +653,41 @@ class Handler(BaseHTTPRequestHandler):
                     _LAST_STATUS = {
                         "window": {"width": w, "height": h},
                         "input": True,
+                        "link": "up",
                         "mjpeg": config.MJPEG_PORT,
                         "lan_exposed": _LAN_STATE["exposed"],
                         "boot": _BOOT_ID,
                     }
+                    # Everything above answered, so the link has been silent
+                    # for zero seconds by definition — say so, whatever the
+                    # watchdog's clock still holds. _heal_loop is the ONLY
+                    # writer of down_since and only on its 20s poll, so POST
+                    # /api/up (the Restart link button, the documented repair
+                    # after a replug) and /api/unlock leave a stale age behind
+                    # them: the payload used to carry {"link": "up",
+                    # "silent_for": 300} in one breath and the page dimmed the
+                    # freshly restored, moving picture under "this picture is
+                    # frozen" for up to a full _HEAL_POLL. Correct it HERE and
+                    # not in the one branch of the page that reads it today, so
+                    # every consumer inherits it. down_since itself is left
+                    # alone: it is _heal_loop's state, its next poll clears it
+                    # the same way, and a handler writing it would be voting in
+                    # a healing decision it cannot see.
+                    fresh["silent_for"] = 0.0
                     self._json({**_LAST_STATUS, **fresh})
-                except WDAError:
+                except WDAError as exc:
+                    # WHY the link is down decides which repair the page
+                    # offers. A socket that accepts and then never answers
+                    # (WDATimeout) means an app is holding WDA's serial loop
+                    # hostage — the signed runner IS on the phone, so the
+                    # Sideloadly re-sign wizard is the wrong repair, and
+                    # offering it is what cost issue #2's reporter a full
+                    # re-sign with 6 days left on a good signature. A refused
+                    # connection (plain WDAError) is a link that is genuinely
+                    # gone. Two states only: no probe and no doctor call, this
+                    # endpoint runs every 5s and stays at one 7.7ms
+                    # orientation().
+                    link = "wedged" if isinstance(exc, WDATimeout) else "down"
                     # No WDA. The go-ios screenshot gives pixel size — but on a
                     # phoneless machine (fresh install, nothing plugged in) it
                     # raises too, and this endpoint must STILL answer: the
@@ -624,6 +703,7 @@ class Handler(BaseHTTPRequestHandler):
                         {
                             "window": window,
                             "input": False,
+                            "link": link,
                             "mjpeg": None,
                             "lan_exposed": _LAN_STATE["exposed"],
                             "boot": _BOOT_ID,
@@ -679,11 +759,15 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     self._json({"phone_poll_seconds": 0.0})
             elif path == "/api/doctor":
-                global _LAST_DOCTOR
+                global _LAST_DOCTOR, _LAST_DOCTOR_AT
                 if _ACTION_LOCK.locked() and _LAST_DOCTOR is not None:
                     self._json(_LAST_DOCTOR)
                     return
-                _LAST_DOCTOR = admin.doctor_results()
+                asked = time.monotonic()
+                with _DOCTOR_LOCK:
+                    if _LAST_DOCTOR is None or _LAST_DOCTOR_AT < asked:
+                        _LAST_DOCTOR = admin.doctor_results()
+                        _LAST_DOCTOR_AT = time.monotonic()
                 self._json(_LAST_DOCTOR)
             elif path == "/api/fix-input":
                 with _FIX_LOCK:

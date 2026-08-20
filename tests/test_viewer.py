@@ -80,6 +80,10 @@ class StubClient:
 
     orient = "PORTRAIT"
     orientation_calls = 0
+    # Which WDAError a dead link raises. A refused socket is a plain WDAError
+    # and a wedged one is a WDATimeout, and /api/status tells the two apart,
+    # so a test has to be able to pick. None keeps the default refused case.
+    orientation_error = None
 
     def orientation(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         # Raises on a dead link exactly like the real session request, which is
@@ -87,7 +91,7 @@ class StubClient:
         # this is the only thing left that can still notice WDA is gone.
         self.orientation_calls += 1
         if self.window is None:
-            raise viewer.WDAError("no phone in tests")
+            raise self.orientation_error or viewer.WDAError("no phone in tests")
         return self.orient
 
     def configure_mjpeg(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
@@ -495,6 +499,59 @@ def test_status_refetches_the_window_after_a_rotation(base_url, monkeypatch):
     assert r.json()["window"] == {"width": 844.0, "height": 390.0}
 
 
+def test_status_names_a_wedged_link_apart_from_a_refused_one(base_url, monkeypatch):
+    # /api/status flattened every failure into "input": False, and viewer.html
+    # answers that by unhiding the Sideloadly re-sign wizard — so a WEDGED link
+    # (an app holding WDA's serial loop hostage) was prescribed a full re-sign.
+    # That is what cost issue #2's reporter a re-sign with 6 days left on a good
+    # signature. The distinction costs nothing: a socket that accepts and never
+    # answers raises WDATimeout, a refused one raises a plain WDAError, and both
+    # already arrive at this handler.
+    monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
+    monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
+    client = viewer.Handler.client
+    client.window = None
+
+    client.orientation_error = viewer.WDATimeout("no response within 10s")
+    body = requests.get(base_url + "/api/status", timeout=5).json()
+    assert body["input"] is False
+    assert body["link"] == "wedged"
+
+    client.orientation_error = viewer.WDAError("connection refused")
+    body = requests.get(base_url + "/api/status", timeout=5).json()
+    assert body["input"] is False
+    assert body["link"] == "down"
+
+
+def test_status_reports_a_live_link_as_up(base_url, monkeypatch):
+    monkeypatch.setattr(viewer, "_WINDOW_SIZE", None)
+    monkeypatch.setattr(viewer, "_WINDOW_ORIENT", None)
+    client = viewer.Handler.client
+    client.window = (390.0, 844.0)
+    assert requests.get(base_url + "/api/status", timeout=5).json()["link"] == "up"
+
+
+def test_viewer_html_hides_fix_input_on_a_wedge_but_never_restart_link():
+    # The re-sign wizard is the wrong repair for a wedge — a socket that accepts
+    # proves the signed runner is on the phone — so btn-fix hides there. But
+    # btn-up ("Restart link") is the repair for BOTH failures (POST /api/up
+    # unwedges before it restarts anything), so it must stay visible in every
+    # failing state: hiding the one button that fixes it is the regression this
+    # change could introduce.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    fix = re.search(r"getElementById\('btn-fix'\)\.hidden = ([^;]+);", html)
+    up = re.search(r"getElementById\('btn-up'\)\.hidden = ([^;]+);", html)
+    assert fix and up, "btn-fix/btn-up visibility moved — re-point this test"
+    assert "wedged" in fix.group(1), (
+        "btn-fix must not offer the Sideloadly re-sign wizard for a wedged link"
+    )
+    assert up.group(1).strip() == "inputEnabled", (
+        "btn-up is the repair for every failing state and must stay unconditional"
+    )
+
+
 def test_activity_endpoint_serves_feed(base_url, tmp_path, monkeypatch):
     import json
 
@@ -709,7 +766,7 @@ def test_should_heal_waits_for_sustained_silence(monkeypatch):
     assert heal(100.0, wda_up=False, lockdown_ok=True, stopped=False, down_for=45.0)
 
 
-def _run_heal_loop(monkeypatch, *, answers, clock, activity=None):
+def _run_heal_loop(monkeypatch, *, answers, clock, activity=None, lockdown=None):
     """Drive _heal_loop over scripted (is_up, monotonic) values. Returns the
     number of admin.up() calls; the loop ends when the fakes run out.
 
@@ -717,6 +774,9 @@ def _run_heal_loop(monkeypatch, *, answers, clock, activity=None):
     that does not exist: the repo's real .state/agent_activity.log is touched
     by any local phone session, and a fresh one would silently turn every
     healing test into a no-op.
+
+    `lockdown` replaces the `ios date` probe when a test needs to count how
+    often it is asked; it defaults to a phone that is awake.
     """
     monkeypatch.setattr(
         viewer, "activity_file", lambda: Path(activity or "no-such-activity.log")
@@ -724,7 +784,7 @@ def _run_heal_loop(monkeypatch, *, answers, clock, activity=None):
     monkeypatch.setitem(viewer._HEAL, "down_since", 0.0)
     monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
     monkeypatch.setattr(viewer.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(viewer.device, "lockdown_ready", lambda: True)
+    monkeypatch.setattr(viewer.device, "lockdown_ready", lockdown or (lambda: True))
     monkeypatch.setattr(viewer, "stop_engaged", lambda: False)
     healed = []
     monkeypatch.setattr(viewer.admin, "up", lambda: (healed.append(True), 0)[1])
@@ -826,6 +886,25 @@ def test_heal_loop_clears_the_silence_clock_when_wda_answers(monkeypatch):
         )
         == 0
     )
+
+
+def test_heal_loop_only_probes_lockdown_when_it_could_actually_heal(monkeypatch):
+    # lockdown_ready() spawns `ios date` (a ~207ms go-ios process) and
+    # _should_heal throws its answer away on its very first clause whenever
+    # wda_up, so an answering poll must not pay for it: at _HEAL_POLL = 20s
+    # that was ~4,300 spawns a day for a value nothing reads. The silent poll
+    # still asks, because that is the branch this loop exists for.
+    calls = []
+    assert (
+        _run_heal_loop(
+            monkeypatch,
+            answers=[True, False],
+            clock=[100.0, 120.0],
+            lockdown=lambda: calls.append(1) or True,
+        )
+        == 0
+    )
+    assert calls == [1]
 
 
 def test_heal_loop_leaves_a_phone_another_process_is_driving_alone(
@@ -1249,6 +1328,108 @@ def test_status_reports_bring_up_even_while_a_gesture_holds_the_phone(
     assert body["window"] == {"width": 390.0, "height": 844.0}  # still the cache
 
 
+def test_status_reports_no_silence_while_the_link_answers(base_url, monkeypatch):
+    # down_since is 0 on every watchdog poll that was answered — by the probe
+    # or by any process landing an action (_actions_landing) — so the page gets
+    # a plain 0 rather than a stamp it would have to interpret for itself.
+    viewer.Handler.client.window = (390.0, 844.0)
+    monkeypatch.setitem(viewer._HEAL, "down_since", 0.0)
+    assert requests.get(base_url + "/api/status", timeout=5).json()["silent_for"] == 0.0
+
+
+def test_status_publishes_how_long_the_phone_has_been_silent(base_url, monkeypatch):
+    # A frozen MJPEG frame looks perfectly live, and a wedge does not change
+    # that: orientation() times out, the handler falls through to the go-ios
+    # branch and still answers 200, so the page has nothing to dim on.
+    # _heal_loop already keeps this clock. Publish the AGE and never the raw
+    # monotonic stamp, which means nothing outside this process. The link has
+    # to be genuinely wedged for the age to survive: a link that answers
+    # reports zero silence whatever the watchdog's clock still holds (see
+    # test_status_reports_no_silence_when_the_link_answers_this_instant).
+    client = viewer.Handler.client
+    client.window = None
+    monkeypatch.setattr(client, "orientation_error", viewer.WDATimeout("no response"))
+    monkeypatch.setitem(viewer._HEAL, "down_since", time.monotonic() - 90)
+    body = requests.get(base_url + "/api/status", timeout=5).json()
+    assert body["link"] == "wedged"
+    assert 80 < body["silent_for"] < 200, body["silent_for"]
+
+
+def test_status_reports_no_silence_when_the_link_answers_this_instant(
+    base_url, monkeypatch
+):
+    # down_since is written ONLY by _heal_loop, on its 20s poll — POST /api/up
+    # (the Restart link button, the documented repair after a replug) never
+    # clears it. So a manual recovery used to answer {"link": "up",
+    # "silent_for": 300} in ONE payload, and the page dimmed the freshly
+    # restored, moving picture to opacity .25 under "this picture is frozen"
+    # for up to a full _HEAL_POLL. A link whose orientation() just returned has
+    # been silent for zero seconds by definition; fix it here so every consumer
+    # of the payload inherits it, not in the one branch of the page that reads
+    # it today.
+    viewer.Handler.client.window = (390.0, 844.0)
+    monkeypatch.setitem(viewer._HEAL, "down_since", time.monotonic() - 300)
+    body = requests.get(base_url + "/api/status", timeout=5).json()
+    assert body["link"] == "up"
+    assert body["silent_for"] == 0.0
+
+
+def test_status_reports_silence_even_while_a_gesture_holds_the_phone(
+    base_url, monkeypatch
+):
+    # Same reasoning as `starting`: /api/status serves its CACHED payload
+    # during a gesture, and an unlock holds the lock 20-30s — long enough for
+    # the link to go silent behind it. silent_for must ride in the fresh dict.
+    viewer.Handler.client.window = (390.0, 844.0)
+    requests.get(base_url + "/api/status", timeout=5)  # prime the cache
+    monkeypatch.setitem(viewer._HEAL, "down_since", time.monotonic() - 90)
+    with viewer._ACTION_LOCK:
+        body = requests.get(base_url + "/api/status", timeout=5).json()
+    assert 80 < body["silent_for"] < 200
+    assert body["window"] == {"width": 390.0, "height": 844.0}  # still the cache
+
+
+def test_viewer_dims_a_frozen_stream_only_while_a_stream_is_open():
+    # The dim must be gated on `streaming`, not on silence alone: where WDA has
+    # never come up, silent_for grows without bound while screen.onerror has
+    # already handed the picture to the go-ios /api/screenshot poll, which is
+    # genuinely live. Dimming that is the same lying-status bug pointed the
+    # other way.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("async function loadStatus()")
+    body = html[start : html.index("// Refresh the still image", start)]
+    assert "const STALL_SECONDS" in html, "the threshold is a named one-line revert"
+    assert "streaming && (s.silent_for || 0) >= STALL_SECONDS" in body
+    assert "screen.classList.toggle('dead', stalled)" in body
+    assert "screen.classList.remove('dead')" not in body, (
+        "an unconditional remove('dead') is what put a frozen frame at full "
+        "opacity under a caption asserting the live view is on"
+    )
+    assert "has not answered" in body
+    # _should_heal wants lockdown_ok, and deep sleep gates lockdown — so
+    # down_since accumulates for hours while nothing is being tried. The label
+    # states silence and claims no recovery.
+    assert "trying to recover" not in html
+
+
+def test_the_status_poll_never_overlaps_itself():
+    # On a wedge the handler runs the client's full 10s inside orientation()
+    # while setInterval keeps firing every 5s, so up to four /api/status calls
+    # each fire their own request into a WDA that serves one at a time. The
+    # same "one request at a time (never overlapping)" rule poll() follows.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    start = html.index("async function loadStatus()")
+    body = html[start : html.index("// Refresh the still image", start)]
+    assert "if (statusInFlight) return;" in body
+    assert "statusInFlight = false;" in body
+    # NOT an AbortSignal on getJSON: it would abort the BROWSER fetch while the
+    # handler keeps running against the wedged WDA, and getJSON also carries
+    # POST /api/stop (a kill switch that landed would report failure) and
+    # /api/doctor (~2s of subprocesses, slowest during the very outage the
+    # checks exist for).
+    assert "AbortSignal" not in html
+
+
 def test_doctor_is_not_rerun_while_a_gesture_holds_the_phone(base_url, monkeypatch):
     # The page re-runs the checks by itself while any fails, and a full run is
     # ~2s of go-ios subprocesses plus a screenshot. Landing that inside an
@@ -1269,6 +1450,114 @@ def test_doctor_is_not_rerun_while_a_gesture_holds_the_phone(base_url, monkeypat
         served = requests.get(base_url + "/api/doctor", timeout=5).json()
     assert len(runs) == 1  # not re-run
     assert served[0]["name"] == "tunnel"  # last result, not an empty list
+
+
+class _WatchedLock:
+    """A threading.Lock that says when a request has ENTERED it.
+
+    The concurrency tests below have to release the in-flight doctor pass only
+    once the second request is really waiting behind it; a sleep long enough to
+    be safe on a loaded CI box is also long enough to be flaky on a fast one.
+    The semaphore is released BEFORE the real acquire, so the test can wait for
+    it instead of guessing.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.entered = threading.Semaphore(0)
+
+    def __enter__(self):
+        self.entered.release()
+        return self._lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._lock.__exit__(*exc)
+
+
+_DOCTOR_PASS = [{"name": "tunnel", "ok": True, "detail": "up", "fix": ""}]
+_DOCTOR_FAIL = [
+    {"name": "tunnel", "ok": False, "detail": "gone", "fix": "phone-harness up"}
+]
+
+
+def _concurrent_doctor(base_url, monkeypatch, payload):
+    """Fire two /api/doctor requests with the second one arriving mid-pass.
+
+    Returns (runs, responses): how many passes actually ran, and what each
+    request was served.
+    """
+    lock = _WatchedLock()
+    monkeypatch.setattr(viewer, "_DOCTOR_LOCK", lock, raising=False)
+    runs = []
+    release = threading.Event()
+
+    def counted():
+        runs.append(1)
+        assert release.wait(10), "the test never released the in-flight pass"
+        return payload
+
+    monkeypatch.setattr(viewer.admin, "doctor_results", counted)
+    got = {}
+
+    def fire(key):
+        got[key] = requests.get(base_url + "/api/doctor", timeout=20).json()
+
+    threads = [threading.Thread(target=fire, args=(k,)) for k in ("a", "b")]
+    try:
+        threads[0].start()
+        assert lock.entered.acquire(timeout=5), (
+            "no doctor pass took _DOCTOR_LOCK - /api/doctor does not serialize "
+            "its passes"
+        )
+        threads[1].start()
+        assert lock.entered.acquire(timeout=5), (
+            "the second request never took _DOCTOR_LOCK - it ran a pass of its "
+            "own alongside the one already in flight"
+        )
+    finally:
+        release.set()
+        for t in threads:
+            if t.ident is not None:  # a failed wait can leave the second unstarted
+                t.join(20)
+    return runs, got
+
+
+def test_two_concurrent_doctor_requests_run_one_pass(base_url, monkeypatch):
+    # A pass is ~2s of go-ios subprocesses, and 5-15s on a wedged link
+    # (_check_wda_responding builds a 5s client, _check_perception's screenshot
+    # sits on WDA's 10s back-off first). The page has six independent
+    # loadDoctor triggers and every open tab has its own, so two passes racing
+    # each other - during the exact bring-up they are diagnosing - is what the
+    # boot case looked like. The second request waits for the first instead.
+    viewer._LAST_DOCTOR = None  # noqa: vulture  (viewer.py reads these)
+    viewer._LAST_DOCTOR_AT = 0.0  # noqa: vulture  (viewer.py reads these)
+    runs, got = _concurrent_doctor(base_url, monkeypatch, _DOCTOR_PASS)
+    assert len(runs) == 1, "both requests spawned their own go-ios pass"
+    assert got["a"] == _DOCTOR_PASS
+    assert got["b"] == _DOCTOR_PASS  # the waiter is served, never left empty
+
+
+def test_a_waiting_doctor_request_is_never_served_a_result_older_than_itself(
+    base_url, monkeypatch
+):
+    # The tempting shape - serve _LAST_DOCTOR while a pass is in flight - is
+    # the lying-status bug this file has already been bitten by twice (the
+    # /api/status window_size memo, the module-global memoized_run): the last
+    # pass is an ALL-GREEN snapshot from before the link died, the page stops
+    # its retry chain on a green result, and the header then reads "All checks
+    # pass" over a dead link until someone reloads by hand. So the waiter is
+    # only ever served a result STAMPED AFTER its own request arrived.
+    viewer._LAST_DOCTOR = list(_DOCTOR_PASS)  # noqa: vulture
+    # A minute old: the green was recorded while the link still worked. Not
+    # time.monotonic() itself - Windows' monotonic clock ticks every 15.6ms, so
+    # a stamp taken here can read EQUAL to the one the handler takes next, and
+    # a cache that landed inside the asking request's own tick is served on
+    # purpose (that is the coalescing win, not a stale read).
+    viewer._LAST_DOCTOR_AT = time.monotonic() - 60.0  # noqa: vulture
+    runs, got = _concurrent_doctor(base_url, monkeypatch, _DOCTOR_FAIL)
+    assert len(runs) == 1
+    assert got["a"] == _DOCTOR_FAIL
+    assert got["b"] == _DOCTOR_FAIL, "the waiter was served the stale green"
 
 
 def test_checks_reschedule_themselves_while_failing():
@@ -1587,6 +1876,89 @@ def test_wheel_scroll_flicks_instead_of_dragging():
     )
 
 
+def test_swipes_and_wheel_flicks_echo_what_was_sent():
+    # A drag's only feedback was a dot at its START point after release, and the
+    # wheel flick had none at all — flushWheel fetches /api/swipe raw, so it
+    # never even earned postGesture's red failure dot. Both now draw the vector
+    # at SEND time, INSIDE the gates, so the echo can never claim a gesture that
+    # inputEnabled/phoneBusy refused.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    assert 'id="swipe-echo"' in html
+    assert "const SWIPE_ECHO_MS = 700;" in html, (
+        "the fade must be one named constant — a one-line revert"
+    )
+    up = re.search(r"screen\.addEventListener\('pointerup'.*?\n\}\);", html, re.S)
+    assert up and "showSwipeEcho(" in up.group(0)
+    body = up.group(0)
+    # The echo sits in the swipe branch, past both gates, never before them.
+    assert body.index("if (!inputEnabled) return;") < body.index("showSwipeEcho(")
+    assert body.index("phoneBusy()") < body.index("showSwipeEcho(")
+    wheel = re.search(r"async function flushWheel\(\) \{(.*?)\n\}", html, re.S)
+    assert wheel and "showSwipeEcho(" in wheel.group(1)
+    # THE REGRESSION THAT MATTERS: the trail-following-the-pointer form was cut
+    # because it requires reworking the `!drag.timer` guard that makes
+    # drag.moveT stamp exactly once — the timing the flick/drag split rides on.
+    move = re.search(r"screen\.addEventListener\('pointermove'.*?\n\}\);", html, re.S)
+    assert move and "showSwipeEcho(" not in move.group(0), (
+        "the echo must not be drawn from pointermove: that handler's early "
+        "return is what makes drag.moveT fire once"
+    )
+    # postGesture stays untouched — its red showDot already marks a refused
+    # gesture, and recolouring the echo would edit the line viewer-feat-1 owns.
+    pg = re.search(r"async function postGesture\(.*?\n\}", html, re.S)
+    assert pg and "showSwipeEcho(" not in pg.group(0)
+
+
+def test_dropped_keystrokes_and_wheel_flicks_are_reported_not_swallowed():
+    # The three phone-driving POSTs that awaited a response and never looked at
+    # it: flushWheel (/api/swipe), flushKeys (/api/type), sendArrowKey
+    # (/api/key). All three can come back 409 (another holder of _ACTION_LOCK —
+    # /api/clipboard, /api/screen-text's 3.0-5.7s Home Screen /source, a second
+    # viewer tab, or the chained flush whose phoneBusy() guard ran before this
+    # tab's busy label existed) or 502 (WDAError), and the bare fetch can reject
+    # outright when the viewer is gone. Every one of those lost the whole batch
+    # in silence, which is the same freeze-looking silence viewer.py's PhoneBusy
+    # branch exists to break.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    for name in ("flushWheel", "flushKeys"):
+        block = re.search(rf"async function {name}\(\) \{{(.*?)\n\}}", html, re.S)
+        assert block, f"{name} changed shape"
+        assert "reportNotSent(" in block.group(1), (
+            f"{name} discards the response: a 409 or 502 loses the batch in silence"
+        )
+        assert "catch (e)" in block.group(1), (
+            f"{name} must survive a rejected fetch — keydown never awaits it, so a "
+            "dead viewer socket is an unhandled rejection and a lost buffer"
+        )
+    arrow = re.search(r"async function sendArrowKey\(key\) \{(.*?)\n\}", html, re.S)
+    assert arrow, "sendArrowKey changed shape"
+    assert "reportNotSent(" in arrow.group(1)
+    assert "arrowBuf.length = 0" in arrow.group(1), (
+        "a refused arrow must not be followed by the rest of the drain: "
+        "half-applied caret navigation is worse than none"
+    )
+    rep = re.search(
+        r"async function reportNotSent\(resp, what\) \{(.*?)\n\}", html, re.S
+    )
+    assert rep, "reportNotSent gone — the three flushers report through it"
+    body = rep.group(1)
+    # gesturePost opens with `if (phoneBusy()) return;`, which is why this is a
+    # separate reporter: that guard here would swallow a buffered keyBuf
+    # whenever this tab shows a busy label, the exact shape of the 2026-08-12
+    # bug test_no_gesture_post_nested_inside_with_busy exists to catch.
+    assert "phoneBusy(" not in body
+    # Never replay. A re-send lands on whatever screen the long action left,
+    # which is the 2026-08-11 stale-gesture burst.
+    assert "fetch(" not in body
+    # A count, never the characters: typed text is recorded nowhere, and a
+    # passcode gets typed into this viewer too.
+    assert "text" not in body
+
+
 def test_drag_swipe_times_from_the_first_movement():
     # `seconds` used to run from pointerdown, so press-hesitate-flick was sent
     # as a 0.4s (or clamped 0.5s) drag with no inertia — and the 400ms
@@ -1889,3 +2261,103 @@ def test_a_chunked_post_cannot_smuggle_a_second_request(base_url):
     assert head.startswith(b"HTTP/1.1 403"), head
     assert rest == b"", f"the leftover body was parsed as a request: {rest!r}"
     assert not [c for c in viewer.Handler.client.calls if c[0] == "tap"]
+
+
+def test_phone_glance_refreshes_after_actions_but_not_on_typing():
+    # VIEWER_PHONE_POLL_SECONDS ships at 0 (docs/VIEWER_PHONE_POLL.md: the 10s
+    # /api/phone poll could trigger the WDA heavy-tail wedge with nobody
+    # driving), so the glance it paints — battery, lock state, front app, and
+    # the "Go to page" chips, which are an ACTION control, not passive info —
+    # was painted once at page load and never again. The refresh is
+    # event-driven instead, and every assertion here is one of the conditions
+    # that makes that safe to re-add.
+    import re
+
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+
+    m = re.search(r"PHONE_REFRESH_DEBOUNCE_MS\s*=\s*(\d+)", html)
+    assert m, "no PHONE_REFRESH_DEBOUNCE_MS constant in viewer.html"
+    assert int(m.group(1)) >= 1000, (
+        "the debounce is what keeps a 30-flick scroll at one /api/phone read "
+        "instead of thirty; a short value re-creates a per-gesture read rate "
+        "on exactly the screens where the wedge was measured"
+    )
+
+    sched = _js_function_body(html, "function schedulePhoneRefresh() {")
+    assert "busyLabel" in sched, (
+        "/api/phone serves its cached _LAST_PHONE while _ACTION_LOCK is held, "
+        "so a refresh that lands mid-action renders pre-action state and never "
+        "retries — it has to re-arm while the pane is busy"
+    )
+
+    for signature in (
+        "async function postGesture(",
+        "async function gesturePost(",
+        "document.getElementById('btn-unlock').onclick",
+        "document.getElementById('btn-lock').onclick",
+    ):
+        body = _js_function_body(html, signature)
+        assert "schedulePhoneRefresh(" in body, (
+            f"{signature} changes what the glance shows but never refreshes it"
+        )
+
+    keys = _js_function_body(html, "async function flushKeys() {")
+    assert "schedulePhoneRefresh(" not in keys, (
+        "typing is the highest-frequency path in the file and cannot change "
+        "battery, lock state, front app or page — hooking it is the read rate "
+        "the debounce exists to avoid"
+    )
+
+    assert html.count("setInterval(loadPhone") == 2, (
+        "exactly two setInterval(loadPhone) sites are expected (the "
+        "config-gated one and the /api/config-failure fallback); an idle "
+        "periodic poll must not come back alongside the event-driven refresh"
+    )
+
+
+def test_hotkeys_sit_above_the_focus_guard_and_skip_ctrl_v():
+    # Ctrl+Shift+S copies the screen PNG to the PC clipboard — the one thing
+    # the page could not do at all (btn-shot only downloads a file).
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    assert "ClipboardItem" in html and "'image/png'" in html
+    # Firefox has no clipboard.write for images, so the failure path falls back
+    # to the download button that already exists rather than throwing.
+    assert "btn-shot').click()" in html
+
+    start = html.index("window.addEventListener('keydown'")
+    body = html[start : html.index("const JSON_HDR", start)]
+    hotkeys = body.index("ev.shiftKey")
+    # Only the four GESTURES buttons blur themselves, so every other button
+    # keeps focus after a mouse click and a map placed BELOW the focus guard is
+    # silently dead until you click the phone — which sends a TAP. The map also
+    # sits above `if (!inputEnabled) return;` because /api/screenshot falls back
+    # to `ios screenshot` and works with the link down.
+    assert hotkeys < body.index("input,textarea,button,select,[tabindex]")
+    assert hotkeys < body.index("if (!inputEnabled) return;")
+    map_body = body[hotkeys : body.index("input,textarea,button,select,[tabindex]")]
+    # The two phone-driving hotkeys re-check inputEnabled themselves, since the
+    # map now sits above the global guard.
+    assert map_body.count("if (inputEnabled)") == 2
+    # A held combo auto-repeats keydown. Ctrl+Shift+B reaches g-back -> an edge
+    # swipe, which never sets busyLabel, so phoneBusy() cannot swallow repeats
+    # and a held key would send several real Back swipes to the phone.
+    assert "ev.repeat" in map_body
+    # g-back's "(Ctrl+Shift+B)" hint is the only place the combo is advertised,
+    # and updateActionAvail rewrites that title on every 5s status tick, so it
+    # must restore the markup's own tooltip instead of blanking it.
+    assert "(Ctrl+Shift+B)" in html
+    assert "el.title = tip || el.dataset.tip" in html
+
+    # Ctrl+V is NOT in the map: the window paste listener already handles it
+    # with the same guards, and a keydown preventDefault there would suppress
+    # the paste event and kill the working path.
+    assert "'v'" not in map_body and "'V'" not in map_body
+    assert "window.addEventListener('paste'" in html
+    # Not Ctrl+Shift+C either: that is DevTools inspect-element in Chrome/Edge
+    # and a page cannot cancel it.
+    assert "'c'" not in map_body and "'C'" not in map_body
+    # Ctrl+C keeps meaning "copy my selection" inside the paste box, so its
+    # special case must stay BELOW the focus guard.
+    assert body.index("btn-clip-from-phone") > body.index(
+        "input,textarea,button,select,[tabindex]"
+    )

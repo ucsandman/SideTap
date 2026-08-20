@@ -216,9 +216,13 @@ def lockdown_ready() -> bool:  # noqa: vulture
         return False
 
 
-def tunnel_running() -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
+def tunnel_running(timeout: float = 10.0) -> bool:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
+    """`timeout` exists so start_tunnel()'s readiness poll can hand each probe
+    only the budget it has left — without it a `tunnel ls` started just before
+    the cap would run to its own 10s and stretch the cap to 12.9s. Every other
+    caller keeps the 10s it always had."""
     try:
-        proc = _run(["tunnel", "ls"], timeout=10)
+        proc = _run(["tunnel", "ls"], timeout=timeout)
     except (DeviceError, subprocess.TimeoutExpired):
         return False
     for obj in _json_lines(proc.stdout + proc.stderr):
@@ -407,10 +411,38 @@ def stop_all(names: tuple[str, ...] = PROCS) -> list[str]:  # noqa: vulture  (ca
 # ---- bring-up --------------------------------------------------------------
 
 
+# The flat sleep this replaced was 3s from the first commit and was never
+# measured. `tunnel ls` is an HTTP query to the local go-ios tunnel daemon (it
+# does not touch the phone), but it is still a ~207ms process spawn, so the
+# interval stays coarse. The cap EQUALS the sleep it replaced, so the worst
+# case is unchanged and a bad result is a one-line revert.
+_TUNNEL_READY_TIMEOUT = (
+    3.0  # needs device check: how long a userspace tunnel really takes
+)
+_TUNNEL_READY_POLL = 0.5
+
+
 def start_tunnel() -> None:  # noqa: vulture  (called from admin.py/viewer.py, outside this commit)
-    """Start the iOS 17+ tunnel. Tries userspace mode first (no admin needed)."""
+    """Start the iOS 17+ tunnel. Tries userspace mode first (no admin needed).
+
+    Returns as soon as `tunnel ls` reports an entry with an address AND an
+    rsdPort — the same signal _up() already trusts to skip starting a tunnel at
+    all, and the RSD handshake the very next step (`ios image list`) dials.
+    Never returns early on "the process is still alive": that would hand a
+    half-established tunnel to ddi_mounted() and turn into a spurious
+    "developer image not mounted".
+    """
     _spawn("tunnel", ["tunnel", "start", "--userspace"])
-    time.sleep(3)
+    deadline = time.monotonic() + _TUNNEL_READY_TIMEOUT
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        # Each probe gets only the budget that is left, so one hung
+        # `tunnel ls` cannot stretch the 3.0s cap to its own 10s timeout.
+        if tunnel_running(timeout=left):
+            return
+        time.sleep(min(_TUNNEL_READY_POLL, max(0.0, deadline - time.monotonic())))
     if proc_status("tunnel") == "dead":
         raise DeviceError(
             "Tunnel failed to start. Log tail:\n" + log_tail("tunnel") + "\n"

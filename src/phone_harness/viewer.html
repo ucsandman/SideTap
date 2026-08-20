@@ -51,6 +51,16 @@
             background:#000; cursor:crosshair; user-select:none; -webkit-user-drag:none; touch-action:none; }
   #screen.dead { opacity:.25; }
   #tap-dot { position:absolute; width:22px; height:22px; border-radius:50%; border:2px solid var(--accent); background:rgba(68,147,248,.35); transform:translate(-50%,-50%); pointer-events:none; opacity:0; transition:opacity .5s; }
+  /* The swipe echo. A drag's only feedback was a dot at its START point AFTER
+     release, and the wheel flick had none at all — flushWheel fetches
+     /api/swipe raw, so it never even earned postGesture's red dot. The line is
+     drawn at SEND time and shows what was actually sent, so it cannot claim a
+     gesture the gates refused. Gradient, not an arrowhead: dim at the origin,
+     bright at the destination, one element, no extra DOM. Thickness lives here
+     (margin-top centres the 3px line on y1) so the JS never hardcodes it. */
+  #swipe-echo { position:absolute; height:3px; margin-top:-1.5px; border-radius:2px;
+                transform-origin:0 50%; pointer-events:none; opacity:0; transition:opacity .45s;
+                background:linear-gradient(90deg, rgba(68,147,248,.15), var(--accent)); }
   /* Hold-to-long-press. The sweep is the only signal that the press registered,
      because the phone's own menu does not appear until the device press ends. */
   @property --hold { syntax:'<percentage>'; initial-value:0%; inherits:false; }
@@ -418,17 +428,18 @@
         <img id="screen" alt="phone screen" src="/api/screenshot">
         <div id="tap-dot"></div>
         <div id="hold-ring"></div>
+        <div id="swipe-echo"></div>
       </div>
     </div>
     <div id="controls">
       <button id="btn-stop" aria-pressed="false">■ STOP</button>
       <div id="buttons">
-        <button id="btn-home" title="Leave the app. Press again from the Home Screen to walk to page 1.">⌂ Home</button>
+        <button id="btn-home" title="Leave the app. Press again from the Home Screen to walk to page 1. (Ctrl+Shift+H)">⌂ Home</button>
         <button id="btn-unlock">Unlock</button>
         <button id="btn-lock">Lock</button>
         <button id="btn-notifs" hidden>▾ Notifs</button>
         <button id="btn-control" hidden>▾ Control</button>
-        <button id="btn-shot">Save screenshot</button>
+        <button id="btn-shot" title="Download the screen as phone.png. Ctrl+Shift+S copies it to the clipboard instead.">Save screenshot</button>
         <button id="btn-refresh">Refresh checks</button>
         <button id="btn-up" hidden>Restart link</button>
         <button id="btn-fix" hidden>Fix input</button>
@@ -476,7 +487,7 @@
         <div id="page-chips" class="chips"></div>
         <h2 class="sec gap-top">Gestures</h2>
         <div id="gest-row">
-          <button id="g-back" title="Swipe in from the left edge">← Back</button>
+          <button id="g-back" title="Swipe in from the left edge (Ctrl+Shift+B)">← Back</button>
           <button id="g-search" title="Spotlight: swipe down on the Home Screen">Search</button>
           <button id="g-up" title="Scroll the screen up">Scroll ↑</button>
           <button id="g-down" title="Scroll the screen down">Scroll ↓</button>
@@ -588,6 +599,19 @@ async function getJSON(url, opts) {
 
 let inputEnabled = false;
 let streaming = false;
+// One /api/status at a time. On a wedged link the handler runs the client's
+// full 10s inside orientation() while setInterval keeps firing every 5s, so
+// four of them stack up, each firing its own request into a WDA that serves
+// one at a time. The same "one request at a time (never overlapping)" rule
+// poll() already follows.
+let statusInFlight = false;
+// How long the phone may answer nothing before the picture is called frozen.
+// Above _HEAL_MIN_SILENCE (45s) and above every legitimate long hold — unlock
+// from a fresh lock ~11s, the first gesture after a deep sleep 20.5s,
+// read_messages 10-20s — all of which LAND ACTIONS, which _actions_landing()
+// reads and which zeroes the clock outright. A UI threshold, so a one-line
+// revert if it ever cries wolf.
+const STALL_SECONDS = 60;
 let bootSeen = null;  // viewer process id; a change means stale JS — reload
 let lastDoctor = [];
 
@@ -648,7 +672,28 @@ async function gesturePost(url, body) {
   if (r.status === 409) {
     const j = await r.json().catch(() => ({}));
     showHint(j.error || 'Phone is busy — that gesture was dropped.');
+    return;
   }
+  schedulePhoneRefresh();   // Notifs/Control/Back edge gestures land here too
+}
+// The typed and wheeled batches below awaited their response and never looked
+// at it, so a 409 (another holder of _ACTION_LOCK: /api/clipboard,
+// /api/screen-text reading a 3.0-5.7s Home Screen /source, a second viewer tab,
+// or the chained flush whose phoneBusy() guard ran before this tab's busy label
+// existed), a 502 (WDAError) and a rejected fetch all lost the whole buffer in
+// silence — the same freeze-looking silence viewer.py's PhoneBusy branch exists
+// to break. Nothing is replayed: a re-send lands on whatever screen the long
+// action left, which is the 2026-08-11 stale-gesture burst. And this
+// deliberately does NOT open with phoneBusy() the way gesturePost does — that
+// guard here would swallow a buffered keyBuf whenever this tab shows a busy
+// label, which is the 2026-08-12 nested-withBusy bug pointed at the keyboard.
+// A COUNT, never the characters: typed text is recorded nowhere, and a passcode
+// gets typed into this viewer too.
+async function reportNotSent(resp, what) {
+  if (resp && resp.ok) return;
+  let msg = '';
+  if (resp) { const j = await resp.json().catch(() => ({})); msg = j.error || ''; }
+  showHint((msg || 'The phone did not take it.') + ' (' + what + ' not sent)');
 }
 
 // WDA's MJPEG server pushes ~15fps video; polling go-ios PNGs is the fallback.
@@ -662,6 +707,8 @@ function startStream(port) {
 
 async function loadStatus() {
   if (document.hidden) return;   // hidden tab: don't re-open the MJPEG stream
+  if (statusInFlight) return;    // see statusInFlight: never stack on a wedge
+  statusInFlight = true;
   try {
     const s = await getJSON('/api/status');
     // A restarted viewer serves new endpoints this page's JS may not know
@@ -672,6 +719,10 @@ async function loadStatus() {
     }
     points = s.window;
     inputEnabled = !!s.input;
+    // Why the link is down, not just that it is: 'wedged' means the socket
+    // accepts and nothing answers, so the signed driver is on the phone and
+    // re-signing is the wrong repair. An older server sends no link at all.
+    const link = s.link || (inputEnabled ? 'up' : 'down');
     // The link comes up in a background thread after this page opens. While
     // that runs, a dead tunnel is "starting", not "failing".
     const wasStarting = linkStarting;
@@ -680,11 +731,29 @@ async function loadStatus() {
     // ask them again NOW instead of waiting out the backoff.
     if (wasStarting && !linkStarting && doctorTimer) { doctorTries = 0; loadDoctor(); }
     if (s.mjpeg) startStream(s.mjpeg);
-    screen.classList.remove('dead');
+    // A frozen MJPEG frame looks perfectly live: the stream just stops
+    // receiving parts, the <img> holds its last frame and never fires onerror,
+    // and /api/status still answers 200, so nothing here used to dim. Gate on
+    // `streaming` as well as on the silence — where WDA has never come up
+    // silent_for grows without bound while onerror has already handed the
+    // picture to the go-ios /api/screenshot poll, which is genuinely live, and
+    // dimming that is the same lying-status bug pointed the other way.
+    const stalled = streaming && (s.silent_for || 0) >= STALL_SECONDS;
+    screen.classList.toggle('dead', stalled);
     if (Date.now() >= hintHoldUntil) {
-      document.getElementById('click-hint').textContent = inputEnabled
+      // The frozen picture is the one fact nothing else on the page corrects:
+      // the dim says something is wrong, only this line says what. It claims
+      // no recovery — _should_heal wants lockdown, deep sleep gates lockdown,
+      // so the clock can run for hours with nothing being tried. The wedge's
+      // own repair is not lost with it: btn-up stays visible in every failing
+      // state and the checks panel names the wedge.
+      document.getElementById('click-hint').textContent = stalled
+        ? 'The phone has not answered for over a minute — this picture is frozen.'
+        : inputEnabled
         ? 'Click to tap · drag to swipe · type to send keys.'
-        : 'Live view is on. Touch input needs the signed driver (see checks →).';
+        : link === 'wedged'
+          ? 'The app in front is holding the link — click Restart link to put the Home Screen back.'
+          : 'Live view is on. Touch input needs the signed driver (see checks →).';
     }
     // First run (WDA has never published a session): offer the setup wizard.
     setupNeeded = s.setup_done === false;
@@ -693,7 +762,9 @@ async function loadStatus() {
     if (ovOpen === 'setup') renderSetup();
     // Show the fix affordance only while input is off and no job is running.
     if (!fixRunning) {
-      document.getElementById('btn-fix').hidden = inputEnabled;
+      // Restart link stays visible in EVERY failing state — POST /api/up
+      // unwedges before it restarts anything, so it is the repair for both.
+      document.getElementById('btn-fix').hidden = inputEnabled || link === 'wedged';
       document.getElementById('btn-up').hidden = inputEnabled;
     }
     // Gesture shortcuts and the paste box need the input driver.
@@ -706,6 +777,8 @@ async function loadStatus() {
   } catch (e) {
     points = null; screen.classList.add('dead');
     linkStarting = false;   // can't confirm a bring-up: stop claiming one
+  } finally {
+    statusInFlight = false;
   }
 }
 
@@ -922,6 +995,30 @@ async function loadPhone() {
   } catch (e) { /* passive info is best-effort */ }   // only reads it there
 }
 
+// The periodic /api/phone poll ships DISABLED (VIEWER_PHONE_POLL_SECONDS = 0)
+// because that poll reads active_app() every 10s and could trigger the WDA
+// heavy-tail wedge on its own with nobody driving (docs/VIEWER_PHONE_POLL.md).
+// So everything loadPhone paints — battery, lock state, front app, session,
+// and the "Go to page" chips, which are an ACTION control and not passive
+// info — was painted once at page load and then lied for the rest of the
+// session. Refresh it after the human does something that can change it
+// instead. The timer RESETS on every gesture, so a 30-flick scroll costs one
+// read at the end rather than thirty, and an idle viewer still touches the
+// phone exactly zero times, which is the whole point of the 0 default.
+// Deleting the call sites and this block restores today's behaviour exactly.
+const PHONE_REFRESH_DEBOUNCE_MS = 1500;   // UI cadence, not a device number
+let phoneRefreshTimer = null;
+function schedulePhoneRefresh() {
+  clearTimeout(phoneRefreshTimer);
+  phoneRefreshTimer = setTimeout(() => {
+    // /api/phone serves its CACHED _LAST_PHONE while _ACTION_LOCK is held, so
+    // a refresh that lands mid-action renders PRE-action state and then stops,
+    // i.e. the honest glance quietly lies again. Re-arm instead of reading.
+    if (busyLabel) { schedulePhoneRefresh(); return; }
+    loadPhone();   // itself a no-op while the tab is hidden
+  }, PHONE_REFRESH_DEBOUNCE_MS);
+}
+
 // start network loops only after the page has fully loaded
 window.addEventListener('load', () => {
   loadStatus(); loadDoctor(); loadSent(); loadStop(); loadActivity(); loadPhone();
@@ -1004,6 +1101,24 @@ function showDot(px, py, ok) {
   setTimeout(() => dot.style.opacity = 0, ok ? 400 : 600);
 }
 
+// The swipe's own echo, drawn at SEND time — a drag showed a dot at its start
+// point and nothing else, and the wheel flick showed nothing at all, so the
+// most-used gesture had a blank 0.35-0.7s round trip. Both call sites sit past
+// the inputEnabled/phoneBusy gates, so the line can never claim a gesture that
+// was refused. Coordinates are px relative to #screen's rect, the same space
+// showDot uses (absolutely positioned children of #screen-wrap sit at its
+// padding box, which is #screen's origin).
+const echo = document.getElementById('swipe-echo');
+const SWIPE_ECHO_MS = 700;   // covers the 0.35-0.7s round trip; one-line revert
+function showSwipeEcho(x1, y1, x2, y2) {
+  echo.style.left = x1 + 'px';
+  echo.style.top = y1 + 'px';
+  echo.style.width = Math.hypot(x2 - x1, y2 - y1) + 'px';
+  echo.style.transform = 'rotate(' + Math.atan2(y2 - y1, x2 - x1) + 'rad)';
+  echo.style.opacity = 1;
+  setTimeout(() => echo.style.opacity = 0, SWIPE_ECHO_MS);
+}
+
 // Press = tap, hold = long press, drag = swipe (release point sets direction;
 // hold time sets speed). The long press fires on a local timer WHILE the button
 // is still down, so the phone's menu opens during the hold instead of a second
@@ -1024,7 +1139,7 @@ function toPt(cx, cy, r) {
 async function postGesture(url, body, dotX, dotY) {
   const resp = await fetch(url, {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  if (resp.ok) return;
+  if (resp.ok) { schedulePhoneRefresh(); return; }
   showDot(dotX, dotY, false);
   if (resp.status === 409) {   // dropped as stale, not queued — say why
     const j = await resp.json().catch(() => ({}));
@@ -1107,6 +1222,7 @@ screen.addEventListener('pointerup', async (ev) => {
     // from the 8px crossing, falling back to the press for a drag so fast no
     // pointermove landed in between.
     const seconds = Math.min(Math.max((Date.now() - (start.moveT || start.t)) / 1000, 0.1), 0.5);
+    showSwipeEcho(start.x - r.left, start.y - r.top, ev.clientX - r.left, ev.clientY - r.top);
     await postGesture('/api/swipe', {x1:a.x, y1:a.y, x2:b.x, y2:b.y, seconds},
                       start.x - r.left, start.y - r.top);
   }
@@ -1145,8 +1261,18 @@ async function flushWheel() {
                           points.height * WHEEL_MAX_TRAVEL);
     const dy = delta > 0 ? -dist : dist;   // wheel down = content moves up
     const seconds = dist > WHEEL_FLICK_MIN_PT ? WHEEL_FLICK_SECONDS : 0.25;
-    await fetch('/api/swipe', {method:'POST', headers:JSON_HDR, body: JSON.stringify(
+    // points -> px; the wheel's swipe is anchored at mid-height and capped at
+    // WHEEL_MAX_TRAVEL (<= 0.5, pinned by a test), so the endpoint is always on
+    // screen and needs no clamping of its own. `rect`, not `r`: `r` is the
+    // fetch response two lines down.
+    const rect = screen.getBoundingClientRect();
+    const ex = rect.width / 2;
+    showSwipeEcho(ex, rect.height / 2, ex, (cy + dy) / points.height * rect.height);
+    const r = await fetch('/api/swipe', {method:'POST', headers:JSON_HDR, body: JSON.stringify(
       {x1: cx, y1: cy, x2: cx, y2: cy + dy, seconds})});
+    await reportNotSent(r, 'scroll');
+  } catch (e) {
+    showHint('Lost the link to the viewer (scroll not sent).');
   } finally {
     wheelBusy = false;
     if (wheelAcc) flushWheel();
@@ -1180,8 +1306,12 @@ async function flushKeys() {
   const text = keyBuf; keyBuf = '';
   keyBusy = true;
   try {
-    await fetch('/api/type', {method:'POST', headers:{'Content-Type':'application/json'},
+    const r = await fetch('/api/type', {method:'POST', headers:{'Content-Type':'application/json'},
                               body: JSON.stringify({text})});
+    await reportNotSent(r, text.length === 1 ? '1 character'
+                                             : text.length + ' characters');
+  } catch (e) {
+    showHint('Lost the link to the viewer (' + text.length + ' not sent).');
   } finally {
     keyBusy = false;
     if (keyBuf) flushKeys();   // send what queued up while we were busy
@@ -1195,11 +1325,18 @@ async function sendArrowKey(key) {
   try {
     while (arrowBuf.length) {
       const next = arrowBuf.shift();
-      await fetch('/api/key', {method:'POST', headers:JSON_HDR,
+      const r = await fetch('/api/key', {method:'POST', headers:JSON_HDR,
                                 body: JSON.stringify({key: next})});
+      // Stop the drain on the first refusal instead of firing the rest at a
+      // phone that just said no: half-applied caret navigation leaves the
+      // cursor somewhere nobody asked for, which is worse than not moving it.
+      if (!r.ok) { await reportNotSent(r, 'a key'); break; }
     }
+  } catch (e) {
+    showHint('Lost the link to the viewer (a key was not sent).');
   } finally {
     arrowBusy = false;
+    arrowBuf.length = 0;
   }
 }
 window.addEventListener('paste', async (ev) => {
@@ -1228,6 +1365,48 @@ window.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') { ev.preventDefault(); closeOverlay(); }
     return;
   }
+  // The hotkeys sit ABOVE the focus guard on purpose: only the four GESTURES
+  // buttons blur themselves (ev.detail > 0), so btn-home, btn-shot, every chip
+  // and every debug row KEEP focus after a mouse click, and a map placed below
+  // the guard would silently do nothing until you clicked the phone — which
+  // sends a TAP. That is the same bug test_gesture_buttons_give_focus_back_to_
+  // the_phone was written for. Ctrl+Shift combos have no native meaning inside
+  // a textarea, so sitting above the guard steals nothing from the paste box.
+  if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey) {
+    // A held combo auto-repeats keydown, and an auto-repeat is never a second
+    // deliberate gesture. Ctrl+Shift+B reaches g-back -> edgeSwipe, and edge
+    // swipes never set busyLabel, so phoneBusy() cannot swallow the repeats:
+    // holding it half a second past intent lands 2-3 unwanted Back
+    // navigations on the real phone (a ~0.6s swipe, the rest 409'd by
+    // _ACTION_WAIT). No repeating key could reach a gesture before this map
+    // existed — a held mouse button does not repeat clicks.
+    if (ev.repeat) return;
+    // Shift+S and not Shift+C: the C combo is DevTools inspect-element in
+    // Chrome/Edge, a page cannot cancel it, and the viewer opens in whatever
+    // the default browser is. This one runs even with the link down —
+    // /api/screenshot falls back to the `ios screenshot` subprocess and
+    // btn-shot is never hidden, so it is exactly the broken-link day you most
+    // want to show someone the screen — hence it sits above !inputEnabled too.
+    if (ev.key === 'S' || ev.key === 's') { ev.preventDefault(); copyScreenImage(); return; }
+    // Shift+H and Shift+B, never the bare Ctrl+H (Chrome's History): a
+    // muscle-memory miss here presses Home on a real phone. These two DRIVE
+    // the phone, so they re-check inputEnabled themselves now that the map is
+    // above the global guard; both buttons already carry their own
+    // phoneBusy/withBusy guards, which .click() inherits.
+    if (ev.key === 'H' || ev.key === 'h') {
+      ev.preventDefault();
+      if (inputEnabled) document.getElementById('btn-home').click();
+      return;
+    }
+    if (ev.key === 'B' || ev.key === 'b') {
+      ev.preventDefault();
+      if (inputEnabled) document.getElementById('g-back').click();
+      return;
+    }
+  }
+  // Ctrl+V is deliberately absent: the window paste listener above already
+  // handles it with these same guards, and a preventDefault here would
+  // suppress the paste event and kill that working path.
   if (!inputEnabled) return;
   if (ev.target.closest('input,textarea,button,select,[tabindex]')) return;     // typing in the paste box stays local
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C')) {
@@ -1275,7 +1454,7 @@ document.getElementById('btn-home').onclick = () => {
   if (phoneBusy()) return;   // something else already holds the phone
   return withBusy('GOING HOME', async () => {
     const r = await fetch('/api/home', {method:'POST', headers:JSON_HDR, body:'{}'});
-    if (r.ok) return;
+    if (r.ok) { schedulePhoneRefresh(); return; }
     const j = await r.json().catch(() => ({}));
     showHint(j.error || (r.status === 409
       ? 'Phone is busy — that gesture was dropped.'
@@ -1292,6 +1471,7 @@ document.getElementById('btn-unlock').onclick = async () => {
       const r = await fetch('/api/unlock', {method:'POST', headers:JSON_HDR, body:'{}'});
       const j = await r.json();
       showHint(j.ok ? 'Unlocked.' : (j.error || 'Unlock failed.'));
+      schedulePhoneRefresh();   // lock state is the whole point of this button
     } catch (e) { showHint('Unlock failed.'); }
   });
   btn.disabled = false; btn.textContent = 'Unlock';
@@ -1305,6 +1485,7 @@ document.getElementById('btn-lock').onclick = async () => {
     // Right after an unlock, iOS's grace period can time this out while the
     // screen still turns off — surface the error but don't dramatize it.
     showHint(j.ok ? 'Locked.' : (j.error || 'Lock failed.'));
+    schedulePhoneRefresh();   // lock state is the whole point of this button
   } catch (e) { showHint('Lock failed.'); }
   btn.disabled = false; btn.textContent = 'Lock';
 };
@@ -1520,6 +1701,25 @@ document.getElementById('btn-clip-to-phone').onclick = async () => {
 };
 
 let screenTexts = [];
+
+// The screen as a PNG on the PC clipboard (Ctrl+Shift+S) — "show someone what
+// my phone is doing" without saving a file first. Deliberately NOT folded into
+// copyToClipboard below: that one is text-only and swallows its failure with
+// catch(e){} while still saying "Copied", and this path has a real failure mode
+// (Firefox has no clipboard.write for images) that must be reported.
+async function copyScreenImage() {
+  try {
+    // Hand ClipboardItem the PROMISE, not an awaited blob: awaiting the fetch
+    // first can lose the transient user activation the write needs.
+    await navigator.clipboard.write([new ClipboardItem({
+      'image/png': fetch('/api/screenshot?t=' + Date.now()).then(r => r.blob())
+    })]);
+    showHint('Screen copied to the clipboard — paste it anywhere.');
+  } catch (e) {
+    document.getElementById('btn-shot').click();
+    showHint('Clipboard image not available — saved phone.png instead.');
+  }
+}
 
 async function copyToClipboard(text, label = 'text') {
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1839,7 +2039,10 @@ function appChip(name, pinned) {
           if (!j.ok) showHint(j.error || 'Could not open ' + name + '.');
         });
       } catch (e) { showHint('Could not open ' + name + '.'); }
-      finally { delete b.dataset.busy; b.disabled = !inputEnabled; }
+      finally {
+        delete b.dataset.busy; b.disabled = !inputEnabled;
+        schedulePhoneRefresh();   // the front app row is now wrong either way
+      }
     },
     () => togglePin('sidetap.pins.apps', name, renderAppChips));
 }
@@ -2100,7 +2303,14 @@ function updateActionAvail() {
   ['btn-text-send', 'btn-console-run', 'btn-read-thread',
    ...Object.keys(GESTURES)].forEach(id => {
     const el = document.getElementById(id);
-    if (el && !el.dataset.busy) { el.disabled = !inputEnabled; el.title = tip; }
+    // Restore the button's own tooltip instead of blanking it: this runs on
+    // every 5s /api/status tick, so writing '' while input is up wiped the
+    // markup's hint a few seconds after page load — which silently ate the
+    // "(Ctrl+Shift+B)" hotkey hint on g-back, the only place it is advertised.
+    if (el && !el.dataset.busy) {
+      if (el.dataset.tip === undefined) el.dataset.tip = el.title;
+      el.disabled = !inputEnabled; el.title = tip || el.dataset.tip;
+    }
   });
   // #full-apps holds the same chips in the overlay; they drive the phone too.
   document.querySelectorAll('#app-chips .chip, #full-apps .chip, #page-chips .chip')

@@ -399,6 +399,23 @@ that moves on its own says why. The REPAIR is now verified against four natural
 wedges on tqninh's device (springboard launch, recovered 4/4); the 45s WATCHDOG
 gate is still unverified there, because their script presses the repair by hand.
 
+**Amendment (2026-08-20): the viewer said the same wrong thing the failure tail
+used to.** `/api/status` flattened every failure into `input: False`, and the
+page unhid the Sideloadly "Fix input" wizard for all of them — so a WEDGED link,
+which by definition proves the signed runner is on the phone (the socket
+accepted), was still being prescribed the re-sign that cost this issue's
+reporter a full Sideloadly round with 6 days left on a good signature. The
+endpoint now answers `link` ("up"/"wedged"/"down") beside `input` and the page
+hides Fix input on "wedged" only; "Restart link" stays visible in every failing
+state, because `POST /api/up` unwedges before it restarts and is the repair for
+both. It costs no extra WDA call — `_request` already raised `WDATimeout` for
+accepts-then-silence and a plain `WDAError` for refused, so it is an `isinstance`
+on an exception the handler was catching anyway. Same pass: a wedge leaves the
+MJPEG `<img>` holding its last frame with no `onerror`, so the live view looked
+perfectly alive while nothing answered; `/api/status` now publishes `silent_for`
+(the age of the watchdog's `down_since`, zeroed on any answered request) and the
+page dims the picture and names it frozen past 60s.
+
 **What does NOT reproduce it (measured 2026-08-17, 68 trials, zero wedges).**
 "TikTok wedges and YouTube Shorts does not" is not a property of the apps. Paired
 against YouTube on the identical routes, warm TikTok was the same speed

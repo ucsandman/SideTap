@@ -37,9 +37,10 @@ none of which you can learn by looking at the screen.
 | `tap(x, y)` / `swipe(x1,y1,x2,y2,secs)` / `scroll("down")` | raw gestures, units = points |
 | `long_press(x, y, seconds=1.0)` | context menus and other hidden affordances |
 | `act([{"tool":n,"args":{...}}, ...])` | several tools in ONE round trip; screenshot excluded |
-| `type_text(t)` | type into the focused field (tap the field first) |
+| `type_text(t)` | type into the focused field (tap the field first) — it **appends** at the cursor |
+| `set_field_text(field, text)` | replace a field's contents: pass the `ocr()` row for the field (it taps it for you), reads the value back. The only correct way to fill a field that may already hold text or an iOS draft |
 | `get_clipboard()` / `set_clipboard(t)` | read or write the iPhone system clipboard |
-| `open_app("messages")` | friendly name or bundle id |
+| `open_app("messages", wait_seconds=0)` | friendly name or bundle id; `wait_seconds>0` confirms it reached the foreground and raises if it never did (the only foreground-confirmed launch that does not need the bundle id) |
 | `current_app()` / `wait_for_app(bundle_id)` | frontmost app / wait until one is |
 | `screenshot("out.png")` / `press_home()` / `wait_stable()` / `unlock()` | utilities |
 

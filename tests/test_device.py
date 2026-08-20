@@ -5,6 +5,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from phone_harness import device  # noqa: E402
@@ -332,3 +334,80 @@ def test_safe_kill_can_spare_the_process_tree(monkeypatch):
     assert cmds[0][0] == ["taskkill", "/PID", "4242", "/F"]
     assert device._safe_kill(4242, "python") is True  # default still kills the tree
     assert "/T" in cmds[1][0]
+
+
+# ---- start_tunnel readiness poll -------------------------------------------
+# Pins that start_tunnel returns as soon as `tunnel ls` confirms the tunnel,
+# that its worst case is still the 3s sleep it replaced (probe timeouts
+# included — tunnel_running's own 10s would otherwise leak straight through
+# the cap), and that the wintun.dll fix line still prints when it dies.
+
+
+def _tunnel_env(monkeypatch, listed_on_call, status="running"):
+    clock = [0.0]
+    sleeps = []
+    probes = []
+    monkeypatch.setattr(device.time, "monotonic", lambda: clock[0])
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(device.time, "sleep", fake_sleep)
+    monkeypatch.setattr(device, "_spawn", lambda n, a: 1234)
+
+    def fake_running(timeout=10.0):
+        probes.append((timeout, clock[0]))
+        clock[0] += 0.21  # the measured go-ios process spawn floor
+        return len(probes) >= listed_on_call
+
+    monkeypatch.setattr(device, "tunnel_running", fake_running)
+    monkeypatch.setattr(device, "proc_status", lambda n: status)
+    return clock, sleeps, probes
+
+
+def test_start_tunnel_returns_as_soon_as_the_tunnel_is_listed(monkeypatch):
+    # The 3s this replaced sits in front of DDI mount, WDA launch and the WDA
+    # poll on every cold bring-up, every Restart-link click and every
+    # deep-sleep self-heal — the moments the header reads "Starting link…".
+    clock, sleeps, probes = _tunnel_env(monkeypatch, listed_on_call=2)
+    assert device.start_tunnel() is None
+    assert clock[0] < device._TUNNEL_READY_TIMEOUT
+    assert len(probes) == 2
+    assert sleeps == [0.5]  # slept once per FAILED probe, not a flat 3s
+
+
+def test_start_tunnel_still_raises_when_the_process_died(monkeypatch):
+    clock, _sleeps, _probes = _tunnel_env(
+        monkeypatch, listed_on_call=10_000, status="dead"
+    )
+    with pytest.raises(device.DeviceError) as exc:
+        device.start_tunnel()
+    assert "wintun" in str(exc.value)  # the fix line this function exists for
+    assert clock[0] >= 3.0  # waited exactly as long as the old sleep did
+
+
+def test_start_tunnel_falls_through_when_alive_but_unlisted(monkeypatch):
+    # Today's behaviour when `tunnel ls` never confirms but the process lives:
+    # return quietly and let ddi_mounted() be the one to complain.
+    _clock, _sleeps, _probes = _tunnel_env(monkeypatch, listed_on_call=10_000)
+    assert device.start_tunnel() is None
+
+
+def test_start_tunnel_never_probes_past_its_cap(monkeypatch):
+    # tunnel_running() runs `tunnel ls` on a 10s subprocess timeout, so a probe
+    # started at t=2.9s against a half-up daemon could run to 12.9s and blow the
+    # cap wide open. Each probe gets only the budget that is left.
+    clock, _sleeps, probes = _tunnel_env(monkeypatch, listed_on_call=10_000)
+    device.start_tunnel()
+    for timeout, started in probes:
+        assert timeout <= device._TUNNEL_READY_TIMEOUT
+        assert timeout <= device._TUNNEL_READY_TIMEOUT - started + 1e-9
+    assert clock[0] <= device._TUNNEL_READY_TIMEOUT + 0.25
+
+
+def test_tunnel_ready_cap_equals_the_sleep_it_replaced():
+    # Unmeasured on device: nobody has timed how long a userspace tunnel really
+    # takes to list. Until someone does, the cap stays at the old flat sleep so
+    # the worst case is unchanged and a bad result is a one-line revert.
+    assert device._TUNNEL_READY_TIMEOUT == 3.0

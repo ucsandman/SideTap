@@ -36,6 +36,12 @@ _TOOLS = [
     helpers.swipe,
     helpers.scroll,
     helpers.type_text,
+    # Registered raw, right beside type_text, so the model sees the pair:
+    # type_text APPENDS at the cursor, this one replaces. A hand-written
+    # wrapper would have to re-declare verify=True, which is the exact
+    # shadowing bug test_wrapper_defaults_match_the_helpers_they_wrap exists
+    # to catch.
+    helpers.set_field_text,
     helpers.set_clipboard,
     helpers.press_home,
     helpers.current_page,
@@ -99,10 +105,17 @@ def wait_for_text(
 
     The complement of wait_stable(): that says the screen stopped moving, this
     says the thing you were waiting for actually showed up. The returned
-    element carries x/y, so the caller can tap it without re-searching."""
-    return trust.envelope(
-        helpers.wait_for_text(text, timeout, interval, exact), "screen"
-    )
+    element carries x/y, so the caller can tap it without re-searching.
+
+    On a MISS 'screen' is {'found': null, 'visible': [...]} instead: the rows
+    that were on screen when the wait gave up, when its last poll's read is
+    still cached. A timeout is a 10s stall, and asking what WAS there is
+    another whole round trip against a tree this call already paid for."""
+    el = helpers.wait_for_text(text, timeout, interval, exact)
+    if el is not None:
+        return trust.envelope(el, "screen")
+    rows = helpers._cached_screen()
+    return trust.envelope({"found": None, "visible": _compact(rows or [])}, "screen")
 
 
 def scroll_until_found(
@@ -160,6 +173,23 @@ _ACT_TOOLS = {fn.__name__: fn for fn in _TOOLS + _READING_TOOLS}
 _ACT_TOOLS["unlock"] = helpers.unlock
 
 
+def _screen_after_failure() -> dict | None:
+    """The screen the failing step was looking at, when it is already cached.
+
+    A failed step ends the batch and the model's next call is always "what IS
+    on screen then?" — a whole round trip against a tree the failing lookup has
+    usually just read. helpers._cached_screen() answers that for free or not at
+    all, so a STOP-blocked action still fails cheaply. It rides the same
+    envelope every read tool uses, as its own key: spliced into the error
+    string the flags would be computed over text the model never saw as data.
+    """
+    try:
+        rows = helpers._cached_screen()
+    except Exception:
+        return None  # nothing may raise on top of the error being reported
+    return None if rows is None else trust.envelope(_compact(rows), "screen")
+
+
 # noqa goes on the decorator line because that is the line vulture reports for
 # a decorated function. act() has no static caller: FastMCP invokes it.
 @server.tool()  # noqa: vulture  (reached only through the MCP tool registry)
@@ -168,8 +198,10 @@ def act(steps: list[dict]) -> list[dict]:
     sequence or three scrolls. Each step is {"tool": name, "args": {...}}
     using the other tools' names and arguments (screenshot excluded).
     Stops at the first failure; returns one {"tool", "ok", "result"|"error"}
-    entry per step attempted. The screen changes between steps, so batch
-    only what you don't need to look at in between."""
+    entry per step attempted. A failed step also carries "screen" — the screen
+    it was looking at — whenever that screen is still cached, so a miss usually
+    answers "what IS visible?" without another call. The screen changes between
+    steps, so batch only what you don't need to look at in between."""
     out: list[dict] = []
     for step in steps:
         name = (step or {}).get("tool")
@@ -180,7 +212,11 @@ def act(steps: list[dict]) -> list[dict]:
         try:
             result = fn(**(step.get("args") or {}))
         except Exception as exc:
-            out.append({"tool": name, "ok": False, "error": str(exc)})
+            entry = {"tool": name, "ok": False, "error": str(exc)}
+            screen = _screen_after_failure()
+            if screen is not None:
+                entry["screen"] = screen
+            out.append(entry)
             break
         out.append({"tool": name, "ok": True, "result": result})
     return out

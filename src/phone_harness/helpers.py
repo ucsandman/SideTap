@@ -177,6 +177,30 @@ def ui_tree() -> dict:
     return tree
 
 
+def _cached_screen() -> list[dict] | None:
+    """The visible rows IF the tree cache is still warm, else None. Never reads.
+
+    For the error paths: a lookup that failed read the tree on its way to
+    failing, so the screen the agent is about to ask for ("Call ocr() to see
+    what is visible") is already sitting here and costs nothing. A COLD cache
+    returns None rather than paying for the read — every action calls
+    _invalidate_tree() BEFORE it acts, so a tap blocked by .state/STOP or a
+    wedged link would bill a Home Screen /source (3.0-5.7s, or no answer at
+    all) purely to decorate an error. Free or nothing.
+
+    Marks the session tainted exactly as ui_tree()'s cache hit does: these rows
+    reach the model, so a send after them still needs a human. That includes
+    the cache send_message filled under trust.internal() — the thread content
+    really did reach the model this time.
+    """
+    if _tree_cache["tree"] is None or time.monotonic() - _tree_cache["ts"] >= _TREE_TTL:
+        return None
+    if _foreign_activity() != _tree_cache["act"]:
+        return None
+    trust.mark("screen", _tree_cache["flags"])
+    return collect_texts(_tree_cache["tree"])
+
+
 def ocr() -> list[dict]:
     """All visible on-screen text with center coordinates.
 
@@ -570,8 +594,9 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
     believes it typed `text`. Clear first, then read the field back, so a caller
     can never report a message it did not send.
 
-    Pass the field element you are about to type into (the one you would tap).
-    `verify=False` skips the read-back round trip.
+    Pass the field element you are about to type into (the one you would tap):
+    that is an ocr() row, whose x/y/type are what this needs. It taps the field
+    itself, so do not tap first. `verify=False` skips the read-back round trip.
 
     The clear and the read-back address `field` itself, resolved to an element
     id AFTER the tap: the keyboard slide-up moves the field (the Messages
@@ -586,7 +611,17 @@ def set_field_text(field: dict, text: str, verify: bool = True) -> str:
     if not verify:
         return text
     landed = _field_value(eid)
-    return text if landed is None else landed
+    if landed is None:
+        return text
+    # A read-back is a screen read like any other. _field_element falls back to
+    # the bare type chain when the label predicate misses, so on a screen with
+    # more than one text field this can hand back a DIFFERENT field's value —
+    # a surviving draft, or a string planted in a web form — and under
+    # approval.mode() == "flagged" the taint is exactly what arms the send gate.
+    # send_message calls this inside trust.internal(), so its own bookkeeping
+    # read still does not arm the gate it is about to check.
+    trust.mark("screen", trust.scan(landed))
+    return landed
 
 
 _SPRINGBOARD = "com.apple.springboard"
@@ -808,8 +843,22 @@ def wait_for_app(
         time.sleep(_duty_rest(started, interval, deadline))
 
 
-def open_app(name: str) -> None:
-    """Open an app by friendly name ('Settings'), bundle id, or installed-app name."""
+def open_app(name: str, wait_seconds: float = 0.0) -> None:
+    """Open an app by friendly name ('Settings'), bundle id, or installed-app name.
+
+    Pass `wait_seconds` to have the launch CONFIRMED before this returns, and
+    raise if the app never reached the foreground. The default 0.0 launches and
+    returns exactly as before, and must stay 0.0: viewer.py calls this inside
+    _action_slot(), so a non-zero default would hold _ACTION_LOCK for the whole
+    wait and 409-drop the human's next taps (_ACTION_WAIT is 2s).
+
+    This is the only way to get the correct foreground wait without knowing the
+    bundle id: wait_for_app() needs one, open_app resolves it privately, and
+    inside act() a later step cannot read an earlier step's result — so a
+    batched open-then-look otherwise settles for wait_stable()'s "the screen
+    stopped moving", which a launch that bounced back to the Home Screen also
+    satisfies.
+    """
     key = name.lower().strip()
     # A dot alone does NOT make it a bundle id: `ios apps --list` reports names
     # with the version attached ("YouTube 21.32.4", "TikTok 46.4.0"), so a bare
@@ -845,6 +894,15 @@ def open_app(name: str) -> None:
         raise WDAError(f"Unknown app {name!r}.{hint}")
     _invalidate_tree()
     client().app_launch(bundle)
+    if wait_seconds > 0 and not wait_for_app(bundle, timeout=wait_seconds):
+        # Loud, not a return value: keeping `-> None` leaves the MCP output
+        # schema, the viewer's own call and four test stubs untouched, and a
+        # raise stops an act() batch here instead of letting the next step tap
+        # the previous screen's coordinates.
+        raise WDAError(
+            f"{name!r} did not reach the foreground within {wait_seconds}s. "
+            "Call current_app() to see what did, or retry with a longer wait."
+        )
 
 
 def _leads_with(text: str, contact: str) -> bool:

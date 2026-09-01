@@ -1281,3 +1281,56 @@ heavy tail, the same class as the TikTok wedge, and nothing cheap predicts it
 (a coversheet-readiness probe that hit fast correlated with a fast swipe but did
 not prevent the hang when it missed). Left alone deliberately: unlock() has three
 ERRORS.md entries and its flat waits are the one untuned path in helpers.py.
+
+---
+
+## 2026-08-31 — Lock-screen notifications cannot be tapped at all: their own AX snapshot hangs every gesture ~16.9s, which then lands on a re-slept dark screen
+
+**Symptom.** Wes: "priority notifications still break this product, I can't click
+on them, it takes forever to unlock." Clicking a notification in the viewer
+showed nothing but a red dot; unlock with a priority stack up ran ~36s.
+
+**Reproduced live** (real Priority Notifications stack + a TIME SENSITIVE
+reminder on the lock screen, measured):
+
+- Lock-screen `/source` is EMPTY of notifications: 4 rows total
+  (`SBCoverSheetWindow`, one `ListCell`), so `find_text`/`tap_text` can never
+  find one — agents are blind to them.
+- Tap on the DARK lock screen: lands in 0.70s, silently swallowed (synthetic
+  taps do not wake the display).
+- Tap on the LIT lock screen: hangs 16.8-16.9s in `/actions`, 4/4 tries —
+  adopted session, warmed session, and a `fresh_session()` minted after the
+  wake all hang identically, and waiting 3s into the lit window changes
+  nothing. The viewer's 10s client aborts at 10s (red dot, no words — the 502's
+  error text was dropped by `postGesture`). The lit window is only ~8-10s, so
+  when the gesture finally fires the screen is ALREADY DARK again — swallowed.
+  Lit → hang until dark; dark → no-op: a perfect catch-22. No wake cycle can
+  ever deliver a tap to a lock-screen notification.
+- `press_button("home")` never hangs (0.50s every time): button presses are HID
+  events, no AX snapshot. Only touch gestures pay the CoverSheet snapshot.
+- **Control, same night: a CLEAN lit lock screen taps fine (0.5-0.6s, 2/2)** —
+  after the unlock cleared the stack, the same wake+tap through the same
+  lock-crossing session landed instantly. The hang is the AX snapshot OF THE
+  NOTIFICATION STACK, not the lock screen, not session poisoning. That is why
+  2026-08-20's twelve trials saw it "fire ~50% regardless of session
+  freshness": the variable nobody controlled was what sat on the lock screen.
+  The irony is exact: when there IS a notification to tap, the snapshot of it
+  is what makes it untappable.
+- `unlock()` end-to-end with the priority stack: 35.9s — one full ~16.9s hang
+  burned on the first wake swipe, then the second cycle does the real work.
+  Matches the 2026-08-20 entry; nothing new to tune there. With the priority
+  stack on screen the hang fired 4/4 tonight (vs ~50% bare on 2026-08-20).
+
+**Fix (what a fix can honestly be).** The hang is the same unboundable XCTest
+AX-snapshot tail as the TikTok wedge — no WDA setting bounds it (see
+2026-08-17/20). So the product change is honesty, not gymnastics:
+`WDATimeout`'s message now names the locked-phone case FIRST and says
+lock-screen notifications cannot be tapped (unlock instead), and viewer.html's
+`postGesture`/`gesturePost` now surface the 502 error text as a hint instead of
+a silent red dot. The working flow for "open that notification" is: Unlock,
+then the Notifs edge button (Notification Center on an unlocked phone has a
+full tree and normal-speed taps). skills/phone-gotchas carries the trap.
+
+**Lesson.** "I can't click on X" on a lock screen is not a click bug — it is
+two silent swallows stacked (abort at 10s while lit, landing on dark), and the
+viewer's failure path was eating the one message that explained it.

@@ -248,12 +248,17 @@ class WDAClient:
         except requests.Timeout as exc:
             raise WDATimeout(
                 f"{method} {path}: WebDriverAgent did not answer within "
-                f"{self.timeout:g}s. The usual cause is the app in front not "
-                "answering iOS accessibility requests, which blocks WDA for "
-                "everything, not just this call — TikTok's video feed does it "
-                "every time and cannot be driven at all. Recover with "
-                "`phone-harness up` (or the viewer's Restart link): it puts the "
-                "Home Screen back in front, which releases WDA."
+                f"{self.timeout:g}s. If the phone is LOCKED with notifications "
+                "on the lock screen this is normal: their accessibility "
+                "snapshot hangs every gesture ~16s, which lands after the "
+                "screen re-sleeps, so lock-screen notifications cannot be "
+                "tapped — unlock first (measured 2026-08-31, docs/ERRORS.md). "
+                "Otherwise the usual cause is the app in front not answering "
+                "iOS accessibility requests, which blocks WDA for everything, "
+                "not just this call — TikTok's video feed does it every time "
+                "and cannot be driven at all. Recover with `phone-harness up` "
+                "(or the viewer's Restart link): it puts the Home Screen back "
+                "in front, which releases WDA."
             ) from exc
         except requests.RequestException as exc:
             raise WDAError(

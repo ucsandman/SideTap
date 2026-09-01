@@ -206,6 +206,7 @@ Lead with 1. Only reach for mass drags after the user has been told the cost.
 | `find_text()` empty for something you just saw | It only sees the **current** screen. Sweep Home Screen pages with a batched `act()` before concluding it is gone. |
 | Used "Add to Home Screen" | The icon lands in the first free slot, usually the **last** page, not page 1. |
 | Error wall containing `FBSOpenApplication... Locked` | The phone is locked. Make `unlock` step 1 of the batch. |
+| Tapping a lock-screen notification | **Impossible — do not retry.** The lock screen's tree is empty (no notification cells, so `find_text` is blind), a tap on the dark screen is swallowed without waking it, and the notification stack's own AX snapshot hangs every lit-screen gesture ~16s, which then lands after the screen re-slept — swallowed too (4/4 with a priority stack; a CLEAN lit lock screen taps in 0.5s, 2/2 — measured 2026-08-31). `unlock()` first, then open Notification Center (top-edge swipe) where the tree is real and taps are normal speed. |
 | A bottom-edge swipe does nothing | **Look for a keyboard first.** It owns the bottom ~40% of the screen, so a system edge gesture started at y≈950 begins *inside the keyboard* and is swallowed. Longer and slower does not help — the start point is wrong, not the shape. |
 | Stuck in Spotlight after a search | `press_home()` does **not** leave it (`/wda/homescreen` only exits real apps), and every bottom-edge gesture fails for the keyboard reason above. Tap the **empty blurred area** between the results and the search bar (mid-screen, ~y=477 on a 956pt screen) — one tap and you are on the springboard. Five gestures failed here before anyone took a screenshot. |
 | Need to go back a screen inside an app | No `go_back()` helper exists. First try the measured edge swipe — `w,h = screen_info(); swipe(1, h/2, w*0.91, h/2, 0.6)` — the shape viewer.html's ← Back button ships, measured popping the screen every time from Settings > General (2026-08-12); a shorter or slower/faster edge swipe is swallowed in silence, so don't improvise the numbers. If the app disables interactive pop, tap the leftmost `Button` near the top-left from `ocr()` even when its label reads as nonsense ("33 unread") — geometry is the signal here, not text. Never do that tap on a **list screen**: the top-left button there is the profile button, and tapping it opens a menu instead of going back (bit live 2026-08-10). |
@@ -220,6 +221,11 @@ Verified against `src/phone_harness/` — not guesses:
 - **No biometrics.** Face ID and Touch ID prompts are a dead end.
 - **No real dictation.** You can tap the mic. Nobody speaks.
 - **`ui_tree()` is harness-only.** Not an MCP tool. Over MCP you get flat `ocr()`.
+- **Cannot tap lock-screen notifications.** The notification stack's own
+  accessibility snapshot hangs every gesture at the lit lock screen ~16s, which
+  fires after the screen re-sleeps, where iOS swallows it; the lock screen's
+  tree carries no notification elements at all (a clean lock screen taps fine —
+  the notification you want IS the hang). Unlock first — that is the fast path.
 - **Cannot drive a video feed that ignores accessibility.** TikTok's For You feed
   is the proven case (measured 2026-08-17). Every WDA call that resolves the
   frontmost app — every gesture, `ocr()`, `current_app()` — blocks forever there,

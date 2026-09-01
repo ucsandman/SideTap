@@ -669,9 +669,9 @@ async function gesturePost(url, body) {
   if (phoneBusy()) return;
   const r = await fetch(url, {method:'POST', headers:JSON_HDR,
                               body: JSON.stringify(body || {})});
-  if (r.status === 409) {
+  if (!r.ok) {   // 409 dropped, or 502 from a hung/refused WDA — say why
     const j = await r.json().catch(() => ({}));
-    showHint(j.error || 'Phone is busy — that gesture was dropped.');
+    showHint(j.error || 'The phone did not take that gesture.');
     return;
   }
   schedulePhoneRefresh();   // Notifs/Control/Back edge gestures land here too
@@ -1141,10 +1141,11 @@ async function postGesture(url, body, dotX, dotY) {
     headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if (resp.ok) { schedulePhoneRefresh(); return; }
   showDot(dotX, dotY, false);
-  if (resp.status === 409) {   // dropped as stale, not queued — say why
-    const j = await resp.json().catch(() => ({}));
-    showHint(j.error || 'Phone is busy — that gesture was dropped.');
-  }
+  // 409 = dropped as stale; 502 = WDA refused or hung (a locked phone's
+  // lock-screen tap does this every time). Either way the red dot alone
+  // read as "nothing happened" — say why (live 2026-08-31).
+  const j = await resp.json().catch(() => ({}));
+  showHint(j.error || 'The phone did not take that gesture.');
 }
 
 function showRing(px, py) {

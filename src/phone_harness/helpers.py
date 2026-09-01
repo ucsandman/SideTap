@@ -1510,16 +1510,40 @@ _UNLOCK_TIMEOUT = 45.0  # first gesture after a deep sleep: 20.5s measured live
 _LIT_SCREEN_BYTES = 120_000
 
 
-def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:
-    """Put the passcode into the pad by TAPPING its digit buttons.
+def _pad_dismissed(c, probe: str) -> bool:
+    """True once the pad's digit probe stops matching — the pad left the
+    screen. Attempt-counted with a wall-clock cap, same shape as unlock()'s
+    pad_appears: tests with a no-op sleep stay instant, and a slow probe
+    cannot stretch the check much past ~3s."""
+    start = time.monotonic()
+    for i in range(8):
+        if c.find_first(probe) is None:
+            return True
+        if i >= 1 and time.monotonic() - start > 3.0:
+            break
+        time.sleep(0.3)
+    return False
 
-    /wda/keys sends keystrokes to the FOCUSED element, and the pad being on
-    screen does not mean the pad holds focus: a lock-screen priority
-    notification kept focus while the pad sat behind it, so all six typed
-    digits went into the void and the phone stayed locked (live 2026-08-13).
-    A tap on a button needs no focus. Alphanumeric passcodes get a full
-    keyboard instead of the pad, so any character without a digit button
-    falls back to the typing path — there is nothing to tap for it.
+
+def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:
+    """Put the passcode in: TYPE it in one request, fall back to pad taps.
+
+    One /wda/keys request enters every digit at once — the near-instant
+    entry unlock had before 2026-08-13 — against ~2.8s of visible
+    one-finger taps. But /wda/keys goes to the FOCUSED element, and the pad
+    being on screen does not mean the pad holds focus: a lock-screen
+    priority notification held focus while the pad sat behind it and ate
+    all six typed digits (live 2026-08-13). So the typed attempt is never
+    trusted: the pad must LEAVE the screen (bounded digit probe, 0.11s —
+    never a /source), and a pad still up falls back to TAPPING the digit
+    buttons, which need no focus. Eaten digits consume no iOS lockout
+    attempt, so the fallback is free in the exact case it exists for; a
+    wrong PHONE_PASSCODE now burns two attempts (one typed, one tapped)
+    before unlock()'s exit check raises — accepted: that is a persistent
+    .env misconfiguration the error names out loud, not a live race.
+
+    Alphanumeric passcodes get a full keyboard instead of the pad, so any
+    character without a digit button keeps the plain typing path.
     """
     centers = {}
     for e in collect_texts(pad_tree):
@@ -1529,39 +1553,46 @@ def _enter_passcode(c, passcode: str, pad_tree: dict) -> None:
             and e["text"].isdigit()
         ):
             centers.setdefault(e["text"], (e["x"], e["y"]))
-    if passcode and all(ch in centers for ch in passcode):
-        # The tap coordinates ARE the digits — keep them out of the live feed.
-        with redact_actions("passcode entry"):
-            # Each tap paid the session's waitForIdleTimeout (2s ceiling) plus
-            # a 0.15s sleep: six digits took 4.94s of visible one-finger
-            # typing (measured live 2026-08-14). The pad is static, so idle
-            # settling buys nothing — at waitForIdleTimeout 0 the same six
-            # taps run 2.8s with every digit in order (3/3 device runs).
-            # Restore is a finally: the setting rides the SHARED session. Do
-            # NOT batch the taps into one /actions request instead: six
-            # down/up cycles in one pointer source enter deterministically
-            # WRONG digits, and six parallel pointer sources KILL WDA
-            # outright (both on device 2026-08-14; docs/ERRORS.md).
-            c.set_wait_for_idle(0)
-            try:
-                for ch in passcode:
-                    x, y = centers[ch]
-                    # Name the finger contact instead of riding the client's
-                    # default: a dropped pad tap burns an iOS lockout attempt,
-                    # so this path must not silently follow a shorter default
-                    # tuned for dense app screens.
-                    c.tap(x, y, hold_ms=80)
-            finally:
-                try:
-                    c.set_wait_for_idle(config.WDA_IDLE_WAIT)
-                except WDAError:
-                    pass  # digits are in; a session on eager waits self-heals
-                    # at the next fresh session, failing here would be a lie
+    if not (passcode and all(ch in centers for ch in passcode)):
+        try:
+            c.type_text(passcode)
+        except WDAError as exc:
+            raise WDAError(_scrub_secret(str(exc), passcode)) from None
         return
-    try:
-        c.type_text(passcode)
-    except WDAError as exc:
-        raise WDAError(_scrub_secret(str(exc), passcode)) from None
+    # The tap coordinates ARE the digits — keep them out of the live feed.
+    with redact_actions("passcode entry"):
+        # The pad is static, so idle settling buys nothing: the whole entry
+        # runs at waitForIdleTimeout 0 (six taps went 4.94s -> 2.8s measured
+        # live 2026-08-14; the typed request rides the same setting). Restore
+        # is a finally: the setting rides the SHARED session. Do NOT batch
+        # the fallback taps into one /actions request instead: six down/up
+        # cycles in one pointer source enter deterministically WRONG digits,
+        # and six parallel pointer sources KILL WDA outright (both on device
+        # 2026-08-14; docs/ERRORS.md).
+        c.set_wait_for_idle(0)
+        try:
+            try:
+                c.type_text(passcode)
+            except WDAError as exc:
+                # A typing ERROR is not "digits eaten": a timeout's keys may
+                # still land, and tapping on top of them garbles the attempt.
+                # Raise instead — unlock is one attempt per click by design.
+                raise WDAError(_scrub_secret(str(exc), passcode)) from None
+            if _pad_dismissed(c, _pad_digit_probe(pad_tree)):
+                return  # typed digits landed: unlocked, no taps needed
+            for ch in passcode:
+                x, y = centers[ch]
+                # Name the finger contact instead of riding the client's
+                # default: a dropped pad tap burns an iOS lockout attempt,
+                # so this path must not silently follow a shorter default
+                # tuned for dense app screens.
+                c.tap(x, y, hold_ms=80)
+        finally:
+            try:
+                c.set_wait_for_idle(config.WDA_IDLE_WAIT)
+            except WDAError:
+                pass  # digits are in; a session on eager waits self-heals
+                # at the next fresh session, failing here would be a lie
 
 
 def unlock(c: WDAClient | None = None) -> None:
@@ -1714,14 +1745,8 @@ def unlock(c: WDAClient | None = None) -> None:
     # for one of the pad's own digits answers in 0.11s. Attempt-counted with
     # a wall-clock cap, same shape as pad_appears: tests with a no-op sleep
     # stay instant, and a slow probe cannot stretch the check past ~3s.
-    probe = _pad_digit_probe(pad_tree)
-    start = time.monotonic()
-    for i in range(8):
-        if c.find_first(probe) is None:
-            return  # pad gone: unlocked
-        if i >= 1 and time.monotonic() - start > 3.0:
-            break
-        time.sleep(0.3)
+    if _pad_dismissed(c, _pad_digit_probe(pad_tree)):
+        return  # pad gone: unlocked
     raise WDAError(
         "Typed the passcode but the pad is still on screen — wrong "
         "PHONE_PASSCODE, or the screen slept mid-type. Not retrying "

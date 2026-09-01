@@ -76,5 +76,5 @@ none of which you can learn by looking at the screen.
 - Anything fails to connect → `./phone-harness.cmd doctor` from the repo root.
   Never guess at connection problems. Common: free-Apple-ID signing expires every
   7 days → `phone-harness fix-input`, then the USER clicks Start in Sideloadly.
-- Phone must be unlocked for bring-up; `unlock()` enters PHONE_PASSCODE from .env if set (digit passcodes go in by tapping the pad's buttons, so a lock-screen notification holding keyboard focus cannot eat them). It raises if the screen stays dark after two wake attempts — that means the phone needs a hand wake (side button), not a retry loop.
+- Phone must be unlocked for bring-up; `unlock()` enters PHONE_PASSCODE from .env if set (digit passcodes are typed in one fast request and verified by the pad leaving the screen; if a lock-screen notification holding keyboard focus eats the typed digits, they go in by tapping the pad's buttons instead). It raises if the screen stays dark after two wake attempts — that means the phone needs a hand wake (side button), not a retry loop.
 - Human-watchable live viewer: http://127.0.0.1:8770 (start with `python launch.py`).

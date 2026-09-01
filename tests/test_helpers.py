@@ -203,6 +203,7 @@ class StubPhone:
         frame=None,
         app="com.apple.springboard",
         wrong_pin=False,
+        eats_typing=False,
     ):
         self.tree = tree
         self.typed = []
@@ -218,6 +219,9 @@ class StubPhone:
         self.unlock_error = unlock_error
         self.app = app
         self.wrong_pin = wrong_pin
+        # A lock-screen priority notification holds focus and swallows every
+        # typed digit while the pad sits behind it (live 2026-08-13).
+        self.eats_typing = eats_typing
         # A lit screen compresses to a big PNG; a dark one to almost nothing.
         self.frame = frame if frame is not None else b"\0" * 200_000
 
@@ -272,7 +276,7 @@ class StubPhone:
         if self.type_error:
             raise self.type_error
         self.typed.append(text)
-        if not self.wrong_pin:
+        if not self.wrong_pin and not self.eats_typing:
             self.tree = SAMPLE_TREE  # accepted: pad dismissed, home screen
 
     def tap(self, x, y, hold_ms=None):
@@ -313,26 +317,39 @@ def test_unlock_types_nothing_when_no_pad_appears(fast):
     assert stub.typed == []
 
 
-def test_unlock_taps_the_pad_instead_of_typing(fast):
+def test_unlock_types_the_passcode_in_one_request(fast):
+    """On a clean lock screen the pad holds focus and one /wda/keys request
+    puts every digit in at once — the near-instant entry unlock had before
+    2026-08-13. Verified, never trusted: the pad leaving the screen is what
+    lets the typed attempt stand, and no fallback taps fire."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.typed == ["246810"]
+    assert stub.tapped == []
+
+
+def test_unlock_falls_back_to_taps_when_typed_digits_are_eaten(fast):
     """/wda/keys sends keystrokes to the FOCUSED element, and the pad being on
     screen does not mean the pad holds focus: a lock-screen priority
     notification kept focus while the pad sat behind it, all six typed digits
-    went into the void, and the phone stayed locked (live 2026-08-13). A tap
-    on a digit button needs no focus, so a digit passcode goes in by taps."""
-    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    went into the void, and the phone stayed locked (live 2026-08-13). The
+    pad still up after typing means exactly that — a tap on a digit button
+    needs no focus, so the digits go in by taps and unlock still succeeds."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890")), eats_typing=True))
     helpers.unlock()
-    assert stub.tapped == list("246810")
-    assert stub.typed == []
+    assert stub.typed == ["246810"]  # the fast attempt, swallowed
+    assert stub.tapped == list("246810")  # the fallback that landed
 
 
 def test_unlock_taps_key_digits_like_the_real_pad(fast):
     """Pin the device's actual tree shape: the pad digits are Key '1'..'0'
     (dump 2026-08-13). The first live run of the tap path silently fell back
     to typing because only Button was accepted."""
-    stub = fast(StubPhone(_buttons_tree(list("1234567890"), kind="Key")))
+    stub = fast(
+        StubPhone(_buttons_tree(list("1234567890"), kind="Key"), eats_typing=True)
+    )
     helpers.unlock()
     assert stub.tapped == list("246810")
-    assert stub.typed == []
 
 
 def test_unlock_digit_taps_drop_the_idle_wait_and_restore_it(fast):
@@ -345,9 +362,21 @@ def test_unlock_digit_taps_drop_the_idle_wait_and_restore_it(fast):
     instead: six down/up cycles in one pointer source entered
     deterministically WRONG digits, and six parallel pointer sources KILLED
     WDA outright — both on device 2026-08-14.)"""
-    stub = fast(StubPhone(_buttons_tree(list("1234567890"), kind="Key")))
+    stub = fast(
+        StubPhone(_buttons_tree(list("1234567890"), kind="Key"), eats_typing=True)
+    )
     helpers.unlock()
     assert stub.tapped == list("246810")
+    assert stub.idle_waits == [0, config.WDA_IDLE_WAIT]
+
+
+def test_unlock_typed_fast_path_also_restores_the_idle_wait(fast):
+    """The typed request rides the same waitForIdleTimeout-0 window as the
+    taps; a fast-path return must still put the shared session's setting
+    back."""
+    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    helpers.unlock()
+    assert stub.typed == ["246810"]
     assert stub.idle_waits == [0, config.WDA_IDLE_WAIT]
 
 
@@ -361,7 +390,7 @@ def test_enter_passcode_restores_idle_wait_when_a_tap_raises(fast):
             if len(self.tapped) == 2:
                 raise WDAError("boom")
 
-    stub = fast(Dies(_buttons_tree(list("1234567890"), kind="Key")))
+    stub = fast(Dies(_buttons_tree(list("1234567890"), kind="Key"), eats_typing=True))
     with pytest.raises(WDAError, match="boom"):
         helpers._enter_passcode(stub, "246810", stub.tree)
     assert stub.idle_waits == [0, config.WDA_IDLE_WAIT]
@@ -374,8 +403,10 @@ def test_unlock_pad_gone_check_is_a_bounded_probe_not_a_source(fast):
     measured — just to ask "is the pad gone?". A bounded find_first answers
     the same question in 0.11s (no-match, measured on device 2026-08-14), so
     the success path must pay exactly ONE full /source: the read that found
-    the pad and aimed the digit taps."""
-    stub = fast(StubPhone(_buttons_tree(list("1234567890"), kind="Key")))
+    the pad and aimed the digit taps. Holds through the tap fallback too."""
+    stub = fast(
+        StubPhone(_buttons_tree(list("1234567890"), kind="Key"), eats_typing=True)
+    )
     helpers.unlock()
     assert stub.tapped == list("246810")
     assert stub.source_calls == 1
@@ -406,7 +437,7 @@ def test_unlock_digit_taps_are_redacted_in_the_activity_log(fast):
             self.redactions.append(getattr(wda_client._REDACT, "label", None))
             super().tap(x, y, hold_ms)
 
-    stub = fast(SpyPhone(_buttons_tree(list("1234567890"))))
+    stub = fast(SpyPhone(_buttons_tree(list("1234567890")), eats_typing=True))
     helpers.unlock()
     assert len(stub.redactions) == 6
     assert all(stub.redactions)
@@ -418,7 +449,7 @@ def test_unlock_never_consults_wda_locked(fast):
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     stub.is_locked = None  # noqa: vulture  (poison: any call raises TypeError)
     helpers.unlock()
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_locked_without_passcode_raises(fast, monkeypatch):
@@ -459,7 +490,7 @@ def test_unlock_wakes_a_phone_that_locked_with_an_app_open(fast):
     stub = fast(LockedBehindApp(SAMPLE_TREE, frame=b"tiny", app="com.apple.calculator"))
     helpers.unlock()
     assert stub.pressed == ["home"]  # it woke the phone instead of giving up
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_survives_active_app_crash_on_lit_lock_screen(fast):
@@ -487,16 +518,21 @@ def test_unlock_survives_active_app_crash_on_lit_lock_screen(fast):
     )
     helpers.unlock()
     assert stub.pressed == ["home"]
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_wrong_pin_raises_and_never_retries(fast):
     """Pad still up after entering the code = wrong PIN (or a lost gesture).
-    One attempt only — iOS lockout escalates on repeated wrong passcodes."""
+    Bounded and loud — iOS lockout escalates on repeated wrong passcodes, so
+    unlock() raises instead of looping. A wrong PIN costs the typed attempt
+    plus the one tap fallback (the code cannot tell "wrong PIN" from "digits
+    eaten by a notification"); that pair is the ceiling, and the error tells
+    the human not to retry."""
     stub = fast(StubPhone(_buttons_tree(list("1234567890")), wrong_pin=True))
     with pytest.raises(WDAError, match="still on screen"):
         helpers.unlock()
-    assert stub.tapped == list("246810")  # exactly one attempt
+    assert stub.typed == ["246810"]  # the fast attempt
+    assert stub.tapped == list("246810")  # the one fallback, then it raised
 
 
 def test_unlock_resummons_pad_when_screen_slept(fast):
@@ -506,7 +542,7 @@ def test_unlock_resummons_pad_when_screen_slept(fast):
     stub = fast(StubPhone(_buttons_tree(list("1234567890")), frame=b"tiny"))
     helpers.unlock()
     assert stub.pressed == ["home", "home"]  # woke twice
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
@@ -525,7 +561,7 @@ def test_unlock_retries_swipe_when_it_burned_on_a_dark_screen(fast):
     stub = fast(SleepyPhone(SAMPLE_TREE, frame=b"tiny"))
     helpers.unlock()
     assert stub.swipes == 2
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_mints_a_fresh_session_before_the_first_gesture(fast):
@@ -538,7 +574,7 @@ def test_unlock_mints_a_fresh_session_before_the_first_gesture(fast):
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
     assert stub.ops and stub.ops[0] == "mint"
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
 
 
 def test_unlock_never_mints_when_phone_is_in_use(fast):
@@ -623,7 +659,9 @@ def test_unlock_recovers_when_the_second_swipe_finally_raises_the_pad(fast):
             if self.swipes == 2:  # second swipe finally raises the pad
                 self.tree = _buttons_tree(list("1234567890"))
 
-    stub = fast(NotifiedPhone(_lock_screen_tree()))
+    # The notification is still up, so it eats the typed digits too: the
+    # entry lands via the tap fallback.
+    stub = fast(NotifiedPhone(_lock_screen_tree(), eats_typing=True))
     helpers.unlock()
     assert stub.swipes == 2
     assert stub.tapped == list("246810")
@@ -653,8 +691,8 @@ def test_unlock_uses_the_client_it_is_given(fast):
     singleton = fast(StubPhone(_buttons_tree(list("1234567890"))))
     mine = StubPhone(_buttons_tree(list("1234567890")))
     helpers.unlock(mine)
-    assert mine.tapped == list("246810")
-    assert singleton.tapped == []
+    assert mine.typed == ["246810"]
+    assert singleton.typed == [] and singleton.tapped == []
 
 
 def test_unlock_scrubs_passcode_from_errors(fast, monkeypatch):
@@ -666,6 +704,20 @@ def test_unlock_scrubs_passcode_from_errors(fast, monkeypatch):
     with pytest.raises(WDAError) as exc_info:
         helpers.unlock()
     assert "az2468" not in str(exc_info.value)
+
+
+def test_unlock_digit_typing_error_raises_scrubbed_and_never_taps(fast):
+    """A typing ERROR on the digit fast path is not "digits eaten": a
+    timeout's keys may still land, and tapping on top of them would garble
+    the attempt toward an iOS lockout. It must raise — scrubbed — with zero
+    fallback taps."""
+    err = WDAError("POST /wda/keys: could not type '246810'")
+    stub = fast(StubPhone(_buttons_tree(list("1234567890")), type_error=err))
+    with pytest.raises(WDAError) as exc_info:
+        helpers.unlock()
+    assert "246810" not in str(exc_info.value)
+    assert stub.tapped == []
+    assert stub.idle_waits == [0, config.WDA_IDLE_WAIT]  # finally still ran
 
 
 class CountingClient:
@@ -1367,11 +1419,12 @@ def test_type_text_allows_ordinary_text(fast):
 
 def test_unlock_still_enters_the_passcode(fast, monkeypatch):
     """The guard is on the public helper; unlock() drives the client directly.
-    Digit passcodes go in by pad taps; an alphanumeric one exercises the
-    typing fallback, which must bypass the guard too."""
+    Digit passcodes type in via the client (pad taps as the fallback); an
+    alphanumeric one exercises the plain typing path — both bypass the
+    guard."""
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
-    assert stub.tapped == list("246810")
+    assert stub.typed == ["246810"]
     monkeypatch.setattr(config, "PHONE_PASSCODE", "az2468")
     stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
     helpers.unlock()
@@ -3154,7 +3207,7 @@ def test_enter_passcode_taps_with_a_short_hold(fast):
     # The pad is static and each tap's 80ms contact is pure scripted wait, but
     # a dropped pad tap burns an iOS lockout attempt — so this path names its
     # hold explicitly instead of riding whatever the client defaults to.
-    stub = fast(StubPhone(_buttons_tree(list("1234567890"))))
+    stub = fast(StubPhone(_buttons_tree(list("1234567890")), eats_typing=True))
 
     helpers.unlock()
 

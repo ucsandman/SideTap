@@ -91,7 +91,9 @@ Move-Item $inner.FullName $app
 # (the just-renamed install — the current truth, so it wins on overlap).
 foreach ($stash in @((Join-Path $root '_keep'), $old)) {
     if (-not (Test-Path $stash)) { continue }
-    foreach ($p in @('.env', '.state', 'wda')) {
+    # '.state*' also carries a Pro fleet's per-phone dirs (.state-b, ...).
+    $keep = @('.env', 'wda') + @(Get-ChildItem $stash -Directory -Filter '.state*' -Force -ErrorAction SilentlyContinue | ForEach-Object Name)
+    foreach ($p in $keep) {
         $src = Join-Path $stash $p
         if (Test-Path $src) { Copy-Item -Recurse -Force $src (Join-Path $app $p) }
     }

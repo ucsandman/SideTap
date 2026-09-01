@@ -5,6 +5,32 @@ entries only. Newest first.
 
 ---
 
+## 2026-09-01 — The fleet dashboard's iframe rendered {"error": "forbidden"}: same-site is not same-origin
+
+**Symptom.** The SideTap Pro fleet dashboard (:8769) iframed the viewer
+(:8770) and the frame showed the viewer's own 403 JSON instead of the phone.
+Reported live by Wes on the first real render.
+
+**Root cause.** A loopback port-crossing navigation carries
+`Sec-Fetch-Site: same-site` (ports are ignored by the site definition), and
+`viewer._allowed()` accepted only `same-origin`/`none`. Local HTTP-level
+checks (curl, tests) never send Sec-Fetch headers, so nothing failed until a
+real browser framed the page — the rendered-proof step is what caught it.
+
+**Fix.** Accept `same-site` too: a page served from 127.0.0.1 is by
+definition local software that could reach the unauthenticated API directly,
+remote pages stay `cross-site` (DNS rebinding included — the header is
+computed from the registrable domain, not the resolved IP), and cross-port
+POSTs/fetches still die on the Origin check because fetch() sends Origin and
+navigations do not. Tests pin both directions.
+
+**Also this session (one-liner).** A sabotage-then-revert check used
+`git checkout --` on a file whose changes were UNCOMMITTED and wiped the work
+being verified; sabotage checks on uncommitted code must restore by file copy
+or inverse edit, never by git.
+
+---
+
 ## 2026-08-20 — A latency pass: the time is on the phone, and most of what we could remove was reads and sleeps nobody needed
 
 **Symptom.** Three complaints, no error: swiping in the viewer is slow, the Home

@@ -72,6 +72,27 @@ def _noop(*_args) -> None:  # default progress sink
     pass
 
 
+def _pro_provider():
+    """The optional sidetap-pro package, or None (open-source flow, untouched).
+
+    Discovery is one .env key: SIDETAP_PRO_PATH points at the private repo's
+    src/. An import failure PRINTS to stderr and falls back - a pro user whose
+    install broke should see why they are suddenly on 7-day signing - but never
+    raises: the open core must work with no pro package anywhere near it.
+    """
+    pro_path = config.get("SIDETAP_PRO_PATH")
+    if not pro_path:
+        return None
+    if pro_path not in sys.path:
+        sys.path.insert(0, pro_path)
+    try:
+        import sidetap_pro
+    except Exception as exc:  # any import-time breakage, not just ImportError
+        print(f"sidetap-pro at {pro_path} failed to import: {exc}", file=sys.stderr)
+        return None
+    return sidetap_pro
+
+
 # ---- Sideloadly developer identity -> .p12 ---------------------------------
 
 
@@ -419,32 +440,68 @@ def fix_input(  # noqa: vulture  (viewer worker + dispatched by name from run.py
             "message": f"WDA IPA not found at {WDA_IPA}. Run docs/setup step 3 first.",
         }
 
-    try:
-        progress("p12", "building signing identity from Sideloadly cert")
-        build_p12()
+    pro = _pro_provider()
+    if pro is not None and profile is not None:
+        # A supplied profile is a Sideloadly-era tool; signing it with the pro
+        # cert would mix teams. Refuse rather than guess which identity wins.
+        return {
+            "ok": False,
+            "step": "error",
+            "message": "sidetap-pro manages its own profile; run fix-input "
+            "without a profile argument (or remove SIDETAP_PRO_PATH from .env).",
+        }
 
+    try:
         udid = device.current_udid()
         # The new profile goes to a staging path first. PROFILE_PATH is what
         # the doctor's countdown reads, so it must describe what is ON THE
         # PHONE: committing before `ios sign app` succeeds turned a failed
         # re-sign into a fresh 7-day PASS over the old, dying signature.
         pending = PROFILE_PATH.with_name(PROFILE_PATH.name + ".pending")
-        if profile is not None:
-            data = profile.read_bytes()
+
+        ident = None
+        if pro is not None:
+            try:
+                # None while setup is incomplete (fall through to Sideloadly);
+                # raises when configured-but-broken (expired identity), which
+                # must NOT silently downgrade a pro user to 7-day signing.
+                ident = pro.identity_for(udid, progress)
+            except Exception as exc:
+                return {"ok": False, "step": "error", "message": f"sidetap-pro: {exc}"}
+
+        if ident is not None:
+            p12_path, p12_password, data = ident
             info = parse_profile(data)
             ok, why = profile_is_valid(info, udid)
             if not ok:
                 return {"ok": False, "step": "error", "message": f"bad profile: {why}"}
             pending.parent.mkdir(exist_ok=True)
             pending.write_bytes(data)
-            progress("captured", f"using profile '{info['name']}'")
         else:
-            # No "click Start in Sideloadly" prompt here: the capture reads the
-            # phone first, and a still-valid profile means the human is never
-            # needed. capture_profile raises that prompt itself, when it is true.
-            info = capture_profile(
-                udid, timeout=timeout, dest=pending, progress=progress
-            )
+            progress("p12", "building signing identity from Sideloadly cert")
+            build_p12()
+            p12_path, p12_password = P12_PATH, P12_PASSWORD
+            if profile is not None:
+                data = profile.read_bytes()
+                info = parse_profile(data)
+                ok, why = profile_is_valid(info, udid)
+                if not ok:
+                    return {
+                        "ok": False,
+                        "step": "error",
+                        "message": f"bad profile: {why}",
+                    }
+                pending.parent.mkdir(exist_ok=True)
+                pending.write_bytes(data)
+                progress("captured", f"using profile '{info['name']}'")
+            else:
+                # No "click Start in Sideloadly" prompt here: the capture reads
+                # the phone first, and a still-valid profile means the human is
+                # never needed. capture_profile raises that prompt itself, when
+                # it is true.
+                info = capture_profile(
+                    udid, timeout=timeout, dest=pending, progress=progress
+                )
 
         bundleid = info.get("bundle_id")
         if bundleid == "*":  # wildcard profile: keep the app's own id
@@ -454,7 +511,7 @@ def fix_input(  # noqa: vulture  (viewer worker + dispatched by name from run.py
             f"re-signing WDA as {bundleid or 'its own id'} (nested .xctest incl.)",
         )
         device.sign_app(
-            WDA_IPA, P12_PATH, pending, p12password=P12_PASSWORD, bundleid=bundleid
+            WDA_IPA, p12_path, pending, p12password=p12_password, bundleid=bundleid
         )
         os.replace(pending, PROFILE_PATH)  # signed and installed: commit
 

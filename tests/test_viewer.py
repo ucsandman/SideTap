@@ -179,6 +179,27 @@ def test_cross_site_fetch_rejected(base_url):
     assert r.status_code == 403
 
 
+def test_same_site_iframe_navigation_ok(base_url):
+    # The fleet dashboard (127.0.0.1:8769) iframes this viewer: a loopback
+    # port-crossing navigation is Sec-Fetch-Site "same-site" with NO Origin.
+    r = requests.get(base_url + "/", headers={"Sec-Fetch-Site": "same-site"}, timeout=5)
+    assert r.status_code == 200
+
+
+def test_same_site_cross_port_post_still_rejected(base_url):
+    # fetch() always sends Origin; only Origin-less NAVIGATIONS ride same-site.
+    r = requests.post(
+        base_url + "/api/home",
+        json={},
+        headers={
+            "Sec-Fetch-Site": "same-site",
+            "Origin": "http://127.0.0.1:8769",
+        },
+        timeout=5,
+    )
+    assert r.status_code == 403
+
+
 def test_post_text_plain_rejected(base_url):
     # A CORS-"simple" text/plain POST must not reach the phone.
     r = requests.post(

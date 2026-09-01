@@ -570,8 +570,18 @@ class Handler(BaseHTTPRequestHandler):
             f"http://localhost:{port}",
         ):
             return False
+        # "same-site" is loopback-port-crossing: the SideTap Pro fleet
+        # dashboard (:8769) iframes this viewer, and 127.0.0.1:8769 ->
+        # 127.0.0.1:8770 is same-site, not same-origin. A page served from
+        # loopback is by definition local software, which could reach this
+        # unauthenticated API directly without a browser — the guard exists
+        # to stop REMOTE pages riding the user's browser, and those are
+        # "cross-site" (DNS rebinding included: Sec-Fetch-Site is computed
+        # from the page's registrable domain, not the IP it resolved to).
+        # Cross-port POSTs and API fetches still die on the Origin check
+        # above, because fetch() sends Origin and navigations do not.
         sfs = self.headers.get("Sec-Fetch-Site")
-        if sfs and sfs not in ("same-origin", "none"):
+        if sfs and sfs not in ("same-origin", "same-site", "none"):
             return False
         return True
 

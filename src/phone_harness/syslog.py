@@ -130,7 +130,7 @@ def start() -> bool:
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
         proc = subprocess.Popen(
-            [exe, "syslog"],
+            [exe, *device.pin_udid(["syslog"])],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

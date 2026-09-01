@@ -6,13 +6,7 @@ import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STATE_DIR = REPO_ROOT / ".state"
 ENV_FILE = REPO_ROOT / ".env"
-
-WDA_PORT = 8100
-MJPEG_PORT = 9100  # noqa: vulture
-
-WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
 
 
 def _load_env(path: Path = ENV_FILE) -> dict[str, str]:
@@ -37,6 +31,21 @@ def get(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key) or _env.get(key) or default
 
 
+# ---- instance parameters ----------------------------------------------------
+# One phone on defaults is byte-identical to a pre-multi-device install. A
+# second instance (SideTap Pro fleet) overrides these via PROCESS ENV VARS,
+# which win over .env by get()'s order, so .env stays the human's single-phone
+# file. Phone-side ports stay 8100/9100 (per-device USB namespace); only the
+# PC-side listen ports differ per instance.
+STATE_DIR = REPO_ROOT / (get("SIDETAP_STATE_DIR") or ".state")
+SIDETAP_UDID = get("SIDETAP_UDID")  # unset = first connected phone, as ever
+
+WDA_PORT = int(get("WDA_PORT", "8100") or "8100")
+MJPEG_PORT = int(get("MJPEG_PORT", "9100") or "9100")  # noqa: vulture
+
+WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
+
+
 # Optional overrides
 # Read by device.detect_wda_bundle; else auto-detected from installed apps.
 WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # noqa: vulture
@@ -59,8 +68,8 @@ VIEWER_PORT = int(get("VIEWER_PORT", "8770") or "8770")  # noqa: vulture
 # Measured on device: WDA's default animationCoolOffTimeout=2 made every swipe
 # cost 2-5s under scroll momentum; at 0, idle waits of 0/1/2s all measure
 # ~0.7s per swipe. idle=2 keeps settle protection on genuinely busy screens.
-WDA_IDLE_WAIT = float(get("WDA_IDLE_WAIT", "2") or "2")
-WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")
+WDA_IDLE_WAIT = float(get("WDA_IDLE_WAIT", "2") or "2")  # noqa: vulture  (read by wda_client/viewer)
+WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")  # noqa: vulture  (read by wda_client)
 
 # Scripted finger contact for a tap, in ms. 80 is the shipped value and stays
 # the default: the hold is pure wait (~20% of a bare tap budget), but a contact
@@ -69,7 +78,7 @@ WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")
 # keys, small Settings rows), counting misses. Never on the passcode pad: a
 # wrong or dropped tap there burns an iOS lockout attempt, which is why
 # helpers._enter_passcode passes its own hold rather than riding this.
-WDA_TAP_HOLD_MS = int(get("WDA_TAP_HOLD_MS", "80") or "80")
+WDA_TAP_HOLD_MS = int(get("WDA_TAP_HOLD_MS", "80") or "80")  # noqa: vulture  (read by wda_client)
 
 # Keystrokes per second WDA synthesises for POST /wda/keys. The Python side is
 # ONE request either way; the phone spends len(text)/rate seconds, so this is
@@ -77,13 +86,13 @@ WDA_TAP_HOLD_MS = int(get("WDA_TAP_HOLD_MS", "80") or "80")
 # changes nothing until it is measured. Raising it fails QUIETLY: iOS drops
 # synthesised keystrokes above some device-specific rate, and set_field_text's
 # read-back then makes send_message refuse a message that typed wrong.
-WDA_TYPING_FREQ = int(get("WDA_TYPING_FREQ", "60") or "60")
+WDA_TYPING_FREQ = int(get("WDA_TYPING_FREQ", "60") or "60")  # noqa: vulture  (read by wda_client)
 
 # Live-view stream tuning (measured on device: WDA captures ~34fps max; 50%
 # scale halves frame weight with no fps cost, and the viewer shows ~1100px max).
-MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")
-MJPEG_QUALITY = int(get("MJPEG_QUALITY", "70") or "70")
-MJPEG_SCALE = int(get("MJPEG_SCALE", "50") or "50")
+MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")  # noqa: vulture  (read by wda_client)
+MJPEG_QUALITY = int(get("MJPEG_QUALITY", "70") or "70")  # noqa: vulture  (read by wda_client)
+MJPEG_SCALE = int(get("MJPEG_SCALE", "50") or "50")  # noqa: vulture  (read by wda_client)
 
 # Viewer poll for /api/phone: seconds between polls. 0 disables the periodic
 # poll (viewer will still call loadPhone() on load). Default 0 avoids the
@@ -94,4 +103,4 @@ VIEWER_PHONE_POLL_SECONDS = float(get("VIEWER_PHONE_POLL_SECONDS", "0") or "0") 
 # Accessibility snapshot timeout (seconds). Added upstream in WDA #1214
 # (appium/WebDriverAgent#1214) to avoid indefinite hangs on apps with busy main
 # event loops (e.g. TikTok video feeds). 0 disables the bound; default is 2.0s.
-WDA_ACCESSIBILITY_DEADLINE = float(get("WDA_ACCESSIBILITY_DEADLINE", "2.0") or "2.0")
+WDA_ACCESSIBILITY_DEADLINE = float(get("WDA_ACCESSIBILITY_DEADLINE", "2.0") or "2.0")  # noqa: vulture  (read by wda_client)

@@ -42,7 +42,7 @@ PROCS = ("tunnel", "runwda", "forward8100", "forward9100", "syslog")
 _run_cache = threading.local()
 
 
-@contextlib.contextmanager
+@contextlib.contextmanager  # noqa: vulture  (memoized_run is called from admin.py)
 def memoized_run():
     """Scope subprocess results to one caller-defined "run" (e.g. one doctor
     pass). Entering resets the cache to empty; exiting restores whatever was
@@ -74,12 +74,29 @@ def ios_path() -> str | None:
     return str(installer_exe) if installer_exe.is_file() else None
 
 
+def pin_udid(args: list[str]) -> list[str]:
+    """Append --udid when this instance is pinned to one phone (SIDETAP_UDID).
+
+    The multi-device seam: unset (the default, every single-phone install)
+    changes nothing. `list` stays global — the doctor and the fleet roster
+    must see every connected phone — and `tunnel` is go-ios's all-devices
+    daemon, owned by whichever instance starts it first (design doc §2.3;
+    per-command --udid scoping is UNVERIFIED until a second phone exists).
+    Read from config at CALL time so one process can never cache another
+    instance's pin.
+    """
+    udid = config.SIDETAP_UDID
+    if not udid or not args or args[0] in ("list", "tunnel"):
+        return args
+    return [*args, f"--udid={udid}"]
+
+
 def _run(args: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
     exe = ios_path()
     if not exe:
         raise DeviceError("go-ios not found on PATH. Install it: npm install -g go-ios")
     return subprocess.run(
-        [exe, *args],
+        [exe, *pin_udid(args)],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -174,7 +191,7 @@ def _wda_cache_file() -> Path:
     return config.STATE_DIR / "wda_bundle"
 
 
-def detect_wda_bundle() -> str | None:
+def detect_wda_bundle() -> str | None:  # noqa: vulture  (called from admin.py/viewer.py)
     """Find the installed WebDriverAgent runner. .env WDA_BUNDLE_ID wins.
 
     Deep sleep gates the app list (`ios apps --list` comes back EMPTY while
@@ -250,7 +267,7 @@ def ddi_mounted() -> bool:
     return any(obj.get("signature") for obj in _json_lines(proc.stdout + proc.stderr))
 
 
-def mount_ddi() -> tuple[bool, str]:
+def mount_ddi() -> tuple[bool, str]:  # noqa: vulture  (called from admin.py)
     """Mount the developer image (`ios image auto`). The phone must be UNLOCKED
     (iOS answers DeviceLocked otherwise); the first mount after an iOS update
     also needs internet (Apple TSS signs the image). Success is verified by
@@ -290,7 +307,7 @@ def _spawn(name: str, args: list[str]) -> int:
     if sys.platform == "win32":
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     proc = subprocess.Popen(
-        [exe, *args],
+        [exe, *pin_udid(args)],
         stdout=log,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
@@ -610,7 +627,9 @@ def start_forwards() -> None:  # noqa: vulture  (called from admin.py/viewer.py,
 
 
 def current_udid() -> str | None:  # noqa: vulture  (used by signing.py)
-    """First connected iPhone's UDID, or None."""
+    """This instance's phone: the SIDETAP_UDID pin, else the first connected."""
+    if config.SIDETAP_UDID:
+        return config.SIDETAP_UDID
     try:
         udids = list_devices()
     except (DeviceError, subprocess.TimeoutExpired):

@@ -61,7 +61,7 @@ def _go_ios_screenshot() -> bytes:
         out = Path(td) / "shot.png"
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         proc = subprocess.run(
-            [exe, "screenshot", "--output", str(out)],
+            [exe, *device.pin_udid(["screenshot", "--output", str(out)])],
             capture_output=True,
             text=True,
             timeout=30,
@@ -75,7 +75,7 @@ def _go_ios_screenshot() -> bytes:
         return out.read_bytes()
 
 
-def screenshot_png(max_age: float = 0.0) -> bytes:
+def screenshot_png(max_age: float = 0.0) -> bytes:  # noqa: vulture  (called from viewer.py/mcp_server.py)
     """Return the current screen as PNG bytes.
 
     max_age > 0 returns a cached frame if it is younger than max_age seconds,

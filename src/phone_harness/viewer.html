@@ -529,6 +529,11 @@
         <h2 class="sec">Phone</h2>
         <div id="phone-rows" class="dim">Waiting for phone…</div>
         <div class="dim gap-top">Passive reads only. Nothing here touches the phone.</div>
+        <div class="sechead gap-top">
+          <h2 class="sec">Photos</h2>
+          <button id="btn-photos" title="Copy new camera-roll photos and videos to this PC over the USB cable. Files already pulled are skipped, so re-running is cheap.">Pull to PC</button>
+        </div>
+        <div class="dim" id="photos-note">Copies new camera-roll photos to this PC over USB. Works even while the agent is driving.</div>
       </div>
       <div id="col-console" class="col">
         <button class="sec" id="debug-toggle">Debug ▸</button>
@@ -2257,6 +2262,36 @@ document.getElementById('btn-read-thread').onclick = async () => {
   finally { delete btn.dataset.busy; btn.disabled = !inputEnabled; syncReadLabel(); }
 };
 renderThread();
+// ---- Pull photos: server-side background job, polled until done -----------
+// Deliberately NOT withBusy/phoneBusy: the pull is AFC file reads over USB,
+// never a gesture, so the phone stays fully usable while it runs — and a
+// first-ever pull of a big camera roll can take minutes, which is why the
+// server runs it in a thread instead of holding this fetch open.
+function photosNote(t) { document.getElementById('photos-note').textContent = t; }
+function renderPhotoJob(j) {
+  if (j.running) { photosNote(j.message ? 'Pulling ' + j.message + '…' : 'Pulling…'); return; }
+  if (j.ok === null) return;                       // never run this session
+  if (j.ok) {
+    photosNote('Pulled ' + j.pulled + ' new · ' + j.skipped + ' already synced → ' + j.dest
+               + (j.message ? ' (some files failed: ' + j.message + ')' : ''));
+  } else {
+    photosNote('Pull failed: ' + (j.message || 'is the phone plugged in and unlocked?'));
+  }
+}
+document.getElementById('btn-photos').onclick = async () => {
+  const btn = document.getElementById('btn-photos');
+  btn.disabled = true; btn.textContent = 'Pulling…';
+  try {
+    let j = await (await fetch('/api/pull-photos', {method:'POST', headers:JSON_HDR, body:'{}'})).json();
+    renderPhotoJob(j);
+    while (j.running) {
+      await new Promise(r => setTimeout(r, 1500));
+      j = await (await fetch('/api/pull-photos')).json();
+      renderPhotoJob(j);
+    }
+  } catch (e) { photosNote('Pull failed — viewer not reachable.'); }
+  finally { btn.disabled = false; btn.textContent = 'Pull to PC'; }
+};
 document.getElementById('btn-text-send').onclick = async () => {
   const to = document.getElementById('text-to').value.trim();
   const message = document.getElementById('text-msg').value;

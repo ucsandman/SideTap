@@ -11,6 +11,11 @@ Usage:
   phone-harness mcp             # MCP server over stdio, e.g.:
                                 #   claude mcp add sidetap \
                                 #     --env PYTHONPATH=<repo>/src -- python -m phone_harness mcp
+  phone-harness pull-photos [dest]
+                                # copy new camera-roll photos/videos to a PC
+                                # folder over USB (default: PHOTOS_DIR in .env,
+                                # else ~/Pictures/iPhone). Already-pulled files
+                                # are skipped, so re-runs are cheap.
   phone-harness fix-input [profile.mobileprovision]
                                 # sign WDA so touch input works (free Apple ID)
   phone-harness notify-expiry [--install | --uninstall]
@@ -105,6 +110,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         return mcp_server.main()
+    if cmd == "pull-photos":
+        from . import photos
+
+        result = photos.pull_photos(
+            dest=args[1] if len(args) > 1 else None,
+            progress=lambda name: print(f"  {name}"),
+        )
+        for err in result["errors"]:
+            print(f"error: {err}", file=sys.stderr)
+        print(
+            f"{'OK' if result['ok'] else 'FAILED'}: {result['pulled']} pulled, "
+            f"{result['skipped']} already synced -> {result['dest']}"
+        )
+        return 0 if result["ok"] else 1
     if cmd == "fix-input":
         from pathlib import Path
 

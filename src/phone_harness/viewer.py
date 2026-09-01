@@ -41,6 +41,20 @@ _BOOT_ID = str(os.getpid()) + "-" + str(int(time.time()))
 _FIX_LOCK = threading.Lock()
 _FIX_JOB = {"running": False, "step": "idle", "message": "", "ok": None}
 
+# Same shape for the "Pull photos" job. It never takes _ACTION_LOCK: the pull
+# rides AFC over USB, not WDA, so gestures and the agent stay unblocked — and
+# a first-ever pull of a full camera roll can run for minutes, far past what
+# any synchronous endpoint (or the browser fetch waiting on it) should hold.
+_PHOTO_LOCK = threading.Lock()
+_PHOTO_JOB = {
+    "running": False,
+    "message": "",
+    "ok": None,
+    "pulled": 0,
+    "skipped": 0,
+    "dest": "",
+}
+
 # One phone gesture at a time: unlock() is a timed wake→swipe→type sequence,
 # and a tap/keystroke landing in the middle of it garbles both.
 _ACTION_LOCK = threading.Lock()
@@ -331,6 +345,47 @@ def _start_fix_input() -> dict:
     threading.Thread(target=_fix_input_worker, daemon=True).start()
     with _FIX_LOCK:
         return dict(_FIX_JOB)
+
+
+def _photos_worker():
+    from . import photos
+
+    def progress(name):
+        with _PHOTO_LOCK:
+            _PHOTO_JOB["message"] = name
+
+    # pull_photos reports its own failures as ok:False results; anything that
+    # still escapes must flip running=False (same lesson as _fix_input_worker).
+    try:
+        result = photos.pull_photos(progress=progress)
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "pulled": 0,
+            "skipped": 0,
+            "dest": "",
+            "errors": [str(exc)],
+        }
+    with _PHOTO_LOCK:
+        errors = result.get("errors") or []
+        _PHOTO_JOB.update(
+            running=False,
+            ok=result["ok"],
+            pulled=result["pulled"],
+            skipped=result["skipped"],
+            dest=result["dest"],
+            message="; ".join(errors[:3]),
+        )
+
+
+def _start_photos() -> dict:
+    with _PHOTO_LOCK:
+        if _PHOTO_JOB["running"]:
+            return dict(_PHOTO_JOB)
+        _PHOTO_JOB.update(running=True, message="listing camera roll…", ok=None)
+    threading.Thread(target=_photos_worker, daemon=True).start()
+    with _PHOTO_LOCK:
+        return dict(_PHOTO_JOB)
 
 
 def _png_size(png: bytes) -> tuple[int, int]:
@@ -782,6 +837,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/fix-input":
                 with _FIX_LOCK:
                     self._json(dict(_FIX_JOB))
+            elif path == "/api/pull-photos":
+                with _PHOTO_LOCK:
+                    self._json(dict(_PHOTO_JOB))
             elif path == "/api/actions":
                 self._json(_recent_actions())
             elif path == "/api/activity":
@@ -987,6 +1045,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": admin.up() == 0})
             elif path == "/api/fix-input":
                 self._json(_start_fix_input())
+            elif path == "/api/pull-photos":
+                self._json(_start_photos())
             elif path == "/api/lock-ports":
                 result = _lock_ports()
                 # Re-probe once the UAC prompt has had time to be approved, so

@@ -2382,3 +2382,86 @@ def test_hotkeys_sit_above_the_focus_guard_and_skip_ctrl_v():
     assert body.index("btn-clip-from-phone") > body.index(
         "input,textarea,button,select,[tabindex]"
     )
+
+
+# ---- Pull photos job ---------------------------------------------------------
+
+
+def test_pull_photos_endpoint_runs_in_background(base_url, monkeypatch):
+    """POST starts the pull off the request thread and GET polls it; the job
+    must never take _ACTION_LOCK (it is AFC over USB, not a gesture), so a
+    slow pull cannot 409-drop the human's taps."""
+    from phone_harness import photos
+
+    release = threading.Event()
+
+    def slow_pull(dest=None, progress=photos._noop):
+        progress("100APPLE/IMG_0001.JPG")
+        release.wait(timeout=10)
+        return {"ok": True, "pulled": 2, "skipped": 5, "dest": "X", "errors": []}
+
+    monkeypatch.setattr(photos, "pull_photos", slow_pull)
+    with viewer._PHOTO_LOCK:
+        viewer._PHOTO_JOB.update(
+            running=False, message="", ok=None, pulled=0, skipped=0, dest=""
+        )
+
+    j = requests.post(base_url + "/api/pull-photos", json={}, timeout=5).json()
+    assert j["running"] is True
+    # The POST returned while the pull is still going — that IS the feature.
+    # A human gesture lands fine in the middle of it.
+    assert not viewer._ACTION_LOCK.locked()
+    j = requests.get(base_url + "/api/pull-photos", timeout=5).json()
+    assert j["running"] is True and "IMG_0001" in j["message"]
+    release.set()
+    for _ in range(100):
+        j = requests.get(base_url + "/api/pull-photos", timeout=5).json()
+        if not j["running"]:
+            break
+        time.sleep(0.05)
+    assert j["running"] is False and j["ok"] is True
+    assert j["pulled"] == 2 and j["skipped"] == 5 and j["dest"] == "X"
+
+
+def test_pull_photos_second_post_joins_the_running_job(base_url, monkeypatch):
+    from phone_harness import photos
+
+    release = threading.Event()
+    starts = []
+
+    def slow_pull(dest=None, progress=photos._noop):
+        starts.append(1)
+        release.wait(timeout=10)
+        return {"ok": True, "pulled": 0, "skipped": 0, "dest": "X", "errors": []}
+
+    monkeypatch.setattr(photos, "pull_photos", slow_pull)
+    with viewer._PHOTO_LOCK:
+        viewer._PHOTO_JOB.update(
+            running=False, message="", ok=None, pulled=0, skipped=0, dest=""
+        )
+    requests.post(base_url + "/api/pull-photos", json={}, timeout=5)
+    requests.post(base_url + "/api/pull-photos", json={}, timeout=5)
+    release.set()
+    for _ in range(100):
+        if not requests.get(base_url + "/api/pull-photos", timeout=5).json()["running"]:
+            break
+        time.sleep(0.05)
+    assert len(starts) == 1
+
+
+def test_photos_worker_never_stays_running_on_a_crash(monkeypatch):
+    """Same liveness rule as _fix_input_worker: running=False is the page's
+    only signal, so an uncaught exception must still flip it."""
+    from phone_harness import photos
+
+    def explode(dest=None, progress=None):
+        raise RuntimeError("usbmux fell over")
+
+    monkeypatch.setattr(photos, "pull_photos", explode)
+    with viewer._PHOTO_LOCK:
+        viewer._PHOTO_JOB.update(running=True, message="", ok=None)
+    viewer._photos_worker()
+    with viewer._PHOTO_LOCK:
+        job = dict(viewer._PHOTO_JOB)
+    assert job["running"] is False and job["ok"] is False
+    assert "usbmux fell over" in job["message"]

@@ -5,6 +5,13 @@ entries only. Newest first.
 
 ---
 
+## 2026-09-03 — one-liners: viewer Enter-is-Send
+
+- Removing the `if (ev.key === 'Enter') ch = '\n';` line left the `else if`
+  chain behind it dangling; the JS parse test caught it before the viewer
+  shipped a page that would not load. When a chain's head goes, the next
+  branch becomes the head.
+
 ## 2026-09-03 — set_clipboard answered 200 and set nothing: iOS only lets the frontmost app touch the pasteboard
 
 **Symptom.** `POST /wda/setPasteboard` returned 200 with Messages frontmost,

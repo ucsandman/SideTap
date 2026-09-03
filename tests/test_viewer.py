@@ -726,6 +726,50 @@ def test_send_image_endpoint_is_human_initiated_and_validates(base_url, monkeypa
     }
 
 
+def test_enter_taps_send_when_a_send_button_is_on_screen_else_returns(
+    base_url, monkeypatch
+):
+    stub = viewer.Handler.client
+    calls_before = len(stub.calls)
+    monkeypatch.setattr(
+        helpers, "_find_send_button", lambda tries=2: {"x": 400.0, "y": 600.0}
+    )
+    r = requests.post(base_url + "/api/enter", json={}, timeout=5)
+    assert r.status_code == 200 and r.json() == {"ok": True, "sent": True}
+    assert ("tap", 400.0, 600.0) in stub.calls[calls_before:]
+
+    # No Send button (Notes, Safari, a search box): a plain Return, and the
+    # scan is ONE look — a retry here would tax every newline outside Messages.
+    seen = {}
+
+    def none(tries=2):
+        seen["tries"] = tries
+        return None
+
+    monkeypatch.setattr(helpers, "_find_send_button", none)
+    calls_before = len(stub.calls)
+    r = requests.post(base_url + "/api/enter", json={}, timeout=5)
+    assert r.json() == {"ok": True, "sent": False}
+    assert ("type_text", "\n") in stub.calls[calls_before:]
+    assert seen == {"tries": 1}
+
+
+def test_enter_is_send_and_shift_or_ctrl_enter_is_newline_in_the_live_view():
+    # Typing into the phone: a bare Enter goes to /api/enter (Send when a Send
+    # button is up), Shift+Enter and Ctrl+Enter type "\n". The modifier check
+    # must sit ABOVE the ctrlKey bail-out or Ctrl+Enter is silently dead.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    handler = html[html.index("window.addEventListener('keydown'") :]
+    newline = handler.index("ev.key === 'Enter' && (ev.shiftKey || ev.ctrlKey)")
+    bail = handler.index("if (ev.ctrlKey || ev.metaKey || ev.altKey) return;")
+    assert newline < bail
+    assert "sendEnter();" in handler
+    assert "if (ev.key === 'Enter') ch = '\\n';" not in handler
+    assert "/api/enter" in html
+    # Not an agent primitive: a Send tap after type_text would skip the gate.
+    assert "press_send" not in html and not hasattr(helpers, "press_send")
+
+
 def test_viewer_pastes_a_pc_image_to_the_phone_clipboard():
     # Win+Shift+S puts a PNG on the PC clipboard; Ctrl+V over the page must
     # route it to /api/clipboard-image and tell the human what to do next.

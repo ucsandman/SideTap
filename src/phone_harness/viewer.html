@@ -1323,6 +1323,30 @@ async function flushKeys() {
   } finally {
     keyBusy = false;
     if (keyBuf) flushKeys();   // send what queued up while we were busy
+    else if (enterPending) fireEnter();   // the Enter that waited for this text
+  }
+}
+// Enter = Send. Queued behind the key buffer so the characters typed just
+// before it land first: flushKeys is async and may already be in flight, so
+// the Enter waits for the buffer to drain rather than racing it.
+let enterPending = false;
+async function sendEnter() {
+  enterPending = true;
+  if (keyBuf || keyBusy) { flushKeys(); return; }   // drained → flushKeys fires it
+  await fireEnter();
+}
+async function fireEnter() {
+  if (!enterPending) return;
+  enterPending = false;
+  try {
+    const r = await fetch('/api/enter', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    await reportNotSent(r, 'Enter');
+    if (r.ok) {
+      const j = await r.json();
+      if (j.sent) { showHint('Sent.'); schedulePhoneRefresh(); }
+    }
+  } catch (e) {
+    showHint('Lost the link to the viewer (Enter not sent).');
   }
 }
 async function sendArrowKey(key) {
@@ -1499,6 +1523,18 @@ window.addEventListener('keydown', (ev) => {
       return;
     }
   }
+  // Enter while typing INTO THE PHONE means Send, like the page's own boxes:
+  // a bare Enter goes to /api/enter, which taps the Send button when one is on
+  // screen and types a Return otherwise. Shift+Enter and Ctrl+Enter are the
+  // newline, so this check sits ABOVE the modifier bail-out that keeps other
+  // Ctrl combos for the browser.
+  if (ev.key === 'Enter' && (ev.shiftKey || ev.ctrlKey) && !ev.metaKey && !ev.altKey) {
+    if (phoneBusy()) { ev.preventDefault(); return; }
+    ev.preventDefault();
+    keyBuf += '\n';
+    flushKeys();
+    return;
+  }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // keep browser shortcuts
   if (phoneBusy()) { ev.preventDefault(); return; }    // keys aimed at the pre-action screen
   const arrow = ARROW_KEYS[ev.key];
@@ -1507,9 +1543,13 @@ window.addEventListener('keydown', (ev) => {
     sendArrowKey(arrow);
     return;
   }
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    sendEnter();
+    return;
+  }
   let ch = null;
-  if (ev.key === 'Enter') ch = '\n';
-  else if (ev.key === 'Backspace') ch = '\b';
+  if (ev.key === 'Backspace') ch = '\b';
   else if (NUMPAD_MAP[ev.key]) ch = NUMPAD_MAP[ev.key];
   else if (ev.key.length === 1) ch = ev.key;           // letters, digits, space, emoji-less symbols
   else if (ev.code && /^Numpad\d$/.test(ev.code)) ch = ev.code.slice(6);

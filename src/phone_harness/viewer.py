@@ -947,6 +947,26 @@ class Handler(BaseHTTPRequestHandler):
                 with _human_gesture(self.client):
                     self.client.key_press(str(payload["key"]))
                 self._json({"ok": True})
+            elif path == "/api/enter":
+                # A bare Enter while typing into the phone: tap Send when a
+                # Send button is on screen (Messages, and any app that labels
+                # it so), else a Return. Shift+Enter / Ctrl+Enter never come
+                # here — the page types "\n" for those. One look, no retry:
+                # outside Messages "no Send button" is the normal answer and
+                # the retry would tax every Return. NOT a helper or MCP tool:
+                # an agent reaching a Send tap after type_text would skip the
+                # approval gate, which is why send_message owns that tap.
+                from . import helpers
+
+                with _action_slot():
+                    helpers._invalidate_tree()
+                    with trust.internal():  # a bookkeeping read; the human typed this
+                        send = helpers._find_send_button(tries=1)
+                    if send:
+                        self.client.tap(float(send["x"]), float(send["y"]))
+                    else:
+                        self.client.type_text("\n")
+                self._json({"ok": True, "sent": bool(send)})
             elif path == "/api/clipboard":
                 text = str(payload.get("text", payload.get("content", "")))
                 try:

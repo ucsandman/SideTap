@@ -177,7 +177,7 @@ def ui_tree() -> dict:
     return tree
 
 
-def _cached_screen() -> list[dict] | None:
+def _cached_screen() -> list[dict] | None:  # noqa: vulture  (called by mcp_server.py)
     """The visible rows IF the tree cache is still warm, else None. Never reads.
 
     For the error paths: a lookup that failed read the tree on its way to
@@ -1297,9 +1297,13 @@ def _send_gate(contact: str, text: str) -> None:
         raise WDAError(_GATE_REFUSALS.get(verdict, _GATE_REFUSALS["deny"]))
 
 
-def _find_send_button() -> dict | None:
-    """The Messages Send button, or None. One look plus one cold retry."""
-    for attempt in range(_SEND_SCAN_TRIES):
+def _find_send_button(tries: int = _SEND_SCAN_TRIES) -> dict | None:
+    """The Messages Send button, or None. One look plus one cold retry.
+
+    `tries=1` is for the viewer's Enter key, where "no Send button" is the
+    normal answer in every app but Messages and a retry would tax each Return.
+    """
+    for attempt in range(tries):
         sends = [
             e
             for e in ocr()
@@ -1307,7 +1311,7 @@ def _find_send_button() -> dict | None:
         ]
         if sends:
             return sends[0]
-        if attempt < _SEND_SCAN_TRIES - 1:
+        if attempt < tries - 1:
             time.sleep(_SEND_SCAN_INTERVAL)
             _invalidate_tree()
     return None

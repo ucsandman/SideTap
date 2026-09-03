@@ -45,6 +45,25 @@ def activity_file():
     return config.STATE_DIR / "agent_activity.log"
 
 
+# Settle after the pasteboard hand-back so the previous app is frontmost again
+# when the caller's next read lands (~1s measured on device, 2026-09-03).
+_HANDBACK_WAIT = 1.0
+
+
+def runner_bundle() -> str | None:
+    """Bundle id of the WDA runner app, for foregrounding it (pasteboard).
+
+    .env WDA_BUNDLE_ID wins; otherwise the id device.detect_wda_bundle() cached
+    in .state/wda_bundle. Reading that file keeps go-ios out of this module.
+    """
+    if config.WDA_BUNDLE_ID:
+        return config.WDA_BUNDLE_ID
+    try:
+        return (config.STATE_DIR / "wda_bundle").read_text().strip() or None
+    except OSError:
+        return None
+
+
 def session_file():
     """Path of the shared WDA session id. Read dynamically for tests.
 
@@ -624,26 +643,84 @@ class WDAClient:
         """Type into the focused field (tap a field first)."""
         self._session_request("POST", "/wda/keys", {"value": list(text)})
 
+    # ---- pasteboard ----------------------------------------------------------
+    # iOS 16+ only lets the FRONTMOST app touch UIPasteboard, and the WDA runner
+    # is a background XCTest host, so a bare setPasteboard answered 200 and set
+    # nothing, and getPasteboard answered "" (measured 2026-09-03 with Messages
+    # frontmost; both worked the moment the runner was activated first). So the
+    # two calls below foreground the runner for the duration and hand the
+    # screen back to whatever was up — the runner's blank screen flashes for
+    # about a second. The bundle id comes from .state/wda_bundle (device.py's
+    # cache) or .env WDA_BUNDLE_ID, never from go-ios here; without either the
+    # call runs bare and is as good as it was.
+
+    @contextmanager
+    def _runner_foreground(self):
+        bundle = runner_bundle()
+        if not bundle:
+            yield
+            return
+        try:
+            prev = (self.active_app() or {}).get("bundleId")
+        except WDAError:
+            prev = None  # lit lock screen: activeAppInfo crashes (docs/ERRORS.md)
+        if prev == bundle:
+            yield
+            return
+        # waitForIdleTimeout must be 0 for the activation: the runner's own
+        # "Automation Running" screen never goes idle, so with the shared
+        # session's WDA_IDLE_WAIT the activate call ran 17-18s every time and
+        # the hand-back did not land (measured 2026-09-03; 0.09s at 0). Same
+        # shape as helpers._enter_passcode: the setting rides the SHARED
+        # session, so it is restored in the finally.
+        self.set_wait_for_idle(0)
+        try:
+            self._session_request("POST", "/wda/apps/activate", {"bundleId": bundle})
+            yield
+        finally:
+            try:
+                if prev and prev != "com.apple.springboard":
+                    self._session_request(
+                        "POST", "/wda/apps/activate", {"bundleId": prev}
+                    )
+                else:
+                    self.home()
+                # The activate returns before the app is frontmost (~1s later,
+                # measured), and a caller reading activeAppInfo straight after
+                # would still see the runner. A FIXED settle, deliberately not
+                # a poll: activeAppInfo RESOLVES THE ACTIVE APPLICATION, the
+                # call class that can block WDA with no upper bound during an
+                # app transition, and a poll here fired it up to 20 times per
+                # clipboard call — 8 of the 10 wedge recoveries the watchdog
+                # ever logged landed on 2026-09-03 while that poll was live.
+                time.sleep(_HANDBACK_WAIT)
+            finally:
+                self.set_wait_for_idle(config.WDA_IDLE_WAIT)
+
     def set_clipboard(  # noqa: vulture  (called by helpers.py, viewer.py)
-        self, text: str, content_type: str = "plaintext"
+        self, text: "str | bytes", content_type: str = "plaintext"
     ) -> None:
-        """Set the device clipboard content."""
-        content_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        self._session_request(
-            "POST",
-            "/wda/setPasteboard",
-            {"content": content_b64, "contentType": content_type},
-        )
+        """Set the device clipboard content. ``text`` may be bytes (PNG/JPEG)
+        with ``content_type="image"``; WDA decodes the base64 into a UIImage."""
+        raw = text if isinstance(text, bytes) else text.encode("utf-8")
+        content_b64 = base64.b64encode(raw).decode("ascii")
+        with self._runner_foreground():
+            self._session_request(
+                "POST",
+                "/wda/setPasteboard",
+                {"content": content_b64, "contentType": content_type},
+            )
 
     def get_clipboard(  # noqa: vulture  (called by helpers.py, viewer.py)
         self, content_type: str = "plaintext"
     ) -> str:
         """Get the device clipboard content as a string."""
-        value = self._session_request(
-            "POST",
-            "/wda/getPasteboard",
-            {"contentType": content_type},
-        )
+        with self._runner_foreground():
+            value = self._session_request(
+                "POST",
+                "/wda/getPasteboard",
+                {"contentType": content_type},
+            )
         if not value:
             return ""
         if isinstance(value, str):
@@ -653,6 +730,20 @@ class WDAClient:
             except Exception:
                 return value
         return str(value)
+
+    def get_clipboard_image(self) -> bytes:  # noqa: vulture  (called by helpers.py, viewer.py)
+        """The image on the device clipboard as PNG bytes, b"" when none.
+        WDA re-encodes whatever UIImage is there as PNG."""
+        with self._runner_foreground():
+            value = self._session_request(
+                "POST", "/wda/getPasteboard", {"contentType": "image"}
+            )
+        if not value or not isinstance(value, str):
+            return b""
+        try:
+            return base64.b64decode(value.strip(), validate=False)
+        except Exception:
+            return b""
 
     def press_button(self, name: str) -> None:  # noqa: vulture
         """Hardware buttons: home, volumeUp, volumeDown."""

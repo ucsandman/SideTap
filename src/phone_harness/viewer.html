@@ -455,6 +455,7 @@
         <div id="paste-btns">
           <button id="btn-clip-to-phone" title="Copy text to iPhone clipboard">📋 Copy to phone</button>
           <button id="btn-clip-from-phone" title="Extract and copy text visible on the phone screen">📋 Copy screen text</button>
+          <button id="btn-img-from-phone" title="Put the image copied on the phone onto this PC's clipboard">🖼 Copy phone image</button>
         </div>
       </div>
     </div>
@@ -476,6 +477,7 @@
         <div id="text-row">
           <textarea id="text-msg" rows="2" aria-label="Message" placeholder="Message"></textarea>
           <button id="btn-text-send">Send</button>
+          <button id="btn-img-send" hidden title="Send the image you pasted (Ctrl+V) to this contact; the message box is the caption">Send image</button>
         </div>
         <h2 class="sec gap-top">Open app</h2>
         <div id="app-chips" class="chips"></div>
@@ -1345,10 +1347,84 @@ async function sendArrowKey(key) {
     arrowBuf.length = 0;
   }
 }
+// Longest edge of a pasted PC image before it goes to the phone. A UI/transport
+// number, not a device one: phone screens are ~1200px wide and iMessage
+// recompresses attachments, so anything larger is base64 for nothing.
+const IMAGE_PASTE_MAX_PX = 1600;
+let pendingImageB64 = null;  // the last Ctrl+V image, until Send image uses it
+document.getElementById('btn-img-send').onclick = async () => {
+  const to = document.getElementById('text-to').value.trim();
+  const text = document.getElementById('text-msg').value;
+  if (!to) { showHint('Type the contact first.'); return; }
+  if (!pendingImageB64) { showHint('Paste an image first (Ctrl+V over the page).'); return; }
+  const btn = document.getElementById('btn-img-send');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    await withBusy('SENDING', async () => {
+      const r = await fetch('/api/send-image', {method:'POST', headers:JSON_HDR,
+        body: JSON.stringify({to, text, image_b64: pendingImageB64})});
+      const j = await r.json();
+      showHint(j.ok ? 'Image sent to ' + to + '.' : (j.error || 'Send not confirmed — check Recent sends.'));
+      if (j.ok) { pendingImageB64 = null; btn.hidden = true; document.getElementById('text-msg').value = ''; }
+    });
+  } catch (e) { showHint('Send failed.'); }
+  finally { btn.disabled = !inputEnabled; btn.textContent = 'Send image'; }
+  loadSent(); renderContactChips();
+};
+document.getElementById('btn-img-from-phone').onclick = async () => {
+  // Same shape as copyScreenImage: hand ClipboardItem the fetch PROMISE so the
+  // write keeps its user activation. A 404 (no image on the phone) rejects.
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      'image/png': fetch('/api/clipboard-image?t=' + Date.now()).then(r => {
+        if (!r.ok) throw new Error('no image'); return r.blob(); })
+    })]);
+    showHint('Phone image is on your PC clipboard — paste it anywhere.');
+  } catch (e) {
+    showHint('No image on the phone clipboard, or this browser cannot write images.');
+  }
+};
+async function downscaleToJpegB64(file, maxPx) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, maxPx / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close();
+  return c.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
 window.addEventListener('paste', async (ev) => {
   if (ovOpen) return;
   if (!inputEnabled || phoneBusy()) return;
   if (ev.target.closest('input,textarea,[contenteditable]')) return;
+  const imgFile = ev.clipboardData &&
+    Array.from(ev.clipboardData.files || []).find(f => /^image\/(png|jpeg)$/.test(f.type));
+  if (imgFile) {
+    // A PC screenshot (Win+Shift+S). Downscaled here so a 4K capture is not
+    // a multi-MB base64 POST through one WDA request; iMessage recompresses
+    // anyway. Lands on the phone's clipboard, not in a field: the human then
+    // long-presses the compose bar on the phone and taps Paste.
+    ev.preventDefault();
+    showHint('Sending image to phone clipboard…');
+    try {
+      const b64 = await downscaleToJpegB64(imgFile, IMAGE_PASTE_MAX_PX);
+      const r = await fetch('/api/clipboard-image', {method:'POST', headers:JSON_HDR,
+                                                     body: JSON.stringify({image_b64: b64})});
+      const j = r.ok ? await r.json() : null;
+      if (j && j.ok) {
+        pendingImageB64 = b64;
+        const sendImg = document.getElementById('btn-img-send');
+        sendImg.hidden = false; sendImg.disabled = !inputEnabled;
+        showHint('Image on phone clipboard (' + Math.round(j.bytes / 1024) +
+                 ' KB). Long-press a message field and tap Paste, or use Send image under Text someone.');
+      } else {
+        showHint('Image paste failed' + (j && j.error ? ': ' + j.error : '.'));
+      }
+    } catch (e) {
+      showHint('Image paste failed.');
+    }
+    return;
+  }
   const text = ev.clipboardData ? ev.clipboardData.getData('text') : '';
   if (!text) return;
   ev.preventDefault();

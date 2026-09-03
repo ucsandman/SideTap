@@ -50,6 +50,8 @@ _TOOLS = [
     helpers.current_app,
     helpers.wait_for_app,
     helpers.send_message,
+    helpers.send_image,
+    helpers.save_clipboard_image,
     helpers.wait_stable,
 ]
 for _fn in _TOOLS:

@@ -2584,8 +2584,80 @@ class StubClipboardClient:
     def get_clipboard(self):
         return self.clip
 
-    def set_clipboard(self, text):
+    def set_clipboard(self, text, content_type="plaintext"):
         self.clip = text
+
+
+# ---- send_image ---------------------------------------------------------------
+
+
+def test_send_image_refuses_a_file_that_is_not_an_image(tmp_path, monkeypatch):
+    stub = StubClipboardClient(None)
+    monkeypatch.setattr(helpers, "_client", stub)
+    p = tmp_path / "note.txt"
+    p.write_bytes(b"hello")
+    with pytest.raises(WDAError, match="not a PNG or JPEG"):
+        helpers.send_image("Mom", str(p))
+    assert stub.clip is None  # refused before touching the phone
+
+
+def test_send_image_passes_the_same_gate_as_send_message(tmp_path, monkeypatch):
+    # The card names the file, not its pixels; a denied card raises before the
+    # clipboard is touched, exactly like send_message before it types.
+    stub = StubClipboardClient(None)
+    monkeypatch.setattr(helpers, "_client", stub)
+    monkeypatch.setattr(helpers.approval, "mode", lambda: "always")
+    seen = {}
+
+    def deny(contact, text, flags, source, timeout=None):
+        seen.update(contact=contact, text=text)
+        return "deny"
+
+    monkeypatch.setattr(helpers.approval, "request", deny)
+    p = tmp_path / "shot.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 2048)
+    trust.clear()
+    trust.mark("screen", [])
+    try:
+        with pytest.raises(WDAError, match="denied"):
+            helpers.send_image("Mom", str(p))
+    finally:
+        trust.clear()
+    assert seen == {"contact": "Mom", "text": "[image 2 KB: shot.png]"}
+    assert stub.clip is None
+
+    # A caption rides on the same card, after the file label.
+    trust.mark("screen", [])
+    try:
+        with pytest.raises(WDAError, match="denied"):
+            helpers.send_image("Mom", str(p), text="look at this")
+    finally:
+        trust.clear()
+    assert seen["text"] == "[image 2 KB: shot.png] look at this"
+
+
+def test_save_clipboard_image_writes_the_png_and_refuses_an_empty_clipboard(
+    tmp_path, monkeypatch
+):
+    class Stub:
+        png = b"\x89PNG\r\n\x1a\nphone"
+
+        def get_clipboard_image(self):
+            return self.png
+
+    stub = Stub()
+    monkeypatch.setattr(helpers, "_client", stub)
+    out = tmp_path / "in" / "shot.png"
+    try:
+        r = helpers.save_clipboard_image(str(out))
+        assert r == {"path": str(out), "bytes": len(stub.png)}
+        assert out.read_bytes() == stub.png
+        assert trust.tainted()  # phone content reached this process
+        stub.png = b""
+        with pytest.raises(WDAError, match="no image"):
+            helpers.save_clipboard_image(str(out))
+    finally:
+        trust.clear()
 
 
 def test_helpers_get_and_set_clipboard(monkeypatch):

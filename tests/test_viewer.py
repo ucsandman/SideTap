@@ -66,9 +66,14 @@ class StubClient:
     def get_clipboard(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         return self.clipboard_content
 
-    def set_clipboard(self, text):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+    def set_clipboard(self, text, content_type="plaintext"):  # noqa: vulture  (duck-typed stand-in for WDAClient)
         self.clipboard_content = text
-        self.calls.append(("set_clipboard", text))
+        self.calls.append(("set_clipboard", text, content_type))
+
+    clipboard_image = b""
+
+    def get_clipboard_image(self):  # noqa: vulture  (duck-typed stand-in for WDAClient)
+        return self.clipboard_image
 
     window_size_calls = 0
 
@@ -647,6 +652,89 @@ def test_clipboard_endpoint_get_and_post(base_url):
     # Get clipboard via GET
     r = requests.get(base_url + "/api/clipboard", timeout=5)
     assert r.status_code == 200 and r.json() == {"ok": True, "text": "Hello from PC!"}
+
+
+def test_clipboard_image_endpoint_puts_a_png_on_the_phone_clipboard(base_url):
+    import base64
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 100
+    r = requests.post(
+        base_url + "/api/clipboard-image",
+        json={"image_b64": base64.b64encode(png).decode()},
+        timeout=5,
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True, "bytes": len(png)}
+    assert ("set_clipboard", png, "image") in viewer.Handler.client.calls
+
+    # Anything that is not a PNG/JPEG never reaches the phone.
+    r = requests.post(
+        base_url + "/api/clipboard-image",
+        json={"image_b64": base64.b64encode(b"hello").decode()},
+        timeout=5,
+    )
+    assert r.status_code == 400
+    assert not any(
+        c[:2] == ("set_clipboard", b"hello") for c in viewer.Handler.client.calls
+    )
+
+
+def test_clipboard_image_get_serves_the_phone_image_or_404(base_url):
+    stub = viewer.Handler.client
+    stub.clipboard_image = b""
+    r = requests.get(base_url + "/api/clipboard-image", timeout=5)
+    assert r.status_code == 404
+    stub.clipboard_image = b"\x89PNG\r\n\x1a\nphone"
+    r = requests.get(base_url + "/api/clipboard-image", timeout=5)
+    assert r.status_code == 200
+    assert r.headers["Content-Type"].startswith("image/png")
+    assert r.content == stub.clipboard_image
+
+
+def test_send_image_endpoint_is_human_initiated_and_validates(base_url, monkeypatch):
+    import base64
+
+    seen = {}
+
+    def fake_send(to, raw, name, caption):
+        seen.update(
+            to=to,
+            raw=raw,
+            name=name,
+            caption=caption,
+            human=viewer.trust.is_human_initiated(),
+        )
+        return {"sent": True}
+
+    monkeypatch.setattr(helpers, "_send_image_bytes", fake_send)
+    r = requests.post(
+        base_url + "/api/send-image", json={"to": "", "image_b64": "aGk="}, timeout=5
+    )
+    assert r.status_code == 400 and not seen
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 10
+    r = requests.post(
+        base_url + "/api/send-image",
+        json={"to": "Mom", "text": "cap", "image_b64": base64.b64encode(png).decode()},
+        timeout=5,
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert seen == {
+        "to": "Mom",
+        "raw": png,
+        "name": "pasted image",
+        "caption": "cap",
+        "human": True,
+    }
+
+
+def test_viewer_pastes_a_pc_image_to_the_phone_clipboard():
+    # Win+Shift+S puts a PNG on the PC clipboard; Ctrl+V over the page must
+    # route it to /api/clipboard-image and tell the human what to do next.
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    assert "clipboardData.files" in html
+    assert "/api/clipboard-image" in html
+    assert "Long-press a message field" in html
+    assert "btn-img-send" in html and "/api/send-image" in html
+    assert "btn-img-from-phone" in html and "/api/clipboard-image?" in html
 
 
 def test_screen_text_endpoint(base_url, monkeypatch):
@@ -2395,7 +2483,7 @@ def test_pull_photos_endpoint_runs_in_background(base_url, monkeypatch):
 
     release = threading.Event()
 
-    def slow_pull(dest=None, progress=photos._noop):
+    def slow_pull(dest=None, progress=photos._noop):  # noqa: vulture
         progress("100APPLE/IMG_0001.JPG")
         release.wait(timeout=10)
         return {"ok": True, "pulled": 2, "skipped": 5, "dest": "X", "errors": []}
@@ -2429,7 +2517,7 @@ def test_pull_photos_second_post_joins_the_running_job(base_url, monkeypatch):
     release = threading.Event()
     starts = []
 
-    def slow_pull(dest=None, progress=photos._noop):
+    def slow_pull(dest=None, progress=photos._noop):  # noqa: vulture
         starts.append(1)
         release.wait(timeout=10)
         return {"ok": True, "pulled": 0, "skipped": 0, "dest": "X", "errors": []}
@@ -2454,7 +2542,7 @@ def test_photos_worker_never_stays_running_on_a_crash(monkeypatch):
     only signal, so an uncaught exception must still flip it."""
     from phone_harness import photos
 
-    def explode(dest=None, progress=None):
+    def explode(dest=None, progress=None):  # noqa: vulture
         raise RuntimeError("usbmux fell over")
 
     monkeypatch.setattr(photos, "pull_photos", explode)

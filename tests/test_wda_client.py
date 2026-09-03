@@ -61,6 +61,10 @@ class FakeWDA(BaseHTTPRequestHandler):
             self._reply({"width": 390, "height": 844})
         elif self.path.endswith("/source?format=json"):
             self._reply({"type": "App", "children": []})
+        elif self.path.endswith("/wda/activeAppInfo"):
+            self._reply(
+                {"bundleId": getattr(FakeWDA, "front", "com.apple.springboard")}
+            )
         else:
             self._reply({"error": "unknown command", "message": self.path}, 404)
 
@@ -111,6 +115,10 @@ class FakeWDA(BaseHTTPRequestHandler):
             FakeWDA.last_settings = self.payload.get("settings")
             self._reply(None)
         elif self.path in ("/wda/homescreen", "/wda/lock"):
+            FakeWDA.front = "com.apple.springboard"
+            self._reply(None)
+        elif self.path.endswith("/wda/apps/activate"):
+            FakeWDA.front = self.payload.get("bundleId")
             self._reply(None)
         else:
             self._reply({"error": "unknown command", "message": self.path}, 404)
@@ -742,3 +750,36 @@ def test_activity_summary_key_press():
         },
     )
     assert summary == "key press"
+
+
+# ---- pasteboard: the runner must be frontmost (iOS 16+) ----------------------
+
+
+def test_set_clipboard_foregrounds_the_runner_and_hands_the_app_back(wda, tmp_path):
+    # Measured 2026-09-03: with Messages frontmost, setPasteboard answered 200
+    # and set nothing and getPasteboard answered "". Both worked once the WDA
+    # runner was activated first. So the write flashes the runner and restores
+    # whatever was up — an app by re-activating it, the springboard by home.
+    (tmp_path / "wda_bundle").write_text("com.example.runner")
+    FakeWDA.front = "com.apple.MobileSMS"
+    wda.set_clipboard(b"\x89PNGdata", "image")
+    posts = [p.rsplit("/", 1)[-1] for m, p in FakeWDA.requests_seen if m == "POST"]
+    activates = [i for i, p in enumerate(posts) if p == "activate"]
+    pasteboard = posts.index("setPasteboard")
+    assert len(activates) == 2 and activates[0] < pasteboard < activates[1]
+    assert FakeWDA.front == "com.apple.MobileSMS"
+    assert FakeWDA.pasteboard == base64.b64encode(b"\x89PNGdata").decode()
+
+    FakeWDA.requests_seen = []
+    FakeWDA.front = "com.apple.springboard"
+    wda.set_clipboard("hello")
+    assert FakeWDA.front == "com.apple.springboard"
+    assert ("POST", "/wda/homescreen") in FakeWDA.requests_seen
+
+
+def test_set_clipboard_runs_bare_without_a_known_runner(wda):
+    # No .state/wda_bundle and no WDA_BUNDLE_ID: nothing to activate, the
+    # write goes out as it always did rather than failing.
+    wda.set_clipboard("hello")
+    assert not any(p.endswith("/activate") for m, p in FakeWDA.requests_seen)
+    assert FakeWDA.pasteboard == base64.b64encode(b"hello").decode()

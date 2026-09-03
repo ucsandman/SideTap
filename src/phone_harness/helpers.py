@@ -1274,6 +1274,147 @@ _SEND_SCAN_TRIES = 2
 _SEND_SCAN_INTERVAL = 0.5
 
 
+def _send_gate(contact: str, text: str) -> None:
+    """The prompt-injection gate every send passes: raises unless approved.
+
+    Shared by send_message and send_image so the image path cannot drift into
+    a bypass — for an image `text` is the card's label ("[image 56 KB: x.png]").
+    """
+    taint = trust.tainted()
+    if not taint or trust.is_human_initiated():
+        return
+    flags = list(taint["flags"])
+    for flag in trust.scan(text):
+        if flag not in flags:
+            flags.append(flag)
+    gate = approval.mode()  # read now: the human can flip it mid-session
+    if gate == "off" or (gate == "flagged" and not flags):
+        verdict = "approve"
+    else:
+        verdict = approval.request(contact, text, flags, taint["source"])
+    if verdict != "approve":
+        _log_action(contact, None, text, sent=False)
+        raise WDAError(_GATE_REFUSALS.get(verdict, _GATE_REFUSALS["deny"]))
+
+
+def _find_send_button() -> dict | None:
+    """The Messages Send button, or None. One look plus one cold retry."""
+    for attempt in range(_SEND_SCAN_TRIES):
+        sends = [
+            e
+            for e in ocr()
+            if e["type"] == "Button" and e["text"].strip().lower() == "send"
+        ]
+        if sends:
+            return sends[0]
+        if attempt < _SEND_SCAN_TRIES - 1:
+            time.sleep(_SEND_SCAN_INTERVAL)
+            _invalidate_tree()
+    return None
+
+
+_IMAGE_MAX_BYTES = (
+    8_000_000  # one WDA POST carries it base64; iMessage recompresses anyway
+)
+_IMAGE_MAGIC = {b"\x89PNG": "png", b"\xff\xd8\xff": "jpeg"}
+_PASTE_MENU_WAIT = 3.0  # needs device check: the edit menu after a long press
+
+
+def send_image(contact: str, image_path: str, text: str = "") -> dict:
+    """Send a PNG/JPEG file from this PC as a Messages attachment.
+
+    Puts the image on the phone's clipboard, opens the thread, long-presses the
+    compose bar and taps Paste, types `text` as the caption if given, then
+    Send. Same approval gate as send_message: the card shows the file name,
+    size and caption. Refuses a thread whose compose bar already holds a
+    draft, because Paste would send draft+image.
+    """
+    path = Path(image_path)
+    data = path.read_bytes()
+    return _send_image_bytes(contact, data, path.name, text)
+
+
+def _send_image_bytes(contact: str, data: bytes, name: str, text: str = "") -> dict:
+    """send_image's body, on bytes: the viewer's pasted-image send shares it."""
+    kind = next((k for m, k in _IMAGE_MAGIC.items() if data.startswith(m)), None)
+    if kind is None:
+        raise WDAError(f"{name} is not a PNG or JPEG")
+    if len(data) > _IMAGE_MAX_BYTES:
+        raise WDAError(f"{name} is {len(data) // 1_000_000} MB; downscale it first")
+    if config.PHONE_PASSCODE and config.PHONE_PASSCODE in text:
+        raise WDAError("Refused: the caption contains your phone passcode.")
+    label = f"[image {max(1, len(data) // 1024)} KB: {name}]"
+    if text.strip():
+        label = f"{label} {text.strip()}"
+    _send_gate(contact, label)
+
+    with trust.internal():
+        # Clipboard first: setting it flashes the WDA runner over whatever is
+        # frontmost and hands the screen back, so do it before the thread walk.
+        client().set_clipboard(data, "image")
+        _invalidate_tree()
+        title = _open_thread(contact)
+        fields = [e for e in ocr() if e["type"] == "TextField"]
+        if not fields:
+            raise WDAError("No compose field on screen. Is the conversation open?")
+        field = max(fields, key=lambda e: e["y"])
+        draft = set_field_text(field, "")  # empties a surviving draft, reads back
+        if draft.strip() and draft.strip().lower() not in _EMPTY_COMPOSE_VALUES:
+            _log_action(contact, title, label, sent=False)
+            raise WDAError(
+                f"Refused: the compose field still reads {draft!r}. "
+                "Clear the conversation's draft on the phone and try again."
+            )
+        # Re-resolve the bar: the keyboard slide-up moved it (y=908 -> 601 on
+        # device), and a long press at the old coordinates lands on a key.
+        fields = [e for e in ocr() if e["type"] == "TextField"]
+        if fields:
+            field = max(fields, key=lambda e: e["y"])
+        long_press(field["x"], field["y"])
+        paste = wait_for_text("Paste", timeout=_PASTE_MENU_WAIT, exact=True)
+        if paste is None:
+            raise WDAError(
+                "No Paste option appeared after long-pressing the compose bar."
+            )
+        tap(paste["x"], paste["y"])
+        if text.strip():
+            # The caret sits after the pasted attachment. type_text APPENDS,
+            # which is what we want here. iOS sends the two as separate bubbles
+            # (image, then text) from one Send tap — verified on device.
+            type_text(text.strip())
+        send = _find_send_button()
+        if send is None:
+            raise WDAError("Send button not found — the image may not have pasted.")
+        _log_action(contact, title, label, sent=False)  # attempt, before the tap
+        tap(send["x"], send["y"])
+        _log_action(contact, title, label, sent=True)
+    return {"contact": contact, "resolved_title": title, "image": name, "sent": True}
+
+
+def save_clipboard_image(path: str) -> dict:
+    """Save the image on the iPhone's clipboard to `path` on this PC as PNG.
+
+    Copy a photo or screenshot on the phone, then call this. Returns
+    {"path", "bytes"}; raises when the clipboard holds no image. The bytes are
+    phone content, so the read taints the session like any other.
+    """
+    png = client().get_clipboard_image()
+    trust.mark("clipboard", [])
+    if not png:
+        raise WDAError(
+            "The phone clipboard holds no image. Copy one on the phone first."
+        )
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(png)
+    return {"path": str(out), "bytes": len(png)}
+
+
+# What an EMPTY Messages compose bar reads back as: element_value hands back
+# the placeholder, not "" (see set_field_text).
+_EMPTY_COMPOSE_VALUES = {"imessage", "text message", "message", "sms"}
+
+
 def send_message(contact: str, text: str) -> dict:
     """Send a Message to a conversation: open Messages, open the thread, type, send.
 
@@ -1290,20 +1431,7 @@ def send_message(contact: str, text: str) -> dict:
     The compose field is labeled "Message", not "iMessage" — message bubbles carry
     "iMessage" in their labels, so never search for that.
     """
-    taint = trust.tainted()
-    if taint and not trust.is_human_initiated():
-        flags = list(taint["flags"])
-        for flag in trust.scan(text):
-            if flag not in flags:
-                flags.append(flag)
-        gate = approval.mode()  # read now: the human can flip it mid-session
-        if gate == "off" or (gate == "flagged" and not flags):
-            verdict = "approve"
-        else:
-            verdict = approval.request(contact, text, flags, taint["source"])
-        if verdict != "approve":
-            _log_action(contact, None, text, sent=False)
-            raise WDAError(_GATE_REFUSALS.get(verdict, _GATE_REFUSALS["deny"]))
+    _send_gate(contact, text)
 
     with trust.internal():  # the send's own reads are not agent-facing content
         title = _open_thread(contact)
@@ -1333,21 +1461,11 @@ def send_message(contact: str, text: str) -> dict:
         # slow case on every send. The re-scan must drop the tree first —
         # ocr() is cached ~2s, so it would otherwise answer three times from
         # the one read that already missed the button.
-        for attempt in range(_SEND_SCAN_TRIES):
-            sends = [
-                e
-                for e in ocr()
-                if e["type"] == "Button" and e["text"].strip().lower() == "send"
-            ]
-            if sends:
-                break
-            if attempt < _SEND_SCAN_TRIES - 1:
-                time.sleep(_SEND_SCAN_INTERVAL)
-                _invalidate_tree()
-        if not sends:
+        send = _find_send_button()
+        if send is None:
             raise WDAError("Send button not found — text may not have been typed.")
         _log_action(contact, title, text, sent=False)  # attempt, before the tap
-        tap(sends[0]["x"], sends[0]["y"])
+        tap(send["x"], send["y"])
         # Nothing after this reads the screen, and the tap already blocked on
         # waitForIdleTimeout inside /actions — the same argument that retired
         # goto_home_page()'s _PAGE_SETTLE. The 1.5s that sat here was dead.
@@ -1881,6 +1999,8 @@ __all__ = [
     "current_app",
     "wait_for_app",
     "send_message",
+    "send_image",
+    "save_clipboard_image",
     "read_messages",
     "wait_stable",
     "wait_for_text",

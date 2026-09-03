@@ -856,6 +856,17 @@ class Handler(BaseHTTPRequestHandler):
                 from . import helpers
 
                 self._json({"known": sorted(helpers.BUNDLE_IDS)})
+            elif path == "/api/clipboard-image":
+                # The image on the phone's clipboard as PNG, for the page to
+                # put on the PC clipboard (Copy phone image). 404 when none.
+                with _action_slot():
+                    png = self.client.get_clipboard_image()
+                if png:
+                    self._send(200, png, "image/png")
+                else:
+                    self._json(
+                        {"ok": False, "error": "no image on the phone clipboard"}, 404
+                    )
             elif path == "/api/clipboard":
                 try:
                     with _action_slot():
@@ -946,6 +957,50 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)})
+            elif path == "/api/clipboard-image":
+                # A PC screenshot pasted onto the page (viewer.html downscales
+                # it first). Lands on the phone's clipboard as an image; the
+                # human then long-presses a compose bar and taps Paste.
+                import base64
+
+                from . import helpers
+
+                raw = base64.b64decode(str(payload.get("image_b64", "")) or b"")
+                if not any(raw.startswith(m) for m in helpers._IMAGE_MAGIC):
+                    self._json({"ok": False, "error": "not a PNG or JPEG"}, 400)
+                elif len(raw) > helpers._IMAGE_MAX_BYTES:
+                    self._json({"ok": False, "error": "image too large"}, 413)
+                else:
+                    with _action_slot():
+                        self.client.set_clipboard(raw, "image")
+                    self._json({"ok": True, "bytes": len(raw)})
+            elif path == "/api/send-image":
+                # The pasted image plus the Text-someone form: the human chose
+                # the recipient and the caption and clicked, so it is human
+                # initiated exactly like /api/text.
+                import base64
+
+                from . import helpers
+
+                to = str(payload.get("to", "")).strip()
+                caption = str(payload.get("text", ""))
+                raw = base64.b64decode(str(payload.get("image_b64", "")) or b"")
+                if not to or not raw:
+                    self._json(
+                        {"ok": False, "error": "to and an image are required"}, 400
+                    )
+                    return
+                try:
+                    with _action_slot(), trust.human_initiated():
+                        result = helpers._send_image_bytes(
+                            to, raw, "pasted image", caption
+                        )
+                except WDAError:
+                    raise
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": bool(result.get("sent")), "result": result})
             elif path == "/api/long_press":
                 with _human_gesture(self.client):
                     self.client.long_press(

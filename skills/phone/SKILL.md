@@ -30,6 +30,8 @@ none of which you can learn by looking at the screen.
 | Helper | Use |
 |---|---|
 | `send_message(contact, text)` | full Messages send; `contact` = conversation name in the Messages list |
+| `send_image(contact, image_path, text="")` | send a PNG/JPEG file from this PC as a Messages attachment, optional caption (clipboard paste; same approval gate) |
+| `save_clipboard_image(path)` | save the image copied on the phone to a PNG on this PC |
 | `read_messages(contact, limit=20)` | read a thread back: `[{text, from_me}, ...]`, oldest first |
 | `ocr()` | all visible text with center coords (real UI tree, exact). Elements are `{"text","x","y","type","rect"}` — the key is **`text`**, and `full=` is MCP-only |
 | `find_text(t)` / `tap_text(t)` | locate / tap by visible text |

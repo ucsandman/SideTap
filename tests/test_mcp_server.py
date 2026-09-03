@@ -28,6 +28,7 @@ def test_helper_surface_is_registered():
         "swipe",
         "open_app",
         "send_message",
+        "send_image",
         "read_messages",
         "wait_for_text",
         "screenshot",

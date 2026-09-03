@@ -5,6 +5,43 @@ entries only. Newest first.
 
 ---
 
+## 2026-09-03 — set_clipboard answered 200 and set nothing: iOS only lets the frontmost app touch the pasteboard
+
+**Symptom.** `POST /wda/setPasteboard` returned 200 with Messages frontmost,
+`getPasteboard` came back `""`, and Paste in Notes inserted nothing. Text
+had been broken the same way since iOS 16; nobody had read the clipboard
+back, so it never showed.
+
+**Root cause.** iOS 16+ restricts UIPasteboard to the foreground app. The WDA
+runner is a background XCTest host, so both calls were no-ops. Activating the
+runner first (`/wda/apps/activate`) made both work on the spot, image included.
+
+**Second trap.** That activation ran 17-18s every time and the hand-back to
+Messages did not land: the runner's "Automation Running" screen never goes
+idle, so the shared session's `waitForIdleTimeout` (WDA_IDLE_WAIT=2) ran to
+XCTest's own cap. At 0 it is 0.09s. Same shape as `_enter_passcode`: drop the
+wait for the dance, restore it in a finally.
+
+**Third trap.** `send_image` long-pressed the compose bar at the coordinates
+read BEFORE it tapped the field; the keyboard slide-up moves the bar from
+y=908 to y=601 and the press landed on a key. Re-read the field after the tap.
+
+**Fourth trap.** The first hand-back polled `activeAppInfo` (up to 20 calls
+per clipboard op) to see the previous app return. That call resolves the
+active application, the class that can block WDA with no upper bound during
+an app transition: 8 of the 10 wedge recoveries the watchdog has ever logged
+landed that afternoon. Replaced with a fixed 1.0s settle. Separately, a
+"hang" in `send_image` right after `save_clipboard_image` was the approval
+card waiting in the viewer (the read taints the session), not WDA.
+
+**Fix.** `WDAClient._runner_foreground()` wraps both pasteboard calls: idle
+wait 0, activate runner, call, re-activate the previous app (Home when it was
+springboard), bounded wait for it to be frontmost again, restore the idle
+wait. Whole write 0.98s (was 21.75s). Runner bundle from `.state/wda_bundle`
+or `WDA_BUNDLE_ID`; without either the call runs bare as before.
+
+---
+
 ## 2026-09-01 — The fleet dashboard's iframe rendered {"error": "forbidden"}: same-site is not same-origin
 
 **Symptom.** The SideTap Pro fleet dashboard (:8769) iframed the viewer

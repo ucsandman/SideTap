@@ -479,7 +479,10 @@
           <button id="btn-text-send">Send</button>
           <button id="btn-img-send" hidden title="Send the image you pasted (Ctrl+V) to this contact; the message box is the caption">Send image</button>
         </div>
-        <h2 class="sec gap-top">Open app</h2>
+        <div class="sechead gap-top">
+          <h2 class="sec">Open app</h2>
+          <button id="btn-running" title="The apps that are open right now, as the app switcher shows them. Click one to bring it up, ✕ to close it.">Open apps ▸</button>
+        </div>
         <div id="app-chips" class="chips"></div>
         <button id="more-apps" class="more-btn" hidden></button>
         <div class="sechead gap-top">
@@ -580,6 +583,7 @@
         <div id="setup" hidden></div>
         <div id="full-activity" hidden></div>
         <div id="full-apps" hidden></div>
+        <div id="full-running" hidden></div>
         <div id="full-sends" hidden></div>
         <div id="full-console" hidden></div>
         <div id="full-approval" hidden></div>
@@ -803,7 +807,7 @@ function escapeHtml(s) {
 
 // ---- overlay controller: one shell, five hidden bodies, exactly one visible.
 let ovOpen = null;
-const OV_BODIES = ['doctor','fix-panel','setup','full-activity','full-apps','full-sends','full-console','full-approval','screen-text'];
+const OV_BODIES = ['doctor','fix-panel','setup','full-activity','full-apps','full-running','full-sends','full-console','full-approval','screen-text'];
 let ovReturnFocus = null;
 function openOverlay(id, title) {
   OV_BODIES.forEach(b => document.getElementById(b).hidden = b !== id);
@@ -2187,6 +2191,72 @@ function renderAppChips() {
   updateActionAvail();
 }
 document.getElementById('more-apps').onclick = () => openOverlay('full-apps', 'Open app');
+
+// ---- Open apps: the app switcher, read over USB instead of swiped open.
+// WebDriverAgent's touches never reach the home-indicator zone (measured
+// 2026-09-04: even the plain Home flick cannot leave Settings), so the
+// switcher screen cannot be opened from here; `ios ps` joined against the
+// installed list is what it would show. A chip brings the app up, ✕ force-
+// quits it. Neither touches WDA, so neither is gated on inputEnabled — a
+// broken-link day is exactly when closing a stuck app is worth having.
+function dimNote(text) {
+  const s = document.createElement('span'); s.className = 'dim'; s.textContent = text; return s;
+}
+function runningChip(app) {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.textContent = app.name;
+  b.title = 'Bring ' + app.name + ' to the front';
+  const x = document.createElement('span');
+  x.className = 'pin';
+  x.textContent = '✕';
+  x.title = 'Close ' + app.name;
+  x.onclick = async (ev) => {
+    ev.stopPropagation();
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/close-app', {method:'POST', headers:JSON_HDR,
+                                               body: JSON.stringify({name: app.bundle_id})});
+      const j = await r.json();
+      if (!j.ok) showHint(j.error || 'Could not close ' + app.name + '.');
+    } catch (e) { showHint('Could not close ' + app.name + '.'); }
+    await loadRunning();
+    schedulePhoneRefresh();               // the front app may be the one just closed
+  };
+  b.appendChild(x);
+  b.onclick = async () => {
+    if (phoneBusy()) return;
+    b.disabled = true;
+    try {
+      await withBusy('OPENING', async () => {
+        const r = await fetch('/api/open-app', {method:'POST', headers:JSON_HDR,
+                                                body: JSON.stringify({name: app.bundle_id})});
+        const j = await r.json();
+        if (!j.ok) showHint(j.error || 'Could not open ' + app.name + '.');
+        else closeOverlay();
+      });
+    } catch (e) { showHint('Could not open ' + app.name + '.'); }
+    finally { b.disabled = false; schedulePhoneRefresh(); }
+  };
+  return b;
+}
+async function loadRunning() {
+  const box = document.getElementById('full-running');
+  box.className = 'chips';
+  box.replaceChildren(dimNote('Reading…'));
+  try {
+    const j = await getJSON('/api/running');
+    if (!j.ok) throw new Error(j.error || 'read failed');
+    box.replaceChildren(...(j.apps.length ? j.apps.map(runningChip)
+                                          : [dimNote('No apps are open.')]));
+  } catch (e) {
+    box.replaceChildren(dimNote('Could not read the open apps. Is the phone connected?'));
+  }
+}
+document.getElementById('btn-running').onclick = () => {
+  openOverlay('full-running', 'Open apps');
+  loadRunning();
+};
 
 // ---- Go to page: the chips are 1..total. goto_home_page() refuses anything
 // else by design, but it still walks correctly OUT of Today View and the App

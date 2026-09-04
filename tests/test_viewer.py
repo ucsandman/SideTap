@@ -641,6 +641,55 @@ def test_apps_endpoint_lists_known_names(base_url):
     assert "settings" in names and names == sorted(names)
 
 
+def test_running_endpoint_serves_the_switcher_list_without_the_action_lock(
+    base_url, monkeypatch
+):
+    apps = [{"name": "Messages", "bundle_id": "com.apple.MobileSMS", "pid": 9}]
+    monkeypatch.setattr("phone_harness.helpers.open_apps", lambda: apps)
+    # go-ios only: a held _ACTION_LOCK (an unlock in flight) must not 409 it.
+    assert viewer._ACTION_LOCK.acquire(timeout=1)
+    try:
+        r = requests.get(base_url + "/api/running", timeout=5)
+    finally:
+        viewer._ACTION_LOCK.release()
+    assert r.status_code == 200 and r.json() == {"ok": True, "apps": apps}
+
+    def boom():
+        raise RuntimeError("go-ios not found")
+
+    monkeypatch.setattr("phone_harness.helpers.open_apps", boom)
+    r = requests.get(base_url + "/api/running", timeout=5)
+    assert r.status_code == 502 and r.json()["ok"] is False
+    assert r.json()["apps"] == [] and "go-ios" in r.json()["error"]
+
+
+def test_close_app_endpoint(base_url, monkeypatch):
+    closed = []
+    monkeypatch.setattr(
+        "phone_harness.helpers.close_app", lambda n: (closed.append(n), True)[1]
+    )
+    r = requests.post(
+        base_url + "/api/close-app", json={"name": "com.apple.Preferences"}, timeout=5
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True, "closed": True}
+    assert closed == ["com.apple.Preferences"]
+    r = requests.post(base_url + "/api/close-app", json={}, timeout=5)
+    assert r.status_code == 400
+
+
+def test_viewer_html_has_the_open_apps_button_wired_to_the_overlay():
+    html = (Path(viewer.__file__).parent / "viewer.html").read_text(encoding="utf-8")
+    assert 'id="btn-running"' in html and 'id="full-running"' in html
+    # openOverlay hides every body NOT in OV_BODIES' list, so a body missing
+    # from it stays hidden forever behind a working button.
+    ov = html[
+        html.index("const OV_BODIES") : html.index("\n", html.index("const OV_BODIES"))
+    ]
+    assert "'full-running'" in ov
+    assert "openOverlay('full-running', 'Open apps')" in html
+    assert "/api/running" in html and "/api/close-app" in html
+
+
 def test_clipboard_endpoint_get_and_post(base_url):
     # Set clipboard via POST
     r = requests.post(

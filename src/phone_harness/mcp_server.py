@@ -47,6 +47,8 @@ _TOOLS = [
     helpers.current_page,
     helpers.goto_home_page,
     helpers.open_app,
+    helpers.open_apps,
+    helpers.close_app,
     helpers.current_app,
     helpers.wait_for_app,
     helpers.send_message,

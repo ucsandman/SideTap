@@ -843,21 +843,11 @@ def wait_for_app(
         time.sleep(_duty_rest(started, interval, deadline))
 
 
-def open_app(name: str, wait_seconds: float = 0.0) -> None:
-    """Open an app by friendly name ('Settings'), bundle id, or installed-app name.
+def _resolve_bundle(name: str) -> str:
+    """Friendly name ('Settings'), bundle id, or installed-app name -> bundle id.
 
-    Pass `wait_seconds` to have the launch CONFIRMED before this returns, and
-    raise if the app never reached the foreground. The default 0.0 launches and
-    returns exactly as before, and must stay 0.0: viewer.py calls this inside
-    _action_slot(), so a non-zero default would hold _ACTION_LOCK for the whole
-    wait and 409-drop the human's next taps (_ACTION_WAIT is 2s).
-
-    This is the only way to get the correct foreground wait without knowing the
-    bundle id: wait_for_app() needs one, open_app resolves it privately, and
-    inside act() a later step cannot read an earlier step's result — so a
-    batched open-then-look otherwise settles for wait_stable()'s "the screen
-    stopped moving", which a launch that bounced back to the Home Screen also
-    satisfies.
+    Shared by open_app() and close_app(), so both accept exactly the same
+    spellings and raise the same "Did you mean" hint.
     """
     key = name.lower().strip()
     # A dot alone does NOT make it a bundle id: `ios apps --list` reports names
@@ -892,6 +882,70 @@ def open_app(name: str, wait_seconds: float = 0.0) -> None:
             else " Check installed names with `ios apps --list`."
         )
         raise WDAError(f"Unknown app {name!r}.{hint}")
+    return bundle
+
+
+# `ios apps --list` names carry the version ("Hinge 10.2.0"); the process name
+# `ios ps` reports does not ("Hinge"), and neither does a human.
+_VERSION_SUFFIX = re.compile(r"\s+\d[\w.]*$")
+
+
+def open_apps() -> list[dict]:
+    """The apps that are open, as the iOS app switcher lists them, newest
+    first: [{name, bundle_id, pid}].
+
+    Read over USB (`ios ps`, ~0.7s), never from the screen: WebDriverAgent's
+    touches cannot reach the home-indicator zone, so the switcher screen itself
+    cannot be opened (device.running_apps has the measurement). Running
+    processes are joined against the installed list and BUNDLE_IDS, which is
+    what drops Siri, Spotlight, the keyboard and the WDA runner — the things a
+    switcher never shows. A process nothing matches is left out rather than
+    guessed at. `name` is the display name; `bundle_id` is what open_app() and
+    close_app() take.
+    """
+    installed: dict[str, tuple[str, str]] = {}
+    for app in device.list_apps():
+        base = _VERSION_SUFFIX.sub("", app["name"]).strip()
+        installed.setdefault(base.lower(), (base, app["bundle_id"]))
+    system: dict[str, tuple[str, str]] = {}
+    for key, bid in BUNDLE_IDS.items():
+        # com.apple.MobileSMS runs as "MobileSMS", com.apple.mobiletimer as
+        # "MobileTimer": the last segment, case aside, is the process name.
+        system[bid.rsplit(".", 1)[-1].lower()] = (key.title(), bid)
+    system["photos"] = ("Photos", BUNDLE_IDS["photos"])  # mobileslideshow
+    out = []
+    for proc in device.running_apps():
+        hit = installed.get(proc["name"].lower()) or system.get(proc["name"].lower())
+        if not hit or "xctrunner" in hit[1]:
+            continue
+        out.append({"name": hit[0], "bundle_id": hit[1], "pid": proc["pid"]})
+    return out
+
+
+def close_app(name: str) -> bool:
+    """Force-quit an app: the switcher's swipe-up. Takes the same names as
+    open_app(). False when it was not running."""
+    _invalidate_tree()
+    return device.kill_app(_resolve_bundle(name))
+
+
+def open_app(name: str, wait_seconds: float = 0.0) -> None:
+    """Open an app by friendly name ('Settings'), bundle id, or installed-app name.
+
+    Pass `wait_seconds` to have the launch CONFIRMED before this returns, and
+    raise if the app never reached the foreground. The default 0.0 launches and
+    returns exactly as before, and must stay 0.0: viewer.py calls this inside
+    _action_slot(), so a non-zero default would hold _ACTION_LOCK for the whole
+    wait and 409-drop the human's next taps (_ACTION_WAIT is 2s).
+
+    This is the only way to get the correct foreground wait without knowing the
+    bundle id: wait_for_app() needs one, open_app resolves it privately, and
+    inside act() a later step cannot read an earlier step's result — so a
+    batched open-then-look otherwise settles for wait_stable()'s "the screen
+    stopped moving", which a launch that bounced back to the Home Screen also
+    satisfies.
+    """
+    bundle = _resolve_bundle(name)
     _invalidate_tree()
     client().app_launch(bundle)
     if wait_seconds > 0 and not wait_for_app(bundle, timeout=wait_seconds):
@@ -2000,6 +2054,8 @@ __all__ = [
     "current_page",
     "goto_home_page",
     "open_app",
+    "open_apps",
+    "close_app",
     "current_app",
     "wait_for_app",
     "send_message",

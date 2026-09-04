@@ -187,6 +187,40 @@ def list_apps() -> list[dict]:
     return apps
 
 
+def running_apps() -> list[dict]:
+    """Apps with a live process, newest launch first: [{name, pid, started}].
+
+    `ios ps` over USB (0.69s measured 2026-09-04). IsApplication drops the
+    daemons but NOT the system apps that never show in a switcher (Siri,
+    Spotlight, InputUI, the WDA runner), so callers join this against what is
+    installed; `name` is the process name ("MobileSMS", "Hinge"), not a display
+    name. This list is the iOS app switcher's contents and the only way to read
+    them: WebDriverAgent's touches never reach the home-indicator zone (measured
+    2026-09-04 — even the plain Home flick from y=h, h-1 and h-5 could not leave
+    Settings, while the top and left edge gestures work), so the switcher
+    screen itself cannot be opened and this stands in for it.
+    """
+    proc = _run(["ps"], timeout=15)
+    apps = [
+        {
+            "name": str(obj.get("Name", "")),
+            "pid": obj.get("Pid"),
+            "started": str(obj.get("StartDate", "")),
+        }
+        for obj in _json_lines(proc.stdout)
+        if obj.get("IsApplication")
+    ]
+    apps.sort(key=lambda a: a["started"], reverse=True)
+    return apps
+
+
+def kill_app(bundle_id: str) -> bool:
+    """Force-quit an app by bundle id (`ios kill`): the switcher's swipe-up.
+    False when go-ios reports nothing to kill (already gone)."""
+    proc = _run(["kill", bundle_id], timeout=15)
+    return proc.returncode == 0
+
+
 def _wda_cache_file() -> Path:
     return config.STATE_DIR / "wda_bundle"
 

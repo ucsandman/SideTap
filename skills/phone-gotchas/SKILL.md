@@ -235,6 +235,12 @@ Verified against `src/phone_harness/` — not guesses:
 
 - **No hardware buttons.** `press_button()` exists in `WDAClient` but is wired to
   nothing. No volume, no side button, so no Apple Pay double-click.
+- **No bottom-edge gestures at all.** The Home flick and the app-switcher
+  swipe-and-hold never arrive: WDA's touches go to the frontmost app and
+  SpringBoard's home-indicator recogniser never sees them (measured 2026-09-04,
+  seven shapes, zero effect; top and left edges work). Do not retry shapes.
+  `press_home()` is the Home gesture; `open_apps()` / `close_app()` are the
+  switcher.
 - **Cannot lock the phone.** `lock()` is likewise unwired. `unlock()` works.
 - **No biometrics.** Face ID and Touch ID prompts are a dead end.
 - **No real dictation.** You can tap the mic. Nobody speaks.

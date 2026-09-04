@@ -856,6 +856,16 @@ class Handler(BaseHTTPRequestHandler):
                 from . import helpers
 
                 self._json({"known": sorted(helpers.BUNDLE_IDS)})
+            elif path == "/api/running":
+                # The app switcher's contents, read over USB (go-ios only,
+                # never WDA, so no _ACTION_LOCK): the switcher screen cannot
+                # be swiped open through WDA, see device.running_apps.
+                from . import helpers
+
+                try:
+                    self._json({"ok": True, "apps": helpers.open_apps()})
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc), "apps": []}, 502)
             elif path == "/api/clipboard-image":
                 # The image on the phone's clipboard as PNG, for the page to
                 # put on the PC clipboard (Copy phone image). 404 when none.
@@ -1195,6 +1205,22 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": str(exc)})
                     return
                 self._json({"ok": True})
+            elif path == "/api/close-app":
+                # Force-quit, the switcher's swipe-up. go-ios only, so it
+                # takes no _ACTION_LOCK; helpers.close_app drops the tree
+                # cache itself.
+                from . import helpers
+
+                name = str(payload.get("name", "")).strip()
+                if not name:
+                    self._json({"ok": False, "error": "name is required"}, 400)
+                    return
+                try:
+                    closed = helpers.close_app(name)
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                    return
+                self._json({"ok": True, "closed": closed})
             elif path == "/api/console":
                 from . import helpers
 

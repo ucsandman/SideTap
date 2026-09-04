@@ -1430,3 +1430,32 @@ survives in `meta.extra`. Warm daemon call ~0.6s, cold 2-4s, measured.
 
 **Lesson.** The launch command for a Node spawner was asserted from the README
 instead of tried: prove the one-line spawn first, then build on it.
+
+## 2026-09-04 — The app switcher cannot be swiped open: WDA never reaches the home-indicator zone
+
+**Symptom.** Wes asked for a viewer button that opens the app switcher. The
+standing note said it "needs a press/pause/release chain in wda_client" since
+`swipe()` never holds before it lifts.
+
+**What was measured.** Four hold shapes (move 300-800ms, hold 500-1200ms, from
+y=h, h-1 and h-10) all left Settings untouched — active app unchanged, tree
+unchanged, one of them merely scrolled the list. Then the PLAIN Home flick
+(0.2s from y=h, h-1, h-5 to 0.4h) could not leave Settings either. The first
+attempt had a keyboard up, which is a known swallow, so it was re-run from
+Settings with no keyboard.
+
+**Root cause.** XCTest's synthesised touches are delivered to the frontmost
+app; SpringBoard's home-indicator recogniser never sees them. The top edge
+(Notification Center, Control Center) and the left edge (Back) work because
+those recognisers hit-test inside the app's own window. So no gesture shape
+can open the switcher and the hold theory was wrong.
+
+**Fix.** Read the switcher instead of opening it: `ios ps` lists the running
+processes over USB (0.68s) and, joined against `ios apps --list` (0.34s) and
+`BUNDLE_IDS`, it is exactly the switcher's contents. `ios kill <bundle>` is the
+swipe-up. Shipped as `helpers.open_apps()` / `close_app()`, the viewer's
+**Open apps** overlay, and two MCP tools.
+
+**Lesson.** A "needs X first" note about a gesture is a hypothesis until the
+simplest gesture in the same zone has been tried. Test the cheapest thing that
+would have to work (a plain flick) before building the elaborate one.

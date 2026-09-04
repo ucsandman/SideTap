@@ -68,6 +68,7 @@ none of which you can learn by looking at the screen.
 | `get_clipboard()` / `set_clipboard(t)` | read or write the iPhone system clipboard |
 | `open_app("messages", wait_seconds=0)` | friendly name or bundle id; `wait_seconds>0` confirms it reached the foreground and raises if it never did (the only foreground-confirmed launch that does not need the bundle id) |
 | `current_app()` / `wait_for_app(bundle_id)` | frontmost app / wait until one is |
+| `open_apps()` / `close_app(name)` | the app switcher's contents `[{name, bundle_id, pid}]`, newest first, read over USB; force-quit one (same names as `open_app`). The switcher SCREEN cannot be opened: WDA touches never reach the home-indicator zone (measured) |
 | `screenshot("out.png")` / `press_home()` / `wait_stable()` / `unlock()` | utilities |
 
 **Not in the table, and you will want them:**

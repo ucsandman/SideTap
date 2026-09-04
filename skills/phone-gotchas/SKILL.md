@@ -27,7 +27,7 @@ you had to derive. Use `find_text()` instead. Only fall back to screenshot math
 for elements that carry no text (color swatches, symbol grids), and compute the
 scale as `image_width / screen_info()["width"]`. Never hardcode it.
 
-`ocr()` and `find_text()` return **compacted** results over MCP: actionable
+`ocr()` and `find_text()` return **compacted** results over MCP and declick: actionable
 elements only, no `rect`. That is ~62% fewer tokens and the hits you get back
 are the ones worth tapping. `ocr(full=True)` returns the raw tree with rects —
 reach for it only when you need geometry, not to "see more".
@@ -35,6 +35,24 @@ reach for it only when you need geometry, not to "see more".
 A screenshot costs about the same as a *full* `ocr()` (~1,500 tokens) because
 images are billed after resizing. Downscaling saves nothing. The only lever is
 taking fewer of them, and compact reads are legible enough that you usually can.
+
+## Over declick (`declick run iphone <verb>`)
+
+- **Rows sit under `screen`.** `ocr`/`find-text` return the untrusted-content
+  envelope, so `--fields text,x,y` alone errors with "no field matched"; pass
+  `--rows screen` first. The warning survives in `meta.extra` — it is still data.
+- **`--limit` truncates and says so** in `meta.truncated`. Read that flag before
+  concluding something is not on screen.
+- **`act --steps` is JSON array text**, and the step tool names are the Python
+  names (`type_text`, `tap_text`), not the kebab-case verbs.
+- **Start the daemon** (`declick daemon start`). Without it every call spawns a
+  Python process and adopts the WDA session: 2-4s a call against ~0.6s warm.
+- **30s is declick's timeout, not the phone's.** `unlock`, `send-message`,
+  `read-messages` and `find-on-home-screen` can run longer; set
+  `DECLICK_TIMEOUT_MS=120000` for them or the call reports a timeout while the
+  gesture keeps landing on the phone.
+- **`screenshot` returns no bytes** over declick, only the part's size. Read the
+  screen with `ocr`; a human looks at the viewer.
 
 ## Reading elements inside a `./phone-harness.cmd` script
 

@@ -1404,3 +1404,29 @@ full tree and normal-speed taps). skills/phone-gotchas carries the trap.
 **Lesson.** "I can't click on X" on a lock screen is not a click bug — it is
 two silent swallows stacked (abort at 10s while lit, landing on dark), and the
 viewer's failure path was eating the one message that explained it.
+
+## 2026-09-04 — Wrapping the MCP server as a declick adapter: three misses in a row
+
+**Goal.** Expose the helpers as shell verbs through declick so subagents (no
+MCP) can drive the phone and the ~2.3k-token tool catalog leaves every session.
+
+1. `declick add "mcp:phone-harness mcp"` died with `spawn phone-harness ENOENT`.
+   Node's `child_process.spawn` without a shell resolves `.exe` but never a
+   `.cmd`, and `phone-harness.cmd` is all the repo has (deliberately not pip
+   installable). Fix: `scripts/phone_mcp.py`, a plain `python <file>` that puts
+   `src` on `sys.path` and runs `phone_harness mcp`.
+2. `--name phone` and `--name sidetap` were both refused: declick installs a
+   SKILL.md and a PATH launcher under the adapter name, and the hand-written
+   `phone` skill and `sidetap.cmd` already own those names. The adapter is
+   `iphone`.
+3. `act --steps '[...]'` failed inside declick before the server was spawned
+   ("--steps must be a JSON object, got [object Object]"): its MCP engine maps
+   each array item through the object coercion, which re-parsed an already
+   parsed object. Fixed in declick with a fixture tool and a test.
+
+Also learned: `ocr`/`find-text` rows sit under the envelope's `screen` key, so
+the trimming idiom is `--rows screen --fields text,x,y`, and the warning
+survives in `meta.extra`. Warm daemon call ~0.6s, cold 2-4s, measured.
+
+**Lesson.** The launch command for a Node spawner was asserted from the README
+instead of tried: prove the one-line spawn first, then build on it.

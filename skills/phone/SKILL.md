@@ -12,6 +12,30 @@ one-liner. Driving the phone works from any project directory.
 
 ## Run
 
+Cheapest path, and the only one a subagent with no MCP tools has: the declick
+adapter `iphone`. Build it once with
+`declick add "mcp:python /path/to/sidetap/scripts/phone_mcp.py" --name iphone`,
+then every helper is a shell verb:
+
+```bash
+declick daemon start        # once per boot: keeps the server warm, ~0.6s a call instead of 2-4s
+declick run iphone ocr --rows screen --fields text,x,y --limit 30
+declick run iphone tap-text --text "General"
+declick run iphone send-message --contact Mom --text "hi"
+declick run iphone act --steps '[{"tool":"tap","args":{"x":100,"y":200}},{"tool":"type_text","args":{"text":"hi"}}]'
+declick describe iphone --verb tap-text        # one verb's flags, under 500 tokens
+```
+
+Verbs are the helper names in kebab-case (`tap_text` is `tap-text`) and every
+argument is a `--flag`; inside `act --steps` the tool names stay Python-style
+(`type_text`). `ocr` and `find-text` answer `{warning, source, flags, screen}`:
+`--rows screen` unwraps the rows and the warning stays in `meta.extra`. Set
+`DECLICK_TIMEOUT_MS=120000` for `unlock`, `send-message`, `read-messages` and
+`find-on-home-screen`, which can outrun the 30s default. Every safety gate below
+applies unchanged.
+
+For a step that needs logic between gestures, run Python with the helpers in scope:
+
 ```bash
 cd /path/to/sidetap && ./phone-harness.cmd <<'PY'
 send_message("Mom", "hi")
@@ -72,9 +96,10 @@ none of which you can learn by looking at the screen.
   thread via Messages SEARCH (type the name, tap the Conversations result), and
   verify the opened thread's header before acting — a wrong or unverifiable
   match raises instead of guessing.
-- MCP alternative: once the `sidetap` MCP server is registered (see the SideTap
-  README), sessions get all helpers as native `mcp__sidetap__*` tools — no
-  Python piping. Prefer those tools when they are available.
+- MCP alternative: the `sidetap` MCP server (see the SideTap README) exposes the
+  same helpers as native `mcp__sidetap__*` tools. The declick verbs are the same
+  tools with no per-session catalog cost, and they work from every subagent, so
+  prefer them; fall back to MCP only where declick is not installed.
 - Anything fails to connect → `./phone-harness.cmd doctor` from the repo root.
   Never guess at connection problems. Common: free-Apple-ID signing expires every
   7 days → `phone-harness fix-input`, then the USER clicks Start in Sideloadly.

@@ -296,7 +296,12 @@ def ddi_mounted() -> bool:
     unmounts it, and without it testmanagerd refuses every test session — runwda
     dies in dtx channel timeouts that look like a broken tunnel (bit live
     2026-08-10, the 26.5→26.6 update). Mounted: `image list` prints a line with
-    a "signature" key; unmounted: msg "none"."""
+    a "signature" key; unmounted: msg "none". iOS 27 mounts it as a cryptex
+    that go-ios cannot see, so a "none" is re-checked with pymobiledevice3."""
+    return _go_ios_ddi_mounted() or _cryptex_ddi_mounted()
+
+
+def _go_ios_ddi_mounted() -> bool:
     try:
         proc = _run(["image", "list"], timeout=15)
     except (DeviceError, subprocess.TimeoutExpired):
@@ -304,6 +309,40 @@ def ddi_mounted() -> bool:
     if proc.returncode != 0:
         return False
     return any(obj.get("signature") for obj in _json_lines(proc.stdout + proc.stderr))
+
+
+def _pmd3(args: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """pymobiledevice3's CLI from this interpreter's own environment."""
+    udid = config.SIDETAP_UDID
+    return subprocess.run(
+        [sys.executable, "-m", "pymobiledevice3", *args, *([f"--udid={udid}"] if udid else [])],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
+
+
+def _cryptex_ddi_mounted() -> bool:
+    """iOS 27 mounts the developer image as a cryptex at /System/Developer, and
+    go-ios `image list` answers "none" for it while it is mounted and working
+    (seen 2026-10-03 on iOS 27.0.1). ~3s, paid only after go-ios said no."""
+    try:
+        proc = _pmd3(["mounter", "list"], timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        images = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(images, list):
+        return False
+    return any(
+        isinstance(img, dict) and img.get("IsMounted") and img.get("MountPath") == "/System/Developer"
+        for img in images
+    )
 
 
 def mount_ddi() -> tuple[bool, str]:  # noqa: vulture  (called from admin.py)
@@ -321,7 +360,24 @@ def mount_ddi() -> tuple[bool, str]:  # noqa: vulture  (called from admin.py)
     if "DeviceLocked" in out:
         return False, "phone is locked — unlock it, then retry"
     tail = out.strip().splitlines()[-1] if out.strip() else "no output"
-    return False, f"`ios image auto` did not mount: {tail}"
+    return _mount_ddi_pmd3(f"`ios image auto` did not mount: {tail}")
+
+
+def _mount_ddi_pmd3(go_ios_failure: str) -> tuple[bool, str]:
+    """Second attempt through pymobiledevice3. go-ios asks Apple TSS over HTTPS,
+    and gs.apple.com chains to Apple Root CA, which Windows does not trust
+    ("x509: certificate signed by unknown authority", 2026-10-03).
+    pymobiledevice3 sends the same request over plain HTTP, as Apple's own
+    tools do; the ticket is signed by Apple and verified by the phone."""
+    try:
+        proc = _pmd3(["mounter", "auto-mount"], timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{go_ios_failure}; pymobiledevice3 auto-mount failed: {exc}"
+    if ddi_mounted():
+        return True, "developer image mounted (pymobiledevice3)"
+    out = (proc.stdout + proc.stderr).strip()
+    tail = out.splitlines()[-1] if out else "no output"
+    return False, f"{go_ios_failure}; pymobiledevice3 auto-mount did not mount: {tail}"
 
 
 # ---- detached process management ------------------------------------------

@@ -1477,3 +1477,30 @@ swipe-up. Shipped as `helpers.open_apps()` / `close_app()`, the viewer's
 **Lesson.** A "needs X first" note about a gesture is a hypothesis until the
 simplest gesture in the same zone has been tried. Test the cheapest thing that
 would have to work (a plain flick) before building the elaborate one.
+
+## 2026-10-03 — iOS 27 on Windows: the developer image reads "not mounted" and go-ios cannot mount it
+
+**Symptom.** Fresh Windows 11 setup, iPhone on iOS 27.0.1. `phone-harness up`
+stopped at the developer image: `ios image auto` failed posting to
+`https://gs.apple.com/TSS/controller?action=2` with `x509: certificate signed
+by unknown authority`. After the image was mounted by hand with
+`pymobiledevice3 mounter auto-mount`, the doctor still failed the DDI check
+while the perception check passed.
+
+**Root cause.** Two separate misses. gs.apple.com chains to Apple Server
+Authentication CA and Apple Root CA, which the Windows root store does not
+carry, so go-ios's HTTPS TSS request fails (`curl.exe` fails the same way with
+`SEC_E_UNTRUSTED_ROOT`). And iOS 27 mounts the image as a cryptex at
+`/System/Developer`: `pymobiledevice3 mounter list` shows it with `IsMounted`,
+while `ios image list` answers `{"msg":"none"}`.
+
+**Fix.** `ddi_mounted()` re-checks with `pymobiledevice3 mounter list` when
+go-ios says "none", and `mount_ddi()` retries with `pymobiledevice3 mounter
+auto-mount` when `ios image auto` fails. pymobiledevice3 sends the TSS request
+over plain HTTP, as Apple's own tools do; the ticket is signed by Apple and
+verified on the phone. The second check costs ~3s and runs only after go-ios
+said no.
+
+**Lesson.** When a check and the working system disagree (perception passing,
+DDI failing), ask a second tool before trusting the check. A check built on one
+tool inherits that tool's blind spots on every new iOS release.

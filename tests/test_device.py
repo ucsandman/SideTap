@@ -105,7 +105,61 @@ def test_ddi_mounted_sees_signature_line(monkeypatch):
 def test_ddi_mounted_false_on_none(monkeypatch):
     out = '{"level":"INFO","msg":"none"}\n'
     monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+    monkeypatch.setattr(device, "_pmd3", lambda args, timeout: _Proc("[]"))
     assert not device.ddi_mounted()
+
+
+# iOS 27 mounts the image as a cryptex at /System/Developer; go-ios answers
+# "none" for it (seen 2026-10-03, iOS 27.0.1), pymobiledevice3 lists it.
+_CRYPTEX_LIST = json.dumps(
+    [{"DiskImageType": "Personalized", "IsMounted": True, "MountPath": "/System/Developer"}]
+)
+
+
+def test_ddi_mounted_sees_cryptex_when_go_ios_says_none(monkeypatch):
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc('{"msg":"none"}\n'))
+    monkeypatch.setattr(device, "_pmd3", lambda args, timeout: _Proc(_CRYPTEX_LIST))
+    assert device.ddi_mounted()
+
+
+def test_ddi_mounted_skips_pmd3_when_go_ios_sees_it(monkeypatch):
+    out = '{"msg":"image signature","signature":"28080689ce6e"}\n'
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+
+    def no_pmd3(args, timeout):
+        raise AssertionError("pymobiledevice3 must not run when go-ios already answered")
+
+    monkeypatch.setattr(device, "_pmd3", no_pmd3)
+    assert device.ddi_mounted()
+
+
+def test_cryptex_check_ignores_other_mounts_and_bad_output(monkeypatch):
+    other = json.dumps([{"IsMounted": True, "MountPath": "/Developer/Other"}])
+    for stdout, code in ((other, 0), ("not json", 0), (_CRYPTEX_LIST, 1)):
+        monkeypatch.setattr(device, "_pmd3", lambda args, timeout, s=stdout, c=code: _Proc(s, c))
+        assert not device._cryptex_ddi_mounted()
+
+
+def test_mount_ddi_falls_back_to_pmd3_after_go_ios_tls_failure(monkeypatch):
+    out = '{"level":"ERROR","err":"x509: certificate signed by unknown authority"}\n'
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+    calls = []
+    monkeypatch.setattr(device, "_pmd3", lambda args, timeout: calls.append(args) or _Proc(""))
+    mounted = iter([False, True])
+    monkeypatch.setattr(device, "ddi_mounted", lambda: next(mounted))
+    ok, msg = device.mount_ddi()
+    assert ok
+    assert "pymobiledevice3" in msg
+    assert calls == [["mounter", "auto-mount"]]
+
+
+def test_mount_ddi_names_both_failures(monkeypatch):
+    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc('{"err":"x509"}\n'))
+    monkeypatch.setattr(device, "_pmd3", lambda args, timeout: _Proc("", 1))
+    monkeypatch.setattr(device, "ddi_mounted", lambda: False)
+    ok, msg = device.mount_ddi()
+    assert not ok
+    assert "ios image auto" in msg and "pymobiledevice3" in msg
 
 
 def test_mount_ddi_names_locked_phone(monkeypatch):

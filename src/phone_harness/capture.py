@@ -64,6 +64,7 @@ def _go_ios_screenshot() -> bytes:
             [exe, *device.pin_udid(["screenshot", "--output", str(out)])],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
             creationflags=flags,
         )

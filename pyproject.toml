@@ -7,4 +7,5 @@
 # reads as dead code. The decorator rule covers fixture definitions; the names
 # cover the test parameters that receive them.
 ignore_decorators = ["@pytest.fixture"]
-ignore_names = ["sendable", "clean_taint", "gate_calls", "base_url", "stub"]
+# `a`/`k` are the catch-alls in the tests' `lambda *a, **k:` stubs (47 of them).
+ignore_names = ["sendable", "clean_taint", "gate_calls", "base_url", "stub", "a", "k"]

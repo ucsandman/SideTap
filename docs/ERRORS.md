@@ -1491,3 +1491,28 @@ swipe-up. Shipped as `helpers.open_apps()` / `close_app()`, the viewer's
 **Lesson.** A "needs X first" note about a gesture is a hypothesis until the
 simplest gesture in the same zone has been tried. Test the cheapest thing that
 would have to work (a plain flick) before building the elaborate one.
+
+## 2026-11-08 — up()'s error-103 hint prescribed the one profile it already knew was dead
+
+**Symptom.** `phone-harness up` failed with XCTest error 103 and told Wes to
+re-sign in Sideloadly, or to run `fix-input .state/profile.mobileprovision`.
+
+**What was measured.** The committed profile had expired 2026-11-04. The phone
+held two newer valid WDA profiles, the latest good to 2026-11-13, minted by an
+earlier Sideloadly run whose local re-sign never happened. So WDA on the phone
+was a bare Sideloadly install, and that is error 103. Bare `phone-harness
+fix-input` read the 11-13 profile off the phone, re-signed and came up green
+in one pass. No Sideloadly click was needed.
+
+**Root cause.** The tail prints only after `_check_signature` has said the
+disk profile is NOT valid (a valid one returns early with "Not a signing
+job"). So the suggested argument was always the expired or missing file, and
+`fix_input` answers that with "bad profile: expired".
+
+**Fix.** The tail names bare `phone-harness fix-input`, which checks the phone
+first and asks for Sideloadly only when no valid profile is left. A test pins
+that the dead path is never suggested.
+
+**Lesson.** A hint printed from a branch should be checked against the
+condition that put it there. This one was correct for the mid-week case and
+wrong for the only case that could reach it.

@@ -417,6 +417,34 @@ def test_up_on_a_wedge_blames_the_runner_not_the_signature(monkeypatch, capsys):
     assert "Sideloadly" not in out
 
 
+def test_up_on_103_with_a_dead_profile_never_prescribes_that_profile(
+    monkeypatch, capsys
+):
+    # The signing hint only prints when .state/profile.mobileprovision is
+    # expired or missing, so telling the human to pass THAT file to fix-input
+    # is a guaranteed "bad profile: expired". Live 2026-11-08: the phone held
+    # a profile valid to 11-13 the whole time; bare fix-input found it.
+    client = _StateClient("down")
+    monkeypatch.setattr(admin, "WDAClient", lambda *a, **k: client)
+    monkeypatch.setattr(admin, "_check_go_ios", lambda: (True, "go-ios", ""))
+    monkeypatch.setattr(admin, "_check_device", lambda: (True, "iPhone", ""))
+    monkeypatch.setattr(admin.device, "tunnel_running", lambda: True)
+    monkeypatch.setattr(admin.device, "ddi_mounted", lambda: True)
+    monkeypatch.setattr(admin.device, "detect_wda_bundle", lambda: "com.x.wda")
+    monkeypatch.setattr(admin.device, "start_wda", lambda b: None)
+    monkeypatch.setattr(admin.device, "start_forwards", lambda: None)
+    monkeypatch.setattr(admin.device, "log_tail", lambda *a, **k: "Error code: 103")
+    monkeypatch.setattr(admin, "_wait_for_wda", lambda *a, **k: False)
+    monkeypatch.setattr(
+        admin, "_check_signature", lambda: (False, "expired 2026-11-04", "")
+    )
+
+    assert admin._up(wait_seconds=1) == 1
+    out = capsys.readouterr().out
+    assert "fix-input .state" not in out
+    assert "phone-harness fix-input" in out
+
+
 def test_doctor_reports_a_wedge_as_its_own_state(monkeypatch):
     monkeypatch.setattr(admin, "WDAClient", lambda *a, **k: _StateClient("wedged"))
     ok, detail, fix = admin._check_wda_responding()

@@ -581,13 +581,15 @@ def _up(wait_seconds: float) -> int:
     if signing.PROFILE_PATH.exists() and sig_ok:
         print(f"Not a signing job: {sig_detail}. Replug the phone and retry.")
         return 1
+    # Reached only when the profile on disk is expired or missing, so never
+    # prescribe passing it: fix-input would answer "bad profile: expired".
+    # Bare fix-input reads the newest valid profile off the PHONE first
+    # (2026-11-08: one valid to 11-13 sat there behind an expired disk copy).
     print(
-        "Common cause on a free Apple ID: the 7-day signature expired — re-sign in Sideloadly."
-    )
-    print(
-        "Error 103 in the tail = WDA installed without its nested .xctest signed "
-        "(a bare Sideloadly install does this) — run: "
-        "phone-harness fix-input .state/profile.mobileprovision"
+        "Error 103 in the tail = WDA's signature expired, or a bare Sideloadly "
+        "install left its nested .xctest unsigned. Run: phone-harness fix-input "
+        "(no argument: it re-signs with the newest valid profile on the phone, "
+        "and asks for a Sideloadly click only if none is left)."
     )
     return 1
 

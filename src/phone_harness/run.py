@@ -96,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         from . import admin
 
         return admin.down()
+    if cmd == "stop-link":
+        from . import device
+
+        print("WDA stopped" if device.release_wda() else "WDA was not running")
+        return 0
     if cmd == "view":
         from . import viewer
 

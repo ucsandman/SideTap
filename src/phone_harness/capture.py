@@ -1,4 +1,4 @@
-"""Screen capture: WDA's HTTP screenshot when the session is up, go-ios otherwise.
+"""Screen capture: WDA's HTTP screenshot when the session is up, the device's own otherwise.
 
 `ios screenshot` uses the mounted Developer Disk Image's screenshot service,
 so perception (viewing, OCR, wait_stable) works with zero app signing — but it
@@ -10,13 +10,9 @@ Only touch INPUT needs the signed WDA driver.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import tempfile
 import time
-from pathlib import Path
 
-from . import device
+from . import link
 from .wda_client import WDAClient, WDAError
 
 
@@ -49,45 +45,33 @@ def _wda_screenshot() -> bytes | None:
         return None
 
 
-def _go_ios_screenshot() -> bytes:
-    """PNG via `ios screenshot` (subprocess). Works with zero app signing."""
-    exe = device.ios_path()
-    if not exe:
+def _device_screenshot() -> bytes:
+    """PNG from the developer image's screenshot service, through the tunnel
+    (USB or Wi-Fi). Works with zero app signing."""
+    try:
+        return link.screenshot_png()
+    except link.LinkError as exc:
         raise CaptureError(
-            "go-ios not found on PATH. Install it: npm install -g go-ios"
-        )
-
-    with tempfile.TemporaryDirectory() as td:
-        out = Path(td) / "shot.png"
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        proc = subprocess.run(
-            [exe, *device.pin_udid(["screenshot", "--output", str(out)])],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            creationflags=flags,
-        )
-        if not out.exists() or out.stat().st_size == 0:
-            raise CaptureError(
-                "go-ios screenshot failed. Is the phone unlocked and the developer "
-                f"image mounted? Detail: {proc.stderr.strip()[-300:]}"
-            )
-        return out.read_bytes()
+            "screenshot failed. Is the phone reachable (USB or Wi-Fi), unlocked, and the "
+            f"developer image mounted? Detail: {str(exc)[-300:]}"
+        ) from exc
 
 
-def screenshot_png(max_age: float = 0.0) -> bytes:  # noqa: vulture  (called from viewer.py/mcp_server.py)
+def screenshot_png(max_age: float = 0.0, via_wda: bool = True) -> bytes:  # noqa: vulture  (called from viewer.py/mcp_server.py)
     """Return the current screen as PNG bytes.
 
     max_age > 0 returns a cached frame if it is younger than max_age seconds,
     which keeps the viewer smooth without hammering the device.
+    via_wda=False skips WDA: any connection to it starts an idle-stopped WDA
+    again (relay self-heal), and with it the "Automation Running" banner.
     """
     global _last_png, _last_at
     if max_age and _last_png is not None and (time.time() - _last_at) < max_age:
         return _last_png
 
-    png = _wda_screenshot()
+    png = _wda_screenshot() if via_wda else None
     if png is None:
-        png = _go_ios_screenshot()
+        png = _device_screenshot()
 
     _last_png, _last_at = png, time.time()
     return png

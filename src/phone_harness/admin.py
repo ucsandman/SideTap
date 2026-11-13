@@ -30,37 +30,49 @@ def _check_go_ios():
         return True, f"go-ios found: {path}", ""
     return (
         False,
-        "go-ios (`ios`) not on PATH",
+        "go-ios (`ios`) not on PATH (needed only to re-sign WDA: fix-input)",
         "Install Node.js, then: npm install -g go-ios",
     )
 
 
 def _check_device():
     try:
+        # A Wi-Fi tunnel exists only once asked for (tunneld runs with --no-wifi),
+        # so ask before reading the listing; tunnel_for() rate-limits the request.
+        device.link.tunnel_for()
+    except Exception:
+        pass  # the listing below reports the phone as unreachable
+    try:
         udids = device.list_devices()
     except Exception as exc:
         return (
             False,
-            f"`ios list` failed: {exc}",
-            "Reconnect the iPhone over USB and tap Trust.",
+            f"cannot list phones: {exc}",
+            "Start tunneld (run: phone-harness up), then plug the phone in by USB or "
+            "put it on the same Wi-Fi as this PC and wake it.",
         )
     if udids:
-        return True, f"iPhone connected: {udids[0]}", ""
+        try:
+            kind = device.link.tunnel_for(udids[0])[2]
+        except Exception:
+            kind = "?"
+        return True, f"phone connected over {kind}: {udids[0]}", ""
     return (
         False,
-        "No iPhone found over USB",
+        "No phone reachable over USB or Wi-Fi",
         (
-            "Plug in the cable, unlock the phone, tap Trust. "
-            "Install the 'Apple Devices' app from Microsoft Store for the USB driver. "
-            "Also enable Developer Mode: Settings > Privacy & Security > Developer Mode."
+            "Plug in the cable, or put the phone on the same Wi-Fi as this PC, and wake it. "
+            "First time only: pair over USB (tap Trust) and turn on Developer Mode."
         ),
     )
 
 
 def _check_tunnel():
     if device.tunnel_running():
-        return True, "iOS 17+ tunnel is up", ""
-    return False, "Tunnel not running", "Run: phone-harness up   (starts it for you)"
+        return True, "tunnel to the phone is up", ""
+    if not device.link.tunneld_up():
+        return False, "tunneld is not running", "Run: phone-harness up   (starts its task for you)"
+    return False, "tunneld has no tunnel to the phone", "Plug it in by USB or bring it onto this Wi-Fi, and wake it."
 
 
 def _check_ddi():
@@ -118,9 +130,11 @@ def _check_wda_installed():
 
 
 def _check_perception():
-    """Screenshots via go-ios need no app signing. This is the 'seeing' half."""
+    """Screenshots from the developer image need no app signing and no WDA.
+    This is the 'seeing' half, so it must not go through WDA, and must not wake
+    an idle-stopped WDA."""
     try:
-        png = capture.screenshot_png()
+        png = capture.screenshot_png(via_wda=False)
     except Exception as exc:
         return (
             False,
@@ -132,6 +146,22 @@ def _check_perception():
 
 
 def _check_wda_responding():
+    idle_since = device.wda_idle_since()
+    if (
+        idle_since
+        and device.proc_status("runwda") != "running"
+        # Only the relay starts it again on the next call; without one this is
+        # plain "down" (for example after `phone-harness down`).
+        and device.proc_status("relay") == "running"
+    ):
+        # Probing would make the relay start it again (self-heal), and bring
+        # back the banner the idle stop exists to remove.
+        return (
+            True,
+            f"WDA stopped while idle since {idle_since} (no 'Automation Running' "
+            "banner); the next agent call starts it",
+            "",
+        )
     client = WDAClient(timeout=5)
     state = client.link_state()
     if state == "up":
@@ -392,7 +422,7 @@ def _check_reminder():
 CHECKS = [
     ("kill switch (STOP)", _check_stop_engaged),
     ("go-ios installed", _check_go_ios),
-    ("iPhone on USB", _check_device),
+    ("phone reachable (USB/Wi-Fi)", _check_device),
     ("tunnel", _check_tunnel),
     ("developer image (DDI)", _check_ddi),
     ("perception (view/OCR)", _check_perception),
@@ -512,6 +542,14 @@ def _unwedge(client: WDAClient, wait_seconds: float = 45.0) -> bool:
 def _up(wait_seconds: float) -> int:
     client = WDAClient(timeout=3)
     state = client.link_state()
+    if device.proc_status("relay") != "running":
+        # WDA answering without our relay means an older go-ios link: forwarders
+        # on every PC address and a WDA listening on every phone address. Take
+        # that down and bring WDA up bound to the tunnel instead.
+        if state != "down":
+            print("WDA answers through an older link (go-ios); moving it to the tunnel...")
+        device.stop_all(device.LEGACY_PROCS)
+        state = "down"
     if state == "up":
         print("Already up: WDA is answering.")
         return 0
@@ -519,22 +557,21 @@ def _up(wait_seconds: float) -> int:
         print("\nUp. WDA answering at", config.WDA_URL)
         return 0
 
-    ok, detail, fix = _check_go_ios()
-    if not ok:
-        print(f"FAIL: {detail}\n  fix: {fix}")
-        return 1
+    if not device.tunnel_running():
+        print("Waiting for a tunnel to the phone (USB or Wi-Fi)...")
+        try:
+            device.start_tunnel()
+        except device.DeviceError as exc:
+            print(f"FAIL: {exc}")
+            return 1
+        print("OK: tunnel up")
+    else:
+        print("OK: tunnel already up")
     ok, detail, fix = _check_device()
     if not ok:
         print(f"FAIL: {detail}\n  fix: {fix}")
         return 1
     print(f"OK: {detail}")
-
-    if not device.tunnel_running():
-        print("Starting tunnel (userspace)...")
-        device.start_tunnel()
-        print("OK: tunnel started")
-    else:
-        print("OK: tunnel already running")
 
     if not device.ddi_mounted():
         print("Developer image not mounted (iOS updates unmount it) — mounting...")

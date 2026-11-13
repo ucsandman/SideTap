@@ -1,4 +1,4 @@
-"""Capture path selection: WDA HTTP first, go-ios fallback. No phone needed."""
+"""Capture path selection: WDA HTTP first, the device's own screenshot fallback. No phone needed."""
 
 import sys
 from pathlib import Path
@@ -40,21 +40,21 @@ def fresh(monkeypatch):
 
 def test_screenshot_prefers_wda_http(fresh, monkeypatch):
     stub = fresh(StubWDA())
-    # go-ios must not even be consulted when WDA answers
-    monkeypatch.setattr(capture.device, "ios_path", lambda: pytest.fail("spawned"))
+    # the device fallback must not even be consulted when WDA answers
+    monkeypatch.setattr(capture.link, "screenshot_png", lambda: pytest.fail("fell back"))
     assert capture.screenshot_png() == b"wda-frame"
     assert stub.calls == 1
 
 
-def test_screenshot_falls_back_to_go_ios_when_wda_down(fresh, monkeypatch):
+def test_screenshot_falls_back_to_device_when_wda_down(fresh, monkeypatch):
     fresh(StubWDA(error=WDAError("down")))
-    monkeypatch.setattr(capture, "_go_ios_screenshot", lambda: b"go-ios-frame")
-    assert capture.screenshot_png() == b"go-ios-frame"
+    monkeypatch.setattr(capture.link, "screenshot_png", lambda: b"device-frame")
+    assert capture.screenshot_png() == b"device-frame"
 
 
 def test_wda_failure_backs_off(fresh, monkeypatch):
     stub = fresh(StubWDA(error=WDAError("down")))
-    monkeypatch.setattr(capture, "_go_ios_screenshot", lambda: b"go-ios-frame")
+    monkeypatch.setattr(capture.link, "screenshot_png", lambda: b"device-frame")
     capture.screenshot_png()
     capture.screenshot_png()  # inside the back-off window: WDA not retried
     assert stub.calls == 1
@@ -67,8 +67,20 @@ def test_max_age_serves_cached_frame(fresh):
     assert stub.calls == 1
 
 
-def test_no_go_ios_and_no_wda_raises(fresh, monkeypatch):
+def test_unreachable_phone_and_no_wda_raises(fresh, monkeypatch):
     fresh(StubWDA(error=WDAError("down")))
-    monkeypatch.setattr(capture.device, "ios_path", lambda: None)
-    with pytest.raises(capture.CaptureError, match="go-ios not found"):
+
+    def unreachable():
+        raise capture.link.LinkError("no tunnel to the phone")
+
+    monkeypatch.setattr(capture.link, "screenshot_png", unreachable)
+    with pytest.raises(capture.CaptureError, match="no tunnel to the phone"):
         capture.screenshot_png()
+
+
+def test_screenshot_can_skip_wda(fresh, monkeypatch):
+    """The doctor's capture check must not touch (and so wake) an idle-stopped WDA."""
+    stub = fresh(StubWDA())
+    monkeypatch.setattr(capture.link, "screenshot_png", lambda: b"device-frame")
+    assert capture.screenshot_png(via_wda=False) == b"device-frame"
+    assert stub.calls == 0

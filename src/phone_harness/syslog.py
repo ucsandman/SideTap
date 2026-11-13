@@ -109,6 +109,18 @@ def _close_dump() -> None:
             _dump = None
 
 
+def stop() -> None:
+    """End the capture: the viewer runs it only while one of its pages is open,
+    because its stream is traffic to the iPad, and with no agent or person
+    working nothing should reach a sleeping iPad."""
+    global _proc, _next_attempt
+    if _proc is None:
+        return
+    _proc = None
+    _next_attempt = 0.0  # a page that opens again starts it at once
+    device.stop_all(("syslog",))
+
+
 def start() -> bool:
     """Begin (or resume) capturing. Idempotent; a no-op once running."""
     global _proc, _next_attempt
@@ -118,8 +130,11 @@ def start() -> bool:
     if now < _next_attempt:
         return False
     _next_attempt = now + _RETRY_SECONDS
-    exe = device.ios_path()
-    if not exe:
+    try:
+        udid = device.current_udid()
+    except Exception:
+        udid = None
+    if not udid:
         return False
     # A viewer killed with taskkill /F leaves its `ios syslog` child orphaned,
     # blocked forever on a pipe nobody reads but still holding a syslog relay
@@ -130,7 +145,7 @@ def start() -> bool:
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
         proc = subprocess.Popen(
-            [exe, *device.pin_udid(["syslog"])],
+            [sys.executable, "-m", "pymobiledevice3", "syslog", "live", "--tunnel", udid],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

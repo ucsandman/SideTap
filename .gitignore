@@ -21,3 +21,4 @@ docs/media/*.mp4
 docs/media/*.srt
 docs/media/*.vtt
 docs/media/og.gif
+.worktrees/

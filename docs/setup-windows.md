@@ -27,20 +27,17 @@ If the menu still does not appear, force-close Settings and open it again.
 ## Step 2 — Windows: drivers and go-ios
 
 1. Install the **Apple Devices** app from the Microsoft Store (gives the USB driver).
-   Plug in the iPhone, unlock it, tap **Trust**.
-2. Install [Node.js](https://nodejs.org) if you do not have it, then:
+   Plug in the iPhone, unlock it, tap **Trust**. Then check that Windows sees it:
+   ```bat
+   python -m pymobiledevice3 usbmux list
+   ```
+2. go-ios is used only to re-sign WebDriverAgent (step 3b). Install
+   [Node.js](https://nodejs.org) if you do not have it, then:
    ```bat
    npm install -g go-ios
-   ios list
    ```
-   `ios list` must show your device UDID.
-3. For the iOS 17+ tunnel, userspace mode usually works with no extra steps
-   (`phone-harness up` tries it first). If it fails, doctor will tell you to:
-   download `wintun.dll` from https://www.wintun.net, copy it to
-   `C:\Windows\System32` (admin), and run
-   `$env:GO_IOS_AGENT_PORT=28100; ios tunnel start` in an admin PowerShell.
-   SideTap looks the tunnel up on port 28100 (`GO_IOS_AGENT_PORT` in `.env`),
-   not go-ios's default 60105, which Hyper-V often reserves at boot.
+   The tunnel itself comes from pymobiledevice3 (step 3c), which brings its own
+   Wintun driver.
 
 ## Step 3 — Sideload WebDriverAgent (free Apple ID)
 
@@ -107,6 +104,28 @@ Sideloadly at all.
 **Every 7 days** the free profile expires. Fix = run `phone-harness fix-input`
 again (click Start in Sideloadly once when it asks). `phone-harness doctor`
 detects the expiry and reminds you.
+
+### Step 3c — USB or Wi-Fi: the tunnel service
+
+Every phone call goes through pymobiledevice3's `tunneld`, which keeps one
+tunnel to the phone over USB or Wi-Fi, whichever is there. It needs Python 3.13
+or later and admin rights, so it runs as a logon task with no window. The
+one-line installer registers it; by hand, from an admin PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tunneld_task.ps1 -Python (Get-Command python).Source
+```
+
+The first time WebDriverAgent starts, iOS can show "Touch ID for "XCTest":
+Enable UI Automation". Approve it on the phone; WebDriverAgent cannot start
+until you do.
+
+For Wi-Fi, pair once over USB (no prompt on the phone), then the cable is
+optional while both are on the same network:
+
+```bat
+python -m pymobiledevice3 lockdown remotepairing --pair
+```
 
 ## Step 4 — verify
 

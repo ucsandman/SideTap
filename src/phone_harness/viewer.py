@@ -250,16 +250,37 @@ def _syslog_loop() -> None:
     """
     while True:
         try:
-            syslog.start()
+            # Only while a page is open, like the watchdog: the stream is
+            # traffic to the iPad, which must stay quiet when nobody works.
+            if _watched():
+                syslog.start()
+            else:
+                syslog.stop()
         except Exception:
             pass  # a debugging aid must never take the viewer down
         time.sleep(_SYSLOG_POLL)
+
+
+# Last request from a viewer page (wall clock: the heal-loop tests script
+# time.monotonic). With no page open the watchdog stays quiet, because each of
+# its probes is traffic through the relay, and traffic every 20 s would keep
+# the relay from ever idle-stopping WDA and its "Automation Running" banner.
+# The relay's own self-heal still restarts WDA for agents.
+_BROWSER = {"last": 0.0}
+_BROWSER_IDLE = 120.0  # seconds without a page request before the watchdog rests
+
+
+def _watched() -> bool:
+    return time.time() - _BROWSER["last"] < _BROWSER_IDLE
 
 
 def _heal_loop() -> None:
     probe = WDAClient(timeout=3)
     while True:
         time.sleep(_HEAL_POLL)
+        if not _watched():
+            _HEAL["down_since"] = 0.0
+            continue
         try:
             now = time.monotonic()
             # A landed action from ANY process is the same evidence as an
@@ -641,6 +662,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):  # noqa: vulture
+        _BROWSER["last"] = time.time()
         if not self._allowed():
             self.close_connection = True  # same reasoning as do_POST's guards
             self._json({"error": "forbidden"}, 403)
@@ -914,6 +936,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, 500)
 
     def do_POST(self):  # noqa: vulture
+        _BROWSER["last"] = time.time()
         # Both guards answer WITHOUT reading the body, so the connection must
         # not be reused: under keep-alive the unread body IS the next request.
         if not self._allowed():

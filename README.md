@@ -4,20 +4,20 @@
 
 [![tests](https://github.com/ucsandman/SideTap/actions/workflows/tests.yml/badge.svg)](https://github.com/ucsandman/SideTap/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 [![Website](https://img.shields.io/badge/web-sidetap.io-4493f8.svg)](https://sidetap.io)
 
 ![SideTap driving a real iPhone: the agent takes over, the kill switch stops it](docs/media/readme.gif)
 
-Every iPhone automation route assumes you own a Mac. This one does not. SideTap drives a real iPhone over USB using [go-ios](https://github.com/danielpaulus/go-ios) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
+Every iPhone automation route assumes you own a Mac. This one does not. SideTap drives a real iPhone over USB or Wi-Fi using [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) and [WebDriverAgent](https://github.com/appium/WebDriverAgent), wrapped in a small Python harness an agent (or a human) can use directly.
 
 It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-harness), which relies on macOS iPhone Mirroring. Bonus over the original: WebDriverAgent exposes the real UI element tree, so the agent reads exact buttons and labels instead of OCR guesses.
 
 ```
 [iPhone iOS 17+] .. WebDriverAgent app (sideloaded once, free Apple ID)
-      | USB
-[Windows]  go-ios (tunnel + launch + port forward)  ->  Python harness  ->  live viewer
+      | USB or Wi-Fi
+[Windows]  pymobiledevice3 tunneld (tunnel) + loopback relay  ->  Python harness  ->  live viewer
       |
 [Agent]    phone-harness <<'PY' ... PY   (helpers pre-imported)
 ```
@@ -27,11 +27,11 @@ It is a Windows rebuild of [phone-harness](https://github.com/ShawnPana/phone-ha
 Skip the manual setup: paste this into Claude Code (or Codex) on your Windows PC and let it drive, asking you only for the steps that need your hands.
 
 ```text
-Set up SideTap (github.com/ucsandman/SideTap) on this Windows machine so LLM agents can drive my iPhone over USB.
+Set up SideTap (github.com/ucsandman/SideTap) on this Windows machine so LLM agents can drive my iPhone over USB or Wi-Fi.
 
 1. Clone https://github.com/ucsandman/SideTap and run: pip install -r requirements.txt
-2. Install go-ios globally: npm install -g go-ios
-3. Read docs/setup-windows.md, then walk me through the parts only I can do: installing the Apple Devices app from the Microsoft Store, enabling Developer Mode on my iPhone, trusting this PC from the phone, and sideloading wda/WebDriverAgent.ipa with Sideloadly using my Apple ID.
+2. Install go-ios globally (used only to re-sign WebDriverAgent): npm install -g go-ios
+3. Read docs/setup-windows.md, register the tunnel service (step 3c, one admin prompt), then walk me through the parts only I can do: installing the Apple Devices app from the Microsoft Store, enabling Developer Mode on my iPhone, trusting this PC from the phone, and sideloading wda/WebDriverAgent.ipa with Sideloadly using my Apple ID.
 4. After WebDriverAgent is installed, run from the repo root: phone-harness fix-input (I will click Start in Sideloadly when you tell me to).
 5. Run phone-harness doctor after every step. Every FAIL names its own fix. Loop until all checks pass. Never guess at connection problems.
 6. When doctor is green, run: python launch.py and confirm the live viewer shows my phone screen at http://127.0.0.1:8770.
@@ -67,15 +67,16 @@ Needs Windows 10/11 and an iPhone on iOS 17+. One line in PowerShell installs th
 irm https://sidetap.io/install.ps1 | iex
 ```
 
-It puts the app in `%LOCALAPPDATA%\SideTap`, adds a **SideTap** shortcut to your Desktop and Start Menu, and starts the viewer, which walks you through the phone side (Developer Mode, WebDriverAgent). It also installs the free **[Apple Devices](https://apps.microsoft.com/detail/9np83lwlpz9k)** app from the Microsoft Store. That app is Apple's USB driver, and Windows cannot see an iPhone without it: if it is missing, SideTap stops at "No iPhone found over USB". When the automatic install fails, the installer opens the Store page so you can click **Get** yourself, then replug the iPhone and tap **Trust**. Re-running the installer later updates SideTap and keeps your `.env` and state. Everything it does is plain to read: [site/install.ps1](site/install.ps1).
+It puts the app in `%LOCALAPPDATA%\SideTap`, adds a **SideTap** shortcut to your Desktop and Start Menu, and starts the viewer, which walks you through the phone side (Developer Mode, WebDriverAgent). It also installs the free **[Apple Devices](https://apps.microsoft.com/detail/9np83lwlpz9k)** app from the Microsoft Store. That app is Apple's USB driver, and Windows cannot see an iPhone without it: if it is missing, SideTap cannot see the phone over USB. When the automatic install fails, the installer opens the Store page so you can click **Get** yourself, then replug the iPhone and tap **Trust**. Re-running the installer later updates SideTap and keeps your `.env` and state. Everything it does is plain to read: [site/install.ps1](site/install.ps1).
 
-Working from a clone instead? (Python 3.10+, Node.js for go-ios):
+Working from a clone instead? (Python 3.13+, Node.js for go-ios):
 
 ```bat
 git clone https://github.com/ucsandman/SideTap
 cd SideTap
-npm install -g go-ios     :: the USB bridge (this is why Node.js is needed)
+npm install -g go-ios     :: re-signs WebDriverAgent (this is why Node.js is needed)
 pip install -r requirements.txt
+:: once, from an admin PowerShell: register the tunnel service (docs/setup-windows.md, step 3c)
 python launch.py          :: opens the live viewer; the link comes up in the background
 ```
 
@@ -164,7 +165,7 @@ Pass `ocr(full=True)` for the raw tree with rects. The Python helpers are untouc
 
 This tool is for **your own phone, under your supervision**. The guardrails are part of the product:
 
-- **Lock the ports.** go-ios forwards WDA (:8100) and its MJPEG stream (:9100) on `0.0.0.0`, and WebDriverAgent has no auth, so by default anyone on your Wi-Fi could drive the phone. The viewer shows a red banner whenever the ports are exposed (the doctor flags it too); click **Lock ports** there (or run `scripts\lock_ports.ps1`, one-time, needs admin) to add a firewall rule. Loopback keeps working.
+- **Lock the ports.** WebDriverAgent has no auth. SideTap starts it bound to the tunnel address only and reaches it through a relay on loopback, so nothing on your Wi-Fi can reach it; an older setup that forwarded :8100 and :9100 with go-ios on `0.0.0.0` could be driven by anyone on your Wi-Fi. The viewer shows a red banner whenever the ports are exposed (the doctor flags it too); click **Lock ports** there (or run `scripts\lock_ports.ps1`, one-time, needs admin) to add a firewall rule. Loopback keeps working.
 - **Kill switch.** The red **STOP** button in the viewer (or a `.state/STOP` file) blocks every phone action at the client chokepoint until you click **RESUME**, and the doctor calls out a forgotten STOP as its first check. It bounds a runaway agent.
 - **Live activity feed.** Every action any process sends to the phone — taps, swipes, app launches, typing — lands in the viewer's **Activity** panel as it happens. Typed text is never recorded, only the character count (it can be a password or your passcode).
 - **Send guardrails.** `send_message` refuses to send if the contact name is ambiguous or the opened thread does not match, and logs every send to `.state/actions.log`, shown as **Recent sends** in the viewer.
@@ -194,8 +195,10 @@ Because step 2 reads the phone, a profile that has not expired yet is found imme
 | Module | Role |
 |---|---|
 | `wda_client.py` | thin HTTP client for WebDriverAgent (requests only), kill-switch chokepoint, activity feed |
-| `device.py` | go-ios wrapper: tunnel, runwda, port forwards, pids and logs in `.state/` |
-| `capture.py` | screenshots: WDA HTTP when up, go-ios subprocess fallback (perception works before input does) |
+| `device.py` | device calls through pymobiledevice3 (apps, launch, developer image, runwda), the relay process, pids and logs in `.state/` |
+| `link.py` | finds the tunnel through tunneld and asks it for one (USB, then Wi-Fi) when none is listed |
+| `relay.py` | loopback relay to WebDriverAgent on the current tunnel, self-heal, idle stop |
+| `capture.py` | screenshots: WDA HTTP when up, pymobiledevice3 fallback (perception works before input does) |
 | `helpers.py` | the agent API: tap, tap_text, ocr, set_field_text, send_message, read_messages, unlock |
 | `trust.py` | the trust boundary: taint tracking, the injection scanner, the data-not-instructions envelope |
 | `approval.py` | the human approval handshake that blocks a send until the viewer answers |

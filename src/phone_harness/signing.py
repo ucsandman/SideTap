@@ -35,7 +35,6 @@ phone, and go-ios signing. No network calls, no Apple authentication.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import plistlib
 import shutil
@@ -295,20 +294,20 @@ def _device_profiles(udid: str | None) -> list[bytes]:
     so it is the whole capture path - not a fallback.
     """
     try:
-        from pymobiledevice3.lockdown import create_using_usbmux
         from pymobiledevice3.services.misagent import MisagentService
     except ImportError as exc:
         raise SigningError(
             "pymobiledevice3 is required to read the profile off the phone. "
             "Install it with: pip install -r requirements.txt"
         ) from exc
+    from . import link
 
-    async def pull():
-        lockdown = await create_using_usbmux(serial=udid)
-        return await MisagentService(lockdown=lockdown).copy_all()
+    async def pull(rsd):
+        return await MisagentService(lockdown=rsd).copy_all()
 
     try:
-        return [bytes(p.buf) for p in asyncio.run(pull())]
+        # Through tunneld's tunnel, so this works over USB or Wi-Fi alike.
+        return [bytes(p.buf) for p in link.run(pull, udid)]
     except Exception as exc:  # any transport/pairing failure, named not swallowed
         raise SigningError(
             f"could not read provisioning profiles from the phone: {exc}"

@@ -3,6 +3,7 @@
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -83,7 +84,7 @@ def test_wda_bundle_none_when_empty_list_and_no_cache(monkeypatch, tmp_path):
 
 # ---- Developer Disk Image: an iOS update silently unmounts it (bit live
 # 2026-08-10, the 26.6 update) — runwda then dies in dtx channel timeouts.
-# `image list` prints a "signature" line when mounted, msg "none" when not.
+# The image mounter is asked through the tunnel (link.py).
 
 
 class _Proc:
@@ -93,26 +94,28 @@ class _Proc:
         self.returncode = returncode
 
 
-def test_ddi_mounted_sees_signature_line(monkeypatch):
-    out = (
-        '{"level":"INFO","msg":"no udid specified using first device in list"}\n'
-        '{"level":"INFO","msg":"image signature","signature":"28080689ce6e"}\n'
-    )
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+def test_ddi_mounted_asks_the_link(monkeypatch):
+    monkeypatch.setattr(device.link, "ddi_mounted", lambda: True)
     assert device.ddi_mounted()
+    monkeypatch.setattr(device.link, "ddi_mounted", lambda: False)
+    assert not device.ddi_mounted()
 
 
-def test_ddi_mounted_false_on_none(monkeypatch):
-    out = '{"level":"INFO","msg":"none"}\n'
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+def test_ddi_mounted_false_when_phone_unreachable(monkeypatch):
+    def unreachable():
+        raise device.link.LinkError("no tunnel to the phone")
+
+    monkeypatch.setattr(device.link, "ddi_mounted", unreachable)
     assert not device.ddi_mounted()
 
 
 def test_mount_ddi_names_locked_phone(monkeypatch):
     # The one mount failure a human can fix on the spot must be named, not
     # buried in a log tail: DeviceLocked -> "unlock it".
-    out = '{"level":"ERROR","msg":"error mounting image","err":"map[Error:DeviceLocked]"}\n'
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(out))
+    def locked():
+        raise device.link.LinkError("PyMobileDevice3Exception: {'Error': 'DeviceLocked'}")
+
+    monkeypatch.setattr(device.link, "mount_ddi", locked)
     monkeypatch.setattr(device, "ddi_mounted", lambda: False)
     ok, msg = device.mount_ddi()
     assert not ok
@@ -120,7 +123,7 @@ def test_mount_ddi_names_locked_phone(monkeypatch):
 
 
 def test_mount_ddi_verifies_by_reprobe(monkeypatch):
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc(""))
+    monkeypatch.setattr(device.link, "mount_ddi", lambda: None)
     monkeypatch.setattr(device, "ddi_mounted", lambda: True)
     ok, msg = device.mount_ddi()
     assert ok
@@ -148,17 +151,13 @@ def test_wda_bundle_no_cache_fallback_when_app_really_absent(monkeypatch, tmp_pa
 
 
 def _ios_apps_proc(bundle_ids):
-    lines = "\n".join(
-        f'{{"CFBundleIdentifier":"{bid}","CFBundleName":"{bid}"}}' for bid in bundle_ids
-    )
-    return _Proc(lines)
+    """Stand-in for link.list_apps returning these bundle ids."""
+    return lambda: [{"bundle_id": bid, "name": bid} for bid in bundle_ids]
 
 
 def test_list_apps_caches_nonempty_result_to_disk(monkeypatch, tmp_path):
     monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(
-        device, "_run", lambda args, timeout=30.0: _ios_apps_proc(["com.a.App"])
-    )
+    monkeypatch.setattr(device.link, "list_apps", _ios_apps_proc(["com.a.App"]))
     apps = device.list_apps()
     assert apps == [{"bundle_id": "com.a.App", "name": "com.a.App"}]
     cached = json.loads((tmp_path / "apps_cache.json").read_text(encoding="utf-8"))
@@ -173,13 +172,13 @@ def test_list_apps_falls_back_to_cache_when_live_list_empty(monkeypatch, tmp_pat
     (tmp_path / "apps_cache.json").write_text(
         json.dumps([{"bundle_id": "com.a.App", "name": "com.a.App"}]), encoding="utf-8"
     )
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _ios_apps_proc([]))
+    monkeypatch.setattr(device.link, "list_apps", _ios_apps_proc([]))
     assert device.list_apps() == [{"bundle_id": "com.a.App", "name": "com.a.App"}]
 
 
 def test_list_apps_empty_with_no_cache_returns_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _ios_apps_proc([]))
+    monkeypatch.setattr(device.link, "list_apps", _ios_apps_proc([]))
     assert device.list_apps() == []
 
 
@@ -190,9 +189,7 @@ def test_list_apps_fresh_nonempty_overwrites_stale_cache(monkeypatch, tmp_path):
         json.dumps([{"bundle_id": "com.old.App", "name": "com.old.App"}]),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        device, "_run", lambda args, timeout=30.0: _ios_apps_proc(["com.new.App"])
-    )
+    monkeypatch.setattr(device.link, "list_apps", _ios_apps_proc(["com.new.App"]))
     assert device.list_apps() == [{"bundle_id": "com.new.App", "name": "com.new.App"}]
     cached = json.loads((tmp_path / "apps_cache.json").read_text(encoding="utf-8"))
     assert cached == [{"bundle_id": "com.new.App", "name": "com.new.App"}]
@@ -207,11 +204,11 @@ def test_list_devices_memoized_within_one_run(monkeypatch, tmp_path):
     monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
     calls = []
 
-    def fake_run(args, timeout=30.0):
-        calls.append(args)
-        return _Proc('{"deviceList":["00008150-X"]}')
+    def fake_list():
+        calls.append("list")
+        return ["00008150-X"]
 
-    monkeypatch.setattr(device, "_run", fake_run)
+    monkeypatch.setattr(device.link, "list_devices", fake_list)
     with device.memoized_run():
         assert device.list_devices() == ["00008150-X"]
         assert device.list_devices() == ["00008150-X"]
@@ -224,11 +221,11 @@ def test_list_apps_memoized_within_one_run(monkeypatch, tmp_path):
     monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
     calls = []
 
-    def fake_run(args, timeout=30.0):
-        calls.append(args)
-        return _ios_apps_proc(["com.a.App"])
+    def fake_apps():
+        calls.append("apps")
+        return [{"bundle_id": "com.a.App", "name": "com.a.App"}]
 
-    monkeypatch.setattr(device, "_run", fake_run)
+    monkeypatch.setattr(device.link, "list_apps", fake_apps)
     with device.memoized_run():
         device.list_apps()
         device.list_apps()
@@ -271,12 +268,12 @@ def test_memoized_run_thread_isolated(monkeypatch, tmp_path):
     calls = []
     lock = threading.Lock()
 
-    def fake_run(args, timeout=30.0):
+    def fake_list():
         with lock:
-            calls.append(args)
-        return _Proc('{"deviceList":["00008150-X"]}')
+            calls.append("list")
+        return ["00008150-X"]
 
-    monkeypatch.setattr(device, "_run", fake_run)
+    monkeypatch.setattr(device.link, "list_devices", fake_list)
 
     a_cached = threading.Event()
     b_cached = threading.Event()
@@ -336,78 +333,257 @@ def test_safe_kill_can_spare_the_process_tree(monkeypatch):
     assert "/T" in cmds[1][0]
 
 
-# ---- start_tunnel readiness poll -------------------------------------------
-# Pins that start_tunnel returns as soon as `tunnel ls` confirms the tunnel,
-# that its worst case is still the 3s sleep it replaced (probe timeouts
-# included — tunnel_running's own 10s would otherwise leak straight through
-# the cap), and that the wintun.dll fix line still prints when it dies.
+# ---- start_tunnel: tunneld runs as its own admin task; start_tunnel starts
+# that task only when tunneld is not answering, then waits for a tunnel, and
+# names which of the two is missing when it gives up.
 
 
-def _tunnel_env(monkeypatch, listed_on_call, status="running"):
+def _tunnel_env(monkeypatch, listed_on_call, tunneld_up=True):
     clock = [0.0]
-    sleeps = []
     probes = []
+    started = []
     monkeypatch.setattr(device.time, "monotonic", lambda: clock[0])
-
-    def fake_sleep(s):
-        sleeps.append(s)
-        clock[0] += s
-
-    monkeypatch.setattr(device.time, "sleep", fake_sleep)
-    monkeypatch.setattr(device, "_spawn", lambda n, a: 1234)
+    monkeypatch.setattr(device.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(device.link, "tunneld_up", lambda timeout=3.0: tunneld_up)
+    monkeypatch.setattr(
+        device.subprocess, "run", lambda cmd, **kw: started.append(cmd) or _Proc("")
+    )
 
     def fake_running(timeout=10.0):
-        probes.append((timeout, clock[0]))
-        clock[0] += 0.21  # the measured go-ios process spawn floor
+        probes.append(clock[0])
         return len(probes) >= listed_on_call
 
     monkeypatch.setattr(device, "tunnel_running", fake_running)
-    monkeypatch.setattr(device, "proc_status", lambda n: status)
-    return clock, sleeps, probes
+
+    def fake_tunnel_for(udid=None):
+        if len(probes) >= listed_on_call:
+            return ("fd00::1", 5000, "usb")
+        raise device.link.LinkError("no tunnel to the phone: it is not on USB, or not on the same Wi-Fi")
+
+    monkeypatch.setattr(device.link, "tunnel_for", fake_tunnel_for)
+    return clock, probes, started
 
 
-def test_start_tunnel_returns_as_soon_as_the_tunnel_is_listed(monkeypatch):
-    # The 3s this replaced sits in front of DDI mount, WDA launch and the WDA
-    # poll on every cold bring-up, every Restart-link click and every
-    # deep-sleep self-heal — the moments the header reads "Starting link…".
-    clock, sleeps, probes = _tunnel_env(monkeypatch, listed_on_call=2)
+def test_start_tunnel_returns_as_soon_as_a_tunnel_is_listed(monkeypatch):
+    clock, probes, started = _tunnel_env(monkeypatch, listed_on_call=2)
     assert device.start_tunnel() is None
-    assert clock[0] < device._TUNNEL_READY_TIMEOUT
     assert len(probes) == 2
-    assert sleeps == [0.5]  # slept once per FAILED probe, not a flat 3s
+    assert clock[0] < device._TUNNEL_READY_TIMEOUT
+    assert started == []  # tunneld was up: its task is not touched
 
 
-def test_start_tunnel_still_raises_when_the_process_died(monkeypatch):
-    clock, _sleeps, _probes = _tunnel_env(
-        monkeypatch, listed_on_call=10_000, status="dead"
-    )
+def test_start_tunnel_starts_the_tunneld_task_when_tunneld_is_down(monkeypatch):
+    _clock, _probes, started = _tunnel_env(monkeypatch, listed_on_call=1, tunneld_up=False)
+    device.start_tunnel()
+    started = [c for c in started if "/Query" not in c]  # the task's status is read first
+    assert started and started[0][:3] == ["schtasks", "/Run", "/TN"]
+    assert started[0][3] == device.config.TUNNELD_TASK
+
+
+def test_start_tunnel_names_tunneld_when_it_never_comes_up(monkeypatch):
+    _tunnel_env(monkeypatch, listed_on_call=10_000, tunneld_up=False)
     with pytest.raises(device.DeviceError) as exc:
         device.start_tunnel()
-    assert "wintun" in str(exc.value)  # the fix line this function exists for
-    assert clock[0] >= 3.0  # waited exactly as long as the old sleep did
+    assert "tunneld is not answering" in str(exc.value)
 
 
-def test_start_tunnel_falls_through_when_alive_but_unlisted(monkeypatch):
-    # Today's behaviour when `tunnel ls` never confirms but the process lives:
-    # return quietly and let ddi_mounted() be the one to complain.
-    _clock, _sleeps, _probes = _tunnel_env(monkeypatch, listed_on_call=10_000)
-    assert device.start_tunnel() is None
+def test_start_tunnel_names_the_phone_when_tunneld_has_no_tunnel(monkeypatch):
+    clock, _probes, _started = _tunnel_env(monkeypatch, listed_on_call=10_000)
+    with pytest.raises(device.DeviceError) as exc:
+        device.start_tunnel()
+    assert "no tunnel to the phone" in str(exc.value)
+    assert clock[0] >= device._TUNNEL_READY_TIMEOUT
 
 
-def test_start_tunnel_never_probes_past_its_cap(monkeypatch):
-    # tunnel_running() runs `tunnel ls` on a 10s subprocess timeout, so a probe
-    # started at t=2.9s against a half-up daemon could run to 12.9s and blow the
-    # cap wide open. Each probe gets only the budget that is left.
-    clock, _sleeps, probes = _tunnel_env(monkeypatch, listed_on_call=10_000)
-    device.start_tunnel()
-    for timeout, started in probes:
-        assert timeout <= device._TUNNEL_READY_TIMEOUT
-        assert timeout <= device._TUNNEL_READY_TIMEOUT - started + 1e-9
-    assert clock[0] <= device._TUNNEL_READY_TIMEOUT + 0.25
+def test_list_apps_unreachable_with_no_cache_raises_the_reason(monkeypatch, tmp_path):
+    # An empty list would read as "no such app"; the agent needs the real cause.
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+
+    def down():
+        raise device.link.LinkError("tunneld is not answering at http://127.0.0.1:49151")
+
+    monkeypatch.setattr(device.link, "list_apps", down)
+    with pytest.raises(device.DeviceError, match="tunneld is not answering"):
+        device.list_apps()
 
 
-def test_tunnel_ready_cap_equals_the_sleep_it_replaced():
-    # Unmeasured on device: nobody has timed how long a userspace tunnel really
-    # takes to list. Until someone does, the cap stays at the old flat sleep so
-    # the worst case is unchanged and a bad result is a one-line revert.
-    assert device._TUNNEL_READY_TIMEOUT == 3.0
+def test_list_apps_unreachable_uses_the_saved_list(monkeypatch, tmp_path):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    saved = [{"bundle_id": "com.tencent.xin", "name": "WeChat"}]
+    (tmp_path / "apps.json").write_text(json.dumps(saved), encoding="utf-8")
+    monkeypatch.setattr(device, "_apps_cache_file", lambda: tmp_path / "apps.json")
+
+    def down():
+        raise device.link.LinkError("no tunnel to the phone")
+
+    monkeypatch.setattr(device.link, "list_apps", down)
+    assert device.list_apps() == saved
+
+
+def test_reused_pid_is_not_our_relay(monkeypatch, tmp_path):
+    # The pid in relay.pid now belongs to some other python job (pid reuse after
+    # a reboot): the relay is not running, and stop_all must not kill that job.
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    (tmp_path / "relay.pid").write_text("424242", encoding="utf-8")
+    monkeypatch.setattr(device, "_pid_image", lambda pid: "python.exe")
+    monkeypatch.setattr(device, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(device, "_pid_cmdline", lambda pid: "python.exe -m some.other.job")
+    killed = []
+    monkeypatch.setattr(device.subprocess, "run", lambda *a, **k: killed.append(a))
+    assert device.proc_status("relay") == "dead"
+    assert device.stop_all(("relay",)) == []
+    assert killed == []
+
+
+def test_our_relay_pid_is_recognised(monkeypatch, tmp_path):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    (tmp_path / "relay.pid").write_text("4242", encoding="utf-8")
+    monkeypatch.setattr(device, "_pid_cmdline", lambda pid: "pythonw.exe -m phone_harness.relay")
+    assert device.proc_status("relay") == "running"
+
+
+def test_down_stops_a_go_ios_runwda_left_from_before_the_tunneld_link(monkeypatch, tmp_path):
+    # Its WDA was started without USE_IP and listens on every address: dropping
+    # the pid file and leaving it running would keep it reachable from the LAN.
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    (tmp_path / "runwda.pid").write_text("5150", encoding="utf-8")
+    monkeypatch.setattr(device, "ios_path", lambda: "C:/npm/ios.exe")
+    monkeypatch.setattr(device, "_pid_image", lambda pid: "ios.exe")
+    monkeypatch.setattr(device, "_pid_cmdline", lambda pid: "ios.exe runwda --bundleid x")
+    killed = []
+    monkeypatch.setattr(device.subprocess, "run", lambda cmd, **k: killed.append(cmd))
+    assert device.stop_all(("runwda",)) == ["runwda"]
+    assert killed and killed[0][:3] == ["taskkill", "/PID", "5150"]
+
+
+def test_start_tunnel_passes_on_why_the_tunnel_request_failed(monkeypatch):
+    monkeypatch.setattr(device.link, "tunneld_up", lambda timeout=3.0: True)
+    monkeypatch.setattr(device, "tunnel_running", lambda timeout=10.0: False)
+    monkeypatch.setattr(device, "_TUNNEL_READY_TIMEOUT", 0.0)
+
+    def failed(udid=None):
+        raise device.link.LinkError("no tunnel to the phone (tunneld's tunnel request failed: HTTP 500 PairingError)")
+
+    monkeypatch.setattr(device.link, "tunnel_for", failed)
+    with pytest.raises(device.DeviceError, match="HTTP 500 PairingError"):
+        device.start_tunnel()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="taskkill tree semantics")
+def test_stopping_the_relay_spares_the_wda_it_started(tmp_path, monkeypatch):
+    """Real processes: launcher -> interpreter (both the relay) -> WDA runner.
+    The relay's self-heal starts WDA as its child; a relay restart must not
+    take WDA down with it (2026-10-18 23:36 ET)."""
+    import subprocess
+    import time
+
+    import psutil
+
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    # the base interpreter: a venv's python.exe would add a launcher per level
+    exe = getattr(sys, "_base_executable", sys.executable)
+    marker = "phone_harness.relay"
+    sleeper = "import time; time.sleep(120)"
+    spawn = "import subprocess, time; subprocess.Popen([{exe!r}, '-c', {code!r}, {tag!r}]); time.sleep(120)"
+    interpreter = spawn.format(exe=exe, code=sleeper, tag="xcuitest")  # starts the "runner"
+    launcher = spawn.format(exe=exe, code=interpreter, tag=marker)
+    top = subprocess.Popen([exe, "-c", launcher, marker])
+    tree = []
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and len(tree) < 2:
+            time.sleep(0.2)
+            tree = psutil.Process(top.pid).children(recursive=True)
+        runner = [p for p in tree if p.cmdline()[-1] == "xcuitest"]
+        relay_interpreter = [p for p in tree if p not in runner]
+        assert len(runner) == 1 and len(relay_interpreter) == 1
+        (tmp_path / "relay.pid").write_text(str(top.pid), encoding="utf-8")
+        assert device.stop_all(("relay",)) == ["relay"]
+        time.sleep(1)
+        assert top.poll() is not None
+        assert not relay_interpreter[0].is_running()
+        assert runner[0].is_running()
+    finally:
+        for p in [*tree]:
+            try:
+                p.kill()
+            except psutil.Error:
+                pass
+        top.kill()
+
+
+def test_spawn_keeps_the_previous_runs_log(tmp_path, monkeypatch):
+    """A restart must not wipe the log that says how the last run ended."""
+    import subprocess as sp
+
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(device, "_pythonw", lambda: sys.executable)
+    (tmp_path / "relay.log").write_text("last words of the old relay\n", encoding="utf-8")
+    pid = device._spawn_py("relay", ["-c", "print('new run')"])
+    for _ in range(100):
+        if "new run" in (tmp_path / "relay.log").read_text(encoding="utf-8"):
+            break
+        time.sleep(0.05)
+    text = (tmp_path / "relay.log").read_text(encoding="utf-8")
+    assert "last words of the old relay" in text and "new run" in text
+    assert text.index("last words") < text.index("started") < text.index("new run")
+
+
+def test_concurrent_relay_starts_spawn_one(tmp_path, monkeypatch):
+    """Two agents finding the relay missing at once must not start two (review 2026-10-20)."""
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(device, "_free_port", lambda port: None)
+    spawned = []
+
+    def spawn(name, args):
+        time.sleep(0.3)  # the gap in which a second caller would also see no relay
+        spawned.append(name)
+        device._pid_file(name).write_text("1", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr(device, "_spawn_py", spawn)
+    monkeypatch.setattr(device, "proc_status", lambda name: "running" if spawned else "not started")
+    ts = [threading.Thread(target=device.start_forwards) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert spawned == ["relay"]
+
+
+def test_log_is_not_cut_while_an_earlier_run_writes_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(device.config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(device, "_LOG_KEEP", 10)
+    (tmp_path / "relay.log").write_text("x" * 100, encoding="utf-8")
+    monkeypatch.setattr(device, "proc_status", lambda name: "running")
+    device._open_log("relay").close()
+    assert (tmp_path / "relay.log").read_text(encoding="utf-8").startswith("x" * 100)
+    monkeypatch.setattr(device, "proc_status", lambda name: "not started")
+    device._open_log("relay").close()
+    assert not (tmp_path / "relay.log").read_text(encoding="utf-8").startswith("x" * 100)
+
+
+def test_free_port_kills_only_a_go_ios_forwarder(monkeypatch):
+    """An ios.exe on the port that is not `ios forward <port>` is left alone."""
+    monkeypatch.setattr(device.sys, "platform", "win32")
+    killed = []
+
+    class R:
+        def __init__(self, out=""):
+            self.stdout = out
+
+    def run(cmd, **kw):
+        if cmd[0] == "netstat":
+            return R("  TCP    127.0.0.1:9100   0.0.0.0:0   LISTENING   4242\n")
+        if cmd[0] == "tasklist":
+            return R("ios.exe   4242 Console 1 10,000 K")
+        killed.append(cmd)
+        return R()
+
+    monkeypatch.setattr(device.subprocess, "run", run)
+    monkeypatch.setattr(device, "_pid_cmdline", lambda pid: "ios.exe tunnel start --userspace")
+    device._free_port(9100)
+    assert killed == []
+    monkeypatch.setattr(device, "_pid_cmdline", lambda pid: "ios.exe forward 9100 9100 --udid x")
+    device._free_port(9100)
+    assert killed and killed[0][:2] == ["taskkill", "/F"]

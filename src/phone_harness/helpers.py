@@ -16,12 +16,14 @@ from . import approval, capture, config, device, trust
 from .wda_client import WDAClient, WDAError, activity_file, redact_actions
 
 _client: WDAClient | None = None
+# Agent calls ride out a USB/Wi-Fi switch while the relay restarts WDA.
+_RECONNECT_WAIT = 75.0  # admin.up() allows WDA 60 s to answer, plus the tunnel step
 
 
 def client() -> WDAClient:
     global _client
     if _client is None:
-        _client = WDAClient()
+        _client = WDAClient(reconnect_wait=_RECONNECT_WAIT)
     return _client
 
 
@@ -1786,7 +1788,9 @@ def unlock(c: WDAClient | None = None) -> None:
     # viewer's is 10s) aborts a swipe that is still going to land, so the
     # sequence runs on a patient clone sharing the same session.
     if isinstance(c, WDAClient) and c.timeout < _UNLOCK_TIMEOUT:
-        patient = WDAClient(base_url=c.base_url, timeout=_UNLOCK_TIMEOUT)
+        patient = WDAClient(
+            base_url=c.base_url, timeout=_UNLOCK_TIMEOUT, reconnect_wait=c.reconnect_wait
+        )
         patient.session_id = c.session_id
         c = patient
     try:
@@ -2030,6 +2034,13 @@ def compact(rows: list[dict], limit: int | None = 60) -> list[dict]:
     return out
 
 
+def stop_link() -> str:
+    """Call when you are done with the phone: stops WebDriverAgent now, so iOS
+    drops its "Automation Running" banner and stops dimming the screen. The
+    next tool call brings it back by itself (about 20 s)."""
+    return "stopped" if device.release_wda() else "was not running"
+
+
 __all__ = [
     "client",
     "screenshot",
@@ -2065,5 +2076,6 @@ __all__ = [
     "wait_stable",
     "wait_for_text",
     "unlock",
+    "stop_link",
     "WDAError",
 ]

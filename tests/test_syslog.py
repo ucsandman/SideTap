@@ -144,3 +144,26 @@ def test_tail_closes_itself(monkeypatch):
     while syslog._dump is not None and time.time() < deadline:
         time.sleep(0.01)
     assert syslog._dump is None
+
+
+def test_stop_ends_the_capture_and_lets_the_next_page_restart_it(monkeypatch):
+    # The viewer stops the stream when no page is open: it is
+    # traffic to the iPad, which must stay quiet while nobody works.
+    stopped = []
+    monkeypatch.setattr(syslog, "_proc", _FakeProc())
+    monkeypatch.setattr(syslog, "_next_attempt", 1e18)
+    monkeypatch.setattr(syslog.device, "stop_all", lambda names: stopped.append(names) or [])
+    syslog.stop()
+    assert syslog._proc is None and stopped == [("syslog",)]
+    assert syslog._next_attempt == 0.0
+    syslog.stop()  # nothing running: a no-op
+    assert stopped == [("syslog",)]
+
+
+def test_viewer_runs_the_capture_only_while_a_page_is_open():
+    import inspect
+
+    from phone_harness import viewer
+
+    src = inspect.getsource(viewer._syslog_loop)
+    assert "_watched()" in src and "syslog.stop()" in src

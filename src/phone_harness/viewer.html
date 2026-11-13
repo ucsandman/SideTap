@@ -2032,10 +2032,13 @@ const SETUP_STEPS = [
    'Menu not there? Run <code>ios devmode reveal</code> in a terminal ' +
    '<button class="copy-btn" data-cmd="ios devmode reveal">⧉ copy</button> and reopen Settings.'],
   ['WebDriverAgent on the phone', ['WDA installed (input)'],
-   'Install <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a>. Download the newest ' +
-   '<code>WebDriverAgentRunner-Runner-*.ipa</code> from ' +
-   '<a href="https://github.com/appium/WebDriverAgent/releases" target="_blank" rel="noopener">WDA releases</a> ' +
-   'and save it as <code>WebDriverAgent.ipa</code> in <code>%WDA_DIR%</code>. ' +
+   'Install <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a>. Appium provides ' +
+   '<code>WebDriverAgentRunner-Runner.zip</code> for real iOS devices, not a ready-made IPA. ' +
+   'Follow the <a href="https://github.com/ucsandman/SideTap/blob/main/docs/setup-windows.md#step-3---sideload-webdriveragent-free-apple-id" ' +
+   'target="_blank" rel="noopener">packaging and signing guide</a>: put the extracted app inside ' +
+   '<code>Payload</code>, ZIP that folder, then rename the new ZIP to <code>WebDriverAgent.ipa</code> ' +
+   'in <code>%WDA_DIR%</code>. Do not use simulator or tvOS builds. ' +
+   'Signing compatibility varies; if installation fails, stop and check the guide before Fix input. ' +
    'In Sideloadly: pick that ipa, pick your iPhone, sign in with your free Apple ID, Start. ' +
    'Then on the phone: Settings → General → VPN &amp; Device Management → trust your profile.'],
   ['Touch input signed', ['WDA responding (input)', 'input signature (7-day)'],

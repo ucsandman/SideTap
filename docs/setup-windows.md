@@ -45,21 +45,43 @@ If the menu still does not appear, force-close Settings and open it again.
 ## Step 3 — Sideload WebDriverAgent (free Apple ID)
 
 1. Install [Sideloadly](https://sideloadly.io).
-2. Download the newest prebuilt WDA ipa from
-   https://github.com/appium/WebDriverAgent/releases
-   (file like `WebDriverAgentRunner-Runner-*.ipa`) and save it as
-   `wda/WebDriverAgent.ipa` in this repo.
+2. Open the [official Appium WDA releases](https://github.com/appium/WebDriverAgent/releases)
+   and download **`WebDriverAgentRunner-Runner.zip`**, the real iOS device build.
+   Do not use a `Build-Sim`, tvOS, watchOS, or source-code archive. Appium supplies
+   an app ZIP, **not a ready-made IPA** (checked against v16.15.3 on 2026-11-13).
+   Extract it, create a new empty `Payload` folder, and copy the extracted
+   `WebDriverAgentRunner-Runner.app` folder into it. Compress **the Payload
+   folder itself**, not just its contents, into a new ZIP and rename that ZIP
+   to `WebDriverAgent.ipa` (enable file extensions in Explorer). Save it in
+   this repo's `wda` folder. Inspect the archive before signing: its root must
+   contain `Payload/WebDriverAgentRunner-Runner.app/Info.plist`, not another
+   outer folder. Renaming the original download alone does not create an IPA.
+   This packages the app; it does not sign it or establish device compatibility.
 3. In Sideloadly: select the ipa, select your iPhone, sign in with your
    (free) Apple ID, click Start.
 4. On the iPhone: Settings → General → VPN & Device Management → trust your
    Apple ID developer profile.
 
+### If Sideloadly fails before installation
+
+Stop here: `fix-input` cannot obtain a new profile from an installation that
+never succeeded. [Issue #14](https://github.com/ucsandman/SideTap/issues/14)
+reports a signing failure with Sideloadly 0.72. Its reporter describes using
+WDA v16.15.1 and excluding `WebDriverAgentRunner.xctest.dSYM` when packaging;
+this is a **community-reported workaround, not a SideTap-verified fix**. We have
+not verified that combination on the reported iPhone 17 / iOS 26.1. Do not
+substitute an IPA from an unknown download site or delete the actual `.xctest`
+bundle. Keep the original ZIP and record the WDA release, Sideloadly version,
+iOS version and exact error before troubleshooting. Packaging correctness and
+successful signing are separate checks; this guide does not promise the latest
+WDA release will sign successfully with your Sideloadly version.
+
 ### Step 3b — enable touch input
 
-Sideloadly signs the WDA app but **not** its nested test bundle, so touch input
-stays dead. One command re-signs the whole thing (nested bundle included) with
-go-ios, using a profile it captures from your Sideloadly run — no Apple password
-re-entry:
+The original tested workflow used Sideloadly 0.60, which left the nested test
+bundle unsigned. Do not assume that behavior for every version. One command
+re-signs the whole thing (nested bundle included) with go-ios, using a profile
+from a successful Sideloadly install - no Apple password re-entry:
 
 ```bat
 phone-harness fix-input

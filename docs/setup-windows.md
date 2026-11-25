@@ -45,10 +45,17 @@ If the menu still does not appear, force-close Settings and open it again.
 ## Step 3 — Sideload WebDriverAgent (free Apple ID)
 
 1. Install [Sideloadly](https://sideloadly.io).
-2. Open the [official Appium WDA releases](https://github.com/appium/WebDriverAgent/releases)
-   and download **`WebDriverAgentRunner-Runner.zip`**, the real iOS device build.
-   Do not use a `Build-Sim`, tvOS, watchOS, or source-code archive. Appium supplies
-   an app ZIP, **not a ready-made IPA** (checked against v16.15.3 on 2026-11-13).
+2. Choose the official Appium release list for your WDA version:
+   - For [WDA 16.16.0 and newer](https://github.com/appium/appium-ios/releases),
+     look for an `appium-webdriveragent@<version>` tag.
+   - For [earlier WDA versions](https://github.com/appium/WebDriverAgent/releases),
+     look for a `v<version>` tag.
+
+   Under **Assets**, download **`WebDriverAgentRunner-Runner.zip`**, the real iOS
+   device build. Do not use a `Build-Sim`, tvOS, watchOS, or source-code archive.
+   Appium supplies an app ZIP, **not a ready-made IPA**. The archive layout below
+   was checked against [WDA v16.15.3](https://github.com/appium/WebDriverAgent/releases/tag/v16.15.3)
+   on 2026-11-13. That check did not verify signing or device compatibility.
    Extract it, create a new empty `Payload` folder, and copy the extracted
    `WebDriverAgentRunner-Runner.app` folder into it. Compress **the Payload
    folder itself**, not just its contents, into a new ZIP and rename that ZIP

@@ -1,0 +1,12 @@
+# SideTap
+
+> SideTap lets an LLM agent see and control a real iPhone (iOS 17+) from a Windows PC over USB. No Mac, no jailbreak, no Appium server; a free Apple ID is enough. Open source, MIT.
+
+- [Home](https://sidetap.io/): what it does, install command, Pro pre-order
+- [Source and README](https://github.com/ucsandman/SideTap): full docs, helper API, MCP server, security notes
+- [Windows setup guide](https://github.com/ucsandman/SideTap/blob/main/docs/setup-windows.md): one-time phone setup
+- [Install script](https://sidetap.io/install.ps1): `irm https://sidetap.io/install.ps1 | iex`
+
+## SideTap Pro (pre-order, $29 one time)
+
+A ready-to-sideload WebDriverAgent build for each current iOS release, a Windows installer that checks every step and names the one that failed, the 1-year signing wizard, and 12 months of setup fixes. Ships by 2026-12-26; full refund on request before then, automatic full refund if it does not ship by that date. The free repo stays free.

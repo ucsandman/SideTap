@@ -2,6 +2,8 @@
 
 Do these steps once. After this, `python launch.py` is all you need.
 
+Stuck on setup? [SideTap Pro](https://buy.stripe.com/7sYcN5euzfFOd9E5uHew80l) does it for you (pre-order, $29). Ships by December 26, 2026; full refund on request before then, automatic full refund if it does not ship by that date. [What is in it](https://sidetap.io/#pro).
+
 > **Shortcut:** `irm https://sidetap.io/install.ps1 | iex` in PowerShell does the
 > PC half of this page for you (Python, go-ios, the app, the Apple Devices app,
 > a Desktop shortcut) and the viewer's setup guide walks you through the phone

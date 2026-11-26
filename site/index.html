@@ -13,6 +13,7 @@
 <meta property="og:url" content="https://sidetap.io/">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://sidetap.io/assets/og.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -139,7 +140,10 @@ h2{font-size:clamp(24px,3vw,32px);font-weight:800;letter-spacing:-.02em;line-hei
 .tier li::before{content:"✓";color:var(--green);font-family:var(--mono);margin-right:6px}
 .tier .ghost{margin-top:22px;display:inline-block;font-size:14px;padding:11px 16px;border:1px solid var(--blue);border-radius:8px}
 .tier .ghost:hover{background:var(--blue);color:var(--bg);text-decoration:none}
-.wl{margin-top:22px}
+.tier .preorder{margin-top:22px}
+.terms{margin-top:12px;font-size:13px;color:var(--ink3);line-height:1.5}
+.wl{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
+.wl-label{font-size:13.5px;color:var(--ink2);margin-bottom:10px}
 .wl form{display:flex;gap:10px}
 .wl input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--sans);font-size:14.5px;padding:11px 14px}
 .wl input::placeholder{color:var(--ink3)}
@@ -341,15 +345,15 @@ python launch.py
 <span class="c">:: live viewer opens at</span> <span class="g">http://127.0.0.1:8770</span></pre>
       </div>
     </div>
-    <p class="install-note">First time? <a href="https://github.com/ucsandman/SideTap/blob/main/docs/setup-windows.md">docs/setup-windows.md</a> covers the one-time phone setup: USB driver, Developer Mode, sideloading WebDriverAgent.</p>
+    <p class="install-note">First time? <a href="https://github.com/ucsandman/SideTap/blob/main/docs/setup-windows.md">docs/setup-windows.md</a> covers the one-time phone setup: USB driver, Developer Mode, sideloading WebDriverAgent. Stuck on setup? <a href="#pro">SideTap Pro does it for you</a> (pre-order, $29).</p>
   </div>
 </section>
 
 <section id="pro" class="pro">
   <div class="wrap">
     <p class="eyebrow">SideTap Pro</p>
-    <h2>The weekly re-sign, gone.</h2>
-    <p class="lead">Free Apple IDs expire app signatures every 7 days. SideTap already softens this: a desktop toast before it lapses, a one-command local fix. Pro moves you to Apple's own 1-year signing and scales you past one phone.</p>
+    <h2>Stuck on setup? Pro does it for you.</h2>
+    <p class="lead">Most setup trouble is on the phone side: the developer image will not mount, Windows will not trust Apple's certificate, or the WebDriverAgent build you need is not there for your iOS version. Pro packages the fixes, and keeps fixing them when a new iOS release breaks something.</p>
     <div class="pro-grid">
       <div class="tier">
         <h3>Open source</h3>
@@ -363,24 +367,27 @@ python launch.py
         <a class="ghost" href="https://github.com/ucsandman/SideTap">Clone it free →</a>
       </div>
       <div class="tier paid">
-        <h3>Pro <span class="badge">IN DEVELOPMENT</span></h3>
-        <p class="price">$49<small>/year · early-bird price for the waitlist</small></p>
+        <h3>Pro <span class="badge">PRE-ORDER</span></h3>
+        <p class="price">$29 <small>one time</small></p>
         <ul>
-          <li>Multi-device: drive two or more iPhones from one PC</li>
-          <li>Guided 1-year signing with your own Apple developer account. Set it up once a year instead of every week</li>
-          <li>Your Apple ID and passcode never leave your machine</li>
-          <li>Priority support, direct line</li>
+          <li>A WebDriverAgent build ready to sideload, for each current iOS release</li>
+          <li>A Windows installer that checks every step and names the one that failed</li>
+          <li>The 1-year signing wizard, if you have Apple's paid developer account. Sign once a year instead of every week</li>
+          <li>12 months of fixes when a new iOS release breaks setup</li>
         </ul>
+        <a class="cta2 preorder" href="https://buy.stripe.com/7sYcN5euzfFOd9E5uHew80l">Pre-order for $29 →</a>
+        <p class="terms">This is a pre-order. Pro ships by December 26, 2026. Full refund on request any time before it ships. If it has not shipped by December 26, you get a full refund automatically.</p>
         <div class="wl">
+          <p class="wl-label">Not ready to pay? Get one email when Pro ships.</p>
           <form id="wl-form">
             <input type="email" id="wl-email" placeholder="you@example.com" required autocomplete="email" aria-label="Email for the Pro waitlist">
-            <button type="submit" id="wl-btn">Join the waitlist</button>
+            <button type="submit" id="wl-btn">Email me</button>
           </form>
           <p class="wl-msg" id="wl-msg"></p>
         </div>
       </div>
     </div>
-    <p class="pro-foot">The core stays MIT and free. Pro is optional convenience for people who drive their phone every day. Joining the waitlist locks the early-bird price and helps decide what ships first. No spam, one email when it is ready.</p>
+    <p class="pro-foot">The free repo stays MIT, free and unchanged. Fixes sent in by contributors stay in the free repo; none are held back for Pro.</p>
   </div>
 </section>
 </main>

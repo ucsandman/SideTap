@@ -356,6 +356,7 @@ def reminder_install() -> int:  # noqa: vulture
          "/TN", _REMINDER_TASK, "/TR", _reminder_command()],
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=30,
         creationflags=_NO_WINDOW,
     )  # fmt: skip
@@ -371,6 +372,7 @@ def reminder_uninstall() -> int:  # noqa: vulture
         ["schtasks", "/Delete", "/F", "/TN", _REMINDER_TASK],
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=30,
         creationflags=_NO_WINDOW,
     )

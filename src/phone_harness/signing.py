@@ -154,6 +154,7 @@ def build_p12(dest: Path = P12_PATH, password: str = P12_PASSWORD) -> Path:
         ],
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=30,
         creationflags=flags,
     )

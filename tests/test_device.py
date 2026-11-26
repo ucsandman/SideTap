@@ -411,3 +411,21 @@ def test_tunnel_ready_cap_equals_the_sleep_it_replaced():
     # takes to list. Until someone does, the cap stays at the old flat sleep so
     # the worst case is unchanged and a bad result is a one-line revert.
     assert device._TUNNEL_READY_TIMEOUT == 3.0
+
+
+def test_pid_probes_survive_localized_tasklist_output(monkeypatch):
+    """A German Windows prints tasklist's "no match" line in the OEM code page
+    (cp850: "ausgef\\x81hrt"), but text=True decodes with the ANSI code page
+    (cp1252), where 0x81 is unmapped. Strict decoding raised UnicodeDecodeError
+    out of subprocess.run and crashed `phone-harness down`. The fake decodes
+    the way subprocess does, honouring the errors= the caller passed."""
+    raw = "INFORMATION: Es werden keine Aufgaben mit den angegebenen Kriterien ausgeführt.\r\n"
+
+    def fake_subprocess_run(cmd, **kw):
+        return _Proc(raw.encode("cp850").decode("cp1252", kw.get("errors", "strict")))
+
+    monkeypatch.setattr(device.sys, "platform", "win32")
+    monkeypatch.setattr(device.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setattr(device.subprocess, "run", fake_subprocess_run)
+    assert device._pid_alive(4711) is False
+    assert device._pid_image(4711) == ""

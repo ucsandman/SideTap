@@ -45,6 +45,11 @@ MJPEG_PORT = int(get("MJPEG_PORT", "9100") or "9100")  # noqa: vulture
 
 WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
 
+# While WDA runs, iOS shows the "Automation Running" banner on top of every
+# screen. The relay stops WDA after this many minutes with no traffic through
+# it, and the next call starts it again (relay self-heal). 0 keeps WDA running.
+WDA_IDLE_STOP_MINUTES = float(get("WDA_IDLE_STOP_MINUTES", "10") or "10")
+
 # go-ios's tunnel agent HTTP port, shared by the tunnel it starts and every
 # go-ios call that looks the tunnel up. go-ios defaults to 60105, inside
 # Windows' dynamic range (49152-65535) where Hyper-V/WinNAT reserve blocks at
@@ -52,6 +57,11 @@ WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
 # permissions"; 60103-60202 on 2026-10-01). Below 49152 nothing reserves it.
 # Not per-instance: the tunnel is one all-devices daemon.
 GO_IOS_AGENT_PORT = get("GO_IOS_AGENT_PORT", "28100") or "28100"
+
+# The Windows scheduled task that runs `pymobiledevice3 remote tunneld` with
+# admin rights (it creates TUN interfaces). device.start_tunnel() starts it
+# when tunneld is not answering.
+TUNNELD_TASK = get("TUNNELD_TASK", "SideTap tunneld") or "SideTap tunneld"
 
 
 # Optional overrides

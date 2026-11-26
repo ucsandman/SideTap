@@ -985,6 +985,7 @@ def _run_heal_loop(monkeypatch, *, answers, clock, activity=None, lockdown=None)
     )
     monkeypatch.setitem(viewer._HEAL, "down_since", 0.0)
     monkeypatch.setitem(viewer._HEAL, "cooldown_until", 0.0)
+    monkeypatch.setattr(viewer, "_watched", lambda: True)
     monkeypatch.setattr(viewer.time, "sleep", lambda _s: None)
     monkeypatch.setattr(viewer.device, "lockdown_ready", lockdown or (lambda: True))
     monkeypatch.setattr(viewer, "stop_engaged", lambda: False)
@@ -2646,3 +2647,33 @@ def test_photos_worker_never_stays_running_on_a_crash(monkeypatch):
         job = dict(viewer._PHOTO_JOB)
     assert job["running"] is False and job["ok"] is False
     assert "usbmux fell over" in job["message"]
+
+
+def test_heal_loop_rests_while_no_page_is_open(monkeypatch):
+    """Probes are relay traffic; with no page open they would keep WDA (and the
+    "Automation Running" banner) up forever."""
+    monkeypatch.setitem(viewer._BROWSER, "last", 0.0)
+    sleeps = []
+
+    def sleep(_s):
+        if len(sleeps) == 3:
+            raise StopIteration
+        sleeps.append(_s)
+
+    monkeypatch.setattr(viewer.time, "sleep", sleep)
+
+    class _Probe:
+        def is_up(self):
+            raise AssertionError("probed WDA with no viewer page open")
+
+    monkeypatch.setattr(viewer, "WDAClient", lambda **k: _Probe())
+    with pytest.raises(StopIteration):
+        viewer._heal_loop()
+    assert len(sleeps) == 3
+
+
+def test_a_page_request_wakes_the_watchdog(base_url, monkeypatch):
+    monkeypatch.setitem(viewer._BROWSER, "last", 0.0)
+    assert not viewer._watched()
+    requests.get(base_url + "/", timeout=5)
+    assert viewer._watched()

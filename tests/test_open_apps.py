@@ -72,15 +72,17 @@ _INSTALLED = [
 ]
 
 
+def _proclist():
+    """_PS as pymobiledevice3's DVT proclist reports it."""
+    return [
+        {"isApplication": p["IsApplication"], "name": p["Name"], "pid": p["Pid"], "startDate": p["StartDate"]}
+        for p in _PS
+    ]
+
+
 def test_running_apps_keeps_applications_newest_first(monkeypatch):
-    seen = []
-    monkeypatch.setattr(
-        device,
-        "_run",
-        lambda args, timeout=30.0: (seen.append(args), _Proc(json.dumps(_PS)))[1],
-    )
+    monkeypatch.setattr(device.link, "run", lambda fn, udid=None, timeout=30.0: _proclist())
     apps = device.running_apps()
-    assert seen == [["ps"]]
     assert [a["name"] for a in apps] == [
         "MobileSMS",
         "Hinge",
@@ -96,23 +98,17 @@ def test_running_apps_keeps_applications_newest_first(monkeypatch):
     }
 
 
-def test_running_apps_survives_empty_and_non_json_output(monkeypatch):
-    monkeypatch.setattr(
-        device,
-        "_run",
-        lambda args, timeout=30.0: _Proc('{"level":"INFO","msg":"no udid"}\n'),
-    )
+def test_running_apps_survives_an_empty_list(monkeypatch):
+    monkeypatch.setattr(device.link, "run", lambda fn, udid=None, timeout=30.0: [])
     assert device.running_apps() == []
 
 
-def test_kill_app_is_ios_kill_by_bundle_id(monkeypatch):
+def test_kill_app_reports_whether_anything_was_killed(monkeypatch):
     seen = []
-    monkeypatch.setattr(
-        device, "_run", lambda args, timeout=30.0: (seen.append(args), _Proc("", 0))[1]
-    )
+    monkeypatch.setattr(device.link, "kill_app", lambda bid: (seen.append(bid), True)[1])
     assert device.kill_app("com.apple.Preferences") is True
-    assert seen == [["kill", "com.apple.Preferences"]]
-    monkeypatch.setattr(device, "_run", lambda args, timeout=30.0: _Proc("", 1))
+    assert seen == ["com.apple.Preferences"]
+    monkeypatch.setattr(device.link, "kill_app", lambda bid: False)
     assert device.kill_app("com.apple.Preferences") is False
 
 

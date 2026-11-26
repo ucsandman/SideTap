@@ -8,7 +8,15 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from test_signing import make_profile  # noqa: E402
 
+import pytest  # noqa: E402
+
 from phone_harness import admin, signing  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _relay_running(monkeypatch):
+    # up() reads the relay's pid file; keep every test off the real .state/.
+    monkeypatch.setattr(admin.device, "proc_status", lambda name: "running")
 
 
 def _use_profile(monkeypatch, tmp_path, data=None):
@@ -293,21 +301,17 @@ def test_doctor_results_memoizes_ios_list_within_one_pass(monkeypatch, tmp_path)
     monkeypatch.setattr(admin.device.config, "WDA_BUNDLE_ID", "")
     calls = {"list": 0, "apps": 0}
 
-    # timeout is unused but must keep this name: device._run is called with it
-    # as a keyword, so a rename would break the stand-in.
-    def fake_run(args, timeout=30.0):  # noqa: vulture
-        if args[0] == "list":
-            calls["list"] += 1
-            return _FakeProc('{"deviceList":["X"]}')
-        if args[:2] == ["apps", "--list"]:
-            calls["apps"] += 1
-            return _FakeProc(
-                '{"CFBundleIdentifier":"com.x.WebDriverAgentRunner.xctrunner",'
-                '"CFBundleName":"WDA"}'
-            )
-        return _FakeProc("")
+    def fake_list():
+        calls["list"] += 1
+        return ["X"]
 
-    monkeypatch.setattr(admin.device, "_run", fake_run)
+    def fake_apps():
+        calls["apps"] += 1
+        return [{"bundle_id": "com.x.WebDriverAgentRunner.xctrunner", "name": "WDA"}]
+
+    monkeypatch.setattr(admin.device.link, "list_devices", fake_list)
+    monkeypatch.setattr(admin.device.link, "list_apps", fake_apps)
+    monkeypatch.setattr(admin.device.link, "tunnel_for", lambda udid=None: ("fd00::1", 1, "usb"))
     # CHECKS entries are bound to function objects at import time, so
     # monkeypatching admin._check_x doesn't affect them — isolate the two
     # subprocess-backed checks under test rather than faking every other
@@ -480,3 +484,40 @@ def test_wait_for_wda_gives_up_at_the_deadline(monkeypatch):
     assert admin._wait_for_wda(client, deadline) is False
     assert clock[0] >= deadline
     assert clock[0] < deadline + 0.25  # stopped promptly, not overshooting far
+
+
+def test_up_moves_an_older_go_ios_link_to_the_tunnel(monkeypatch, capsys):
+    # WDA answering with no relay of ours: upstream's go-ios forwarders listen on
+    # every PC address and that WDA on every phone address. "Already up" would
+    # keep both; up() must clear them and restart WDA bound to the tunnel.
+    monkeypatch.setattr(admin.device, "proc_status", lambda name: "not started")
+    monkeypatch.setattr(admin, "WDAClient", lambda *a, **k: _StateClient("up"))
+    stopped, started, forwards = [], [], []
+    monkeypatch.setattr(admin.device, "stop_all", lambda names: stopped.append(names) or [])
+    monkeypatch.setattr(admin, "_check_device", lambda: (True, "iPhone", ""))
+    monkeypatch.setattr(admin.device, "tunnel_running", lambda: True)
+    monkeypatch.setattr(admin.device, "ddi_mounted", lambda: True)
+    monkeypatch.setattr(admin.device, "detect_wda_bundle", lambda: "com.x.wda")
+    monkeypatch.setattr(admin.device, "start_wda", lambda b: started.append(b))
+    monkeypatch.setattr(admin.device, "start_forwards", lambda: forwards.append(True))
+    monkeypatch.setattr(admin, "_wait_for_wda", lambda *a, **k: True)
+
+    assert admin._up(wait_seconds=1) == 0
+    assert stopped == [admin.device.LEGACY_PROCS]
+    assert started == ["com.x.wda"] and forwards == [True]
+    assert "older link" in capsys.readouterr().out
+
+
+def test_device_check_asks_for_a_tunnel_before_reading_the_listing(monkeypatch):
+    # tunneld runs with --no-wifi: a Wi-Fi iPad is listed only after a request.
+    calls = []
+
+    def tunnel_for(udid=None):
+        calls.append("request")
+        return ("fd59::1", 51392, "wifi")
+
+    monkeypatch.setattr(admin.device.link, "tunnel_for", tunnel_for)
+    monkeypatch.setattr(admin.device, "list_devices", lambda: calls.append("list") or ["UDID"])
+    ok, detail, _ = admin._check_device()
+    assert ok and "wifi" in detail
+    assert calls[:2] == ["request", "list"]

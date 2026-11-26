@@ -55,6 +55,7 @@ _TOOLS = [
     helpers.send_image,
     helpers.save_clipboard_image,
     helpers.wait_stable,
+    helpers.stop_link,
 ]
 for _fn in _TOOLS:
     server.tool()(_fn)

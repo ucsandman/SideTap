@@ -3,12 +3,14 @@
 #   irm https://sidetap.io/install.ps1 | iex
 #
 # What it does (all local, all visible below):
-#   1. Installs Python 3.12 if the machine has no Python (via winget).
+#   1. Installs Python 3.13 if the machine has no Python 3.13 or later (via winget).
 #   2. Downloads the SideTap app to %LOCALAPPDATA%\SideTap\app.
-#   3. Installs the two Python packages SideTap needs (requests, mcp).
+#   3. Installs the Python packages SideTap needs (requirements.txt).
 #   4. Downloads go-ios (the USB phone tool) — no Node.js needed.
 #   5. Installs the Apple Devices app (USB driver) if it is missing.
-#   6. Puts a SideTap shortcut on the Desktop and Start Menu.
+#   6. Registers the "SideTap tunneld" logon task (one admin prompt): it keeps the
+#      tunnel to the phone over USB or Wi-Fi.
+#   7. Puts a SideTap shortcut on the Desktop and Start Menu.
 #
 # What it CANNOT do (Apple requires a human for these; SideTap's viewer
 # walks you through them after launch):
@@ -29,40 +31,42 @@ New-Item -ItemType Directory -Force -Path $root, $bin | Out-Null
 
 function Step([string]$msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
-# ---- 1/6 Python ------------------------------------------------------------
+# ---- 1/7 Python ------------------------------------------------------------
 # `python` can resolve to the Microsoft Store stub, which is not Python: it
 # opens the Store and exits non-zero. Only trust an exe that answers --version.
+# 3.13 or later: pymobiledevice3's TCP tunnel (USB and Wi-Fi) needs it.
 function Find-Python {
     $ErrorActionPreference = 'SilentlyContinue'  # the Store stub writes stderr; that must not abort the installer
     foreach ($cand in @('python', 'py')) {
         $cmd = Get-Command $cand -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
-        $vargs = @('--version'); if ($cand -eq 'py') { $vargs = @('-3', '--version') }
+        $vargs = @('-c', 'import sys; print(sys.executable if sys.version_info >= (3, 13) else "")')
+        if ($cand -eq 'py') { $vargs = @('-3.13') + $vargs }
         $out = & $cmd.Source @vargs 2>$null
-        if ($LASTEXITCODE -eq 0 -and "$out" -match 'Python 3') { return $cmd.Source }
+        if ($LASTEXITCODE -eq 0 -and "$out".Trim()) { return "$out".Trim() }
     }
-    $local = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'
+    $local = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'
     if (Test-Path $local) { return $local }
     return $null
 }
 
-Step '1/6 Python'
+Step '1/7 Python'
 $python = Find-Python
 if ($python) {
     Write-Host "    found: $python"
 } else {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        throw 'No Python and no winget. Install Python 3.12 from python.org, then run this again.'
+        throw 'No Python 3.13 and no winget. Install Python 3.13 from python.org, then run this again.'
     }
-    Write-Host '    installing Python 3.12 (winget)...'
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --override '/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1' | Out-Null
+    Write-Host '    installing Python 3.13 (winget)...'
+    winget install -e --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements --override '/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1' | Out-Null
     $python = Find-Python
     if (-not $python) { throw 'Python install finished but python.exe was not found. Open a NEW terminal and run the installer again.' }
     Write-Host "    installed: $python"
 }
 
-# ---- 2/6 SideTap app -------------------------------------------------------
-Step "2/6 SideTap app -> $app"
+# ---- 2/7 SideTap app -------------------------------------------------------
+Step "2/7 SideTap app -> $app"
 $zip = Join-Path $root 'sidetap.zip'
 Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ucsandman/SideTap/archive/refs/heads/main.zip' -OutFile $zip
 $extract = Join-Path $root '_extract'
@@ -103,14 +107,14 @@ Remove-Item -Recurse -Force $extract
 Remove-Item -Force $zip
 Write-Host '    done'
 
-# ---- 3/6 Python packages ---------------------------------------------------
-Step '3/6 Python packages (pip)'
+# ---- 3/7 Python packages ---------------------------------------------------
+Step '3/7 Python packages (pip)'
 & $python -m pip install -q --disable-pip-version-check -r (Join-Path $app 'requirements.txt')
 if ($LASTEXITCODE -ne 0) { throw 'pip install failed. Read the message above.' }
 Write-Host '    done'
 
-# ---- 4/6 go-ios ------------------------------------------------------------
-Step '4/6 go-ios (USB phone tool)'
+# ---- 4/7 go-ios ------------------------------------------------------------
+Step '4/7 go-ios (USB phone tool)'
 $existing = Get-Command ios -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Host "    found: $($existing.Source)"
@@ -129,7 +133,7 @@ if ($existing) {
     Write-Host "    installed: $(Join-Path $bin 'ios.exe')"
 }
 
-# ---- 5/6 Apple USB driver --------------------------------------------------
+# ---- 5/7 Apple USB driver --------------------------------------------------
 # Without this app Windows has no iPhone USB driver, go-ios sees nothing, and
 # SideTap sits on "FAIL: No iPhone found over USB" forever. So this step never
 # trusts winget's exit code: it re-checks that the app actually landed, and on
@@ -140,7 +144,7 @@ function Test-AppleDriver {
            (Get-AppxPackage -Name 'AppleInc.AppleDevices*' -ErrorAction SilentlyContinue) -or
            (Get-AppxPackage -Name 'AppleInc.iTunes*' -ErrorAction SilentlyContinue))
 }
-Step '5/6 Apple Devices app (USB driver)'
+Step '5/7 Apple Devices app (USB driver)'
 if (Test-AppleDriver) {
     Write-Host '    found'
 } else {
@@ -158,8 +162,37 @@ if (Test-AppleDriver) {
     }
 }
 
-# ---- 6/6 Shortcut ----------------------------------------------------------
-Step '6/6 Desktop + Start Menu shortcut'
+# ---- 6/7 tunneld task ------------------------------------------------------
+# tunneld (pymobiledevice3) holds the tunnel every phone call goes through, over
+# USB or Wi-Fi. It creates network interfaces, so it needs admin rights: one UAC
+# prompt here, then it starts at every logon with no window.
+Step '6/7 tunneld logon task (admin prompt)'
+$taskScript = Join-Path $app 'scripts\install_tunneld_task.ps1'
+# Declining the UAC prompt makes Start-Process throw; that must not abort the
+# rest of the install, only leave this step for later.
+$exit = $null
+try {
+    $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$taskScript`"", '-Python', "`"$python`"")
+    $exit = $p.ExitCode
+} catch {
+    $exit = 'admin prompt declined'
+}
+if ($exit -ne 0) {
+    Write-Host "    not registered ($exit). Until it is, SideTap cannot reach the phone. From an admin PowerShell run:" -ForegroundColor Yellow
+    Write-Host "      powershell -ExecutionPolicy Bypass -File `"$taskScript`" -Python `"$python`""
+} else {
+    Write-Host '    done'
+}
+
+# The launchers (sidetap.cmd, phone-harness.cmd) run SIDETAP_PYTHON when it is
+# set, so they use the Python the packages were just installed into, not
+# whichever older one comes first on PATH.
+[Environment]::SetEnvironmentVariable('SIDETAP_PYTHON', $python, 'User')
+$env:SIDETAP_PYTHON = $python
+
+# ---- 7/7 Shortcut ----------------------------------------------------------
+Step '7/7 Desktop + Start Menu shortcut'
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'scripts\install_shortcut.ps1')
 
 # ---- Done ------------------------------------------------------------------
@@ -168,7 +201,7 @@ Write-Host 'SideTap is installed.' -ForegroundColor Green
 Write-Host ''
 if (-not (Test-AppleDriver)) {
     Write-Host 'ONE THING IS STILL MISSING: the Apple Devices app (the USB driver).' -ForegroundColor Red
-    Write-Host 'Until you install it, SideTap will say "No iPhone found over USB".' -ForegroundColor Red
+    Write-Host 'Until you install it, SideTap cannot see the phone over USB.' -ForegroundColor Red
     Write-Host '  1. Microsoft Store -> search "Apple Devices" (free, made by Apple) -> Get' -ForegroundColor Red
     Write-Host '     or: https://apps.microsoft.com/detail/9np83lwlpz9k' -ForegroundColor Red
     Write-Host '  2. Replug the iPhone, unlock it, tap Trust.' -ForegroundColor Red
